@@ -25,14 +25,18 @@
                 </div>
             @elseif (isset($selectedDevice))
                 @php
-                    $updates = (array) json_decode($selectedDevice->data)->updates;
-                    $networks = (array) json_decode($selectedDevice->data)->machine->addresses ?? [];
+                    $updates = [];
+                    if (property_exists(json_decode($selectedDevice->data)->machine, 'updates')) {
+                        $updates = (array) json_decode($selectedDevice->data)->machine->updates;
+                    }
+                    
+                    $networks = [];
+                    if (property_exists(json_decode($selectedDevice->data)->machine, 'addresses')) {
+                        $networks = (array) json_decode($selectedDevice->data)->machine->addresses;
+                    }
                 @endphp
                 <div class="col col-lg-8">
-
-
                     <div class="d-flex justify-content-between">
-
                         <h2 class="offcanvas-title" id="offcanvasRightLabel" title="{{ $selectedDevice->updated_at->diffForHumans() }}">
                             @if ($updates != [] && count($updates) > 1)
                                 <i class="bi bi-exclamation-triangle-fill text-danger"></i>
@@ -41,10 +45,9 @@
                             @endif
                             {{ $selectedDevice->name }}
                         </h2>
-
                         <h3 class="offcanvas-title" id="offcanvasRightLabel">
-                            {{-- <i class="bi bi-wifi-off"></i>
-                    <i class="bi bi-bluetooth"></i> --}}
+                            {{-- <i class="bi bi-wifi-off"></i> --}}
+                            {{-- <i class="bi bi-bluetooth"></i> --}}
                             @if (isset(json_decode($selectedDevice->data)->machine->power))
                                 @php
                                     $power = json_decode($selectedDevice->data)->machine->power;
@@ -71,13 +74,19 @@
                         <p>{{ $selectedDevice->NiceUptime }}</p>
                     @endif
 
-                    @if (isset(json_decode($selectedDevice->data)->restartPending) && filter_var(json_decode($selectedDevice->data)->restartPending, FILTER_VALIDATE_BOOLEAN) == true)
+                    @if (isset(json_decode($selectedDevice->data)->settings->timeout) && json_decode($selectedDevice->data)->settings->timeout < $selectedDevice->updated_at->diffInSeconds())
+                        <div class="alert alert-secondary" role="alert">
+                            {{ __('Device is offline!') }}
+                        </div>
+                    @endif
+
+                    @if (isset(json_decode($selectedDevice->data)->machine->restart_pending) && filter_var(json_decode($selectedDevice->data)->machine->restart_pending, FILTER_VALIDATE_BOOLEAN) == true)
                         <div class="alert alert-warning" role="alert">
                             {{ __('Device is in restart pending state!') }}
                         </div>
                     @endif
 
-                    
+
                     @livewire('device-commands', ['selectedDeviceId' => $selectedDevice->id], key($selectedDevice->id))
 
                     @if (!empty($selectedDevice->drives))
@@ -103,7 +112,8 @@
                             @endforeach
                         </div>
                     @endif
-                    @if ($updates != [] && count($updates) > 1)
+
+                    @if ($updates != [] && count($updates) > 0)
                         <h4>{{ __('Updates') }}</h4>
                         <ul>
                             @foreach ((array) $updates as $update)
@@ -111,7 +121,8 @@
                             @endforeach
                         </ul>
                     @endif
-                    @if ($networks != [] && count($networks) > 1)
+
+                    @if ($networks != [] && count($networks) > 0)
                         <h4>{{ __('Networks') }}</h4>
                         <ul>
                             @foreach ((array) $networks as $network)

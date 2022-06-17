@@ -40,6 +40,12 @@ return [
             'driver' => 'session',
             'provider' => 'users',
         ],
+        'api' => [
+            'driver' => 'token',
+            'provider' => 'devices',
+            'storage_key' => 'token',
+            'hash' => true,
+        ],
     ],
 
     /*
@@ -64,7 +70,10 @@ return [
             'driver' => 'eloquent',
             'model' => App\Models\User::class,
         ],
-
+        'devices' => [
+            'driver' => 'eloquent',
+            'model' => App\Models\Device::class,
+        ],
         // 'users' => [
         //     'driver' => 'database',
         //     'table' => 'users',
