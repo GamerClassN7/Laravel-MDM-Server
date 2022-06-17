@@ -46,13 +46,18 @@
                             {{ $selectedDevice->name }}
                         </h2>
                         <h3 class="offcanvas-title" id="offcanvasRightLabel">
+                            @php
+                                $power = json_decode($selectedDevice->data)->machine->power;
+                            @endphp
+
                             {{-- <i class="bi bi-wifi-off"></i> --}}
                             {{-- <i class="bi bi-bluetooth"></i> --}}
-                            @if (isset(json_decode($selectedDevice->data)->machine->power))
+
+                            @if ($power != [])
                                 @php
-                                    $power = json_decode($selectedDevice->data)->machine->power;
+                                    $charging_status = ($power->charging_status ?? $power->charging_Status);
                                 @endphp
-                                @if ($power->charging_Status == 'AC')
+                                @if (isset($charging_status) || $charging_status == 'AC')
                                     <i class="bi bi-battery-charging"></i>
                                 @else
                                     @if ($power->battery < 20)
@@ -70,14 +75,15 @@
                         </h3>
                     </div>
 
-                    @if (!empty($selectedDevice->NiceUptime))
-                        <p>{{ $selectedDevice->NiceUptime }}</p>
-                    @endif
 
                     @if (isset(json_decode($selectedDevice->data)->settings->timeout) && json_decode($selectedDevice->data)->settings->timeout < $selectedDevice->updated_at->diffInSeconds())
                         <div class="alert alert-secondary" role="alert">
                             {{ __('Device is offline!') }}
                         </div>
+                    @else
+                        @if (!empty($selectedDevice->NiceUptime))
+                            <p>{{ $selectedDevice->NiceUptime }}</p>
+                        @endif
                     @endif
 
                     @if (isset(json_decode($selectedDevice->data)->machine->restart_pending) && filter_var(json_decode($selectedDevice->data)->machine->restart_pending, FILTER_VALIDATE_BOOLEAN) == true)
@@ -86,7 +92,6 @@
                         </div>
                     @endif
 
-
                     @livewire('device-commands', ['selectedDeviceId' => $selectedDevice->id], key($selectedDevice->id))
 
                     @if (!empty($selectedDevice->drives))
@@ -94,7 +99,11 @@
                         <div class="d-flex flex-wrap justify-content-between">
                             @foreach ($selectedDevice->drives as $drive)
                                 <div class="me-3 d-flex">
-                                    <i style="font-size: 3rem;" class="bi bi-device-hdd"></i>
+                                    @if ($drive['DriveType'] == 5)
+                                        <i style="font-size: 3rem;" class="bi bi-disc"></i>
+                                    @else
+                                        <i style="font-size: 3rem;" class="bi bi-device-hdd"></i>
+                                    @endif
                                     <div style="width:180px">
                                         {{ $drive['VolumeLabel'] ?? '' }} ({{ $drive['Name'] }})
                                         @if (isset($drive['TotalSize']) && isset($drive['AvailableFreeSpace']))
