@@ -5,10 +5,10 @@
                 <ul class="list-group">
                     @foreach ($devices as $device)
                         <a href="#" wire:click.prevent="selectDevice({{ $device->id }})" aria-current="true" class="list-group-item list-group-item-action d-flex justify-content-between {{ isset($selectedDevice) && $device->id == $selectedDevice->id ? 'active' : '' }}">
-                        {{ $device->name }}
-                        @if($device->offline)
-                            <i class="bi bi-exclamation-triangle-fill text-dark"></i>
-                        @endif
+                            {{ $device->name }}
+                            @if ($device->offline)
+                                <i class="bi bi-exclamation-triangle-fill text-dark"></i>
+                            @endif
                         </a>
                     @endforeach
                 </ul>
@@ -47,7 +47,7 @@
 
                             @if ($power != [])
                                 @php
-                                    $charging_status = ($power->charging_status ?? $power->charging_Status);
+                                    $charging_status = $power->charging_status ?? $power->charging_Status;
                                 @endphp
                                 @if (isset($charging_status) || $charging_status == 'AC')
                                     <i class="bi bi-battery-charging"></i>
@@ -66,7 +66,7 @@
                             @endif
                         </h3>
                     </div>
-                        <p>{{ $selectedDevice->lastLogonUser }}</p>
+                    <p>{{ $selectedDevice->lastLogonUser }}</p>
 
 
                     @if ($device->offline)
