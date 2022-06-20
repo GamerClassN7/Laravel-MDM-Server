@@ -19,6 +19,11 @@ class DeviceCommands extends Component
         $device->save();
     }
 
+    public function deleteDevice(){
+        $device = Device::find($this->selectedDeviceId);
+        $device->delete();
+    }
+
     public function render()
     {
         return view('livewire.device-commands', [

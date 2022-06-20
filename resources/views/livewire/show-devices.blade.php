@@ -4,7 +4,12 @@
             <div class="col col-lg-4">
                 <ul class="list-group">
                     @foreach ($devices as $device)
-                        <a href="#" wire:click.prevent="selectDevice({{ $device->id }})" aria-current="true" class="list-group-item list-group-item-action {{ isset($selectedDevice) && $device->id == $selectedDevice->id ? 'active' : '' }}">{{ $device->name }}</a>
+                        <a href="#" wire:click.prevent="selectDevice({{ $device->id }})" aria-current="true" class="list-group-item list-group-item-action d-flex justify-content-between {{ isset($selectedDevice) && $device->id == $selectedDevice->id ? 'active' : '' }}">
+                        {{ $device->name }}
+                        @if($device->offline)
+                            <i class="bi bi-exclamation-triangle-fill text-dark"></i>
+                        @endif
+                        </a>
                     @endforeach
                 </ul>
                 <div class="d-grid gap-2 mb-3">
@@ -14,8 +19,6 @@
                     </button>
                 </div>
             </div>
-
-
             @if ($addDevice == true)
                 <div class="col col-lg-8">
                     <h5>{{ __('AddNewDevice') }}</h5>
@@ -24,21 +27,10 @@
                     <p>
                 </div>
             @elseif (isset($selectedDevice))
-                @php
-                    $updates = [];
-                    if (property_exists(json_decode($selectedDevice->data)->machine, 'updates')) {
-                        $updates = (array) json_decode($selectedDevice->data)->machine->updates;
-                    }
-                    
-                    $networks = [];
-                    if (property_exists(json_decode($selectedDevice->data)->machine, 'addresses')) {
-                        $networks = (array) json_decode($selectedDevice->data)->machine->addresses;
-                    }
-                @endphp
                 <div class="col col-lg-8">
                     <div class="d-flex justify-content-between">
                         <h2 class="offcanvas-title" id="offcanvasRightLabel" title="{{ $selectedDevice->updated_at->diffForHumans() }}">
-                            @if ($updates != [] && count($updates) > 1)
+                            @if ($selectedDevice->updates != [] && count($selectedDevice->updates) > 1)
                                 <i class="bi bi-exclamation-triangle-fill text-danger"></i>
                             @else
                                 <i class="bi bi-exclamation-triangle-fill text-warning"></i>
@@ -74,9 +66,10 @@
                             @endif
                         </h3>
                     </div>
+                        <p>{{ $selectedDevice->lastLogonUser }}</p>
 
 
-                    @if (isset(json_decode($selectedDevice->data)->settings->timeout) && json_decode($selectedDevice->data)->settings->timeout < $selectedDevice->updated_at->diffInSeconds())
+                    @if ($device->offline)
                         <div class="alert alert-secondary" role="alert">
                             {{ __('Device is offline!') }}
                         </div>
@@ -122,19 +115,19 @@
                         </div>
                     @endif
 
-                    @if ($updates != [] && count($updates) > 0)
+                    @if ($selectedDevice->updates != [] && count($selectedDevice->updates) > 0)
                         <h4>{{ __('Updates') }}</h4>
                         <ul>
-                            @foreach ((array) $updates as $update)
+                            @foreach ((array) $selectedDevice->updates as $update)
                                 <li>{{ $update }}</li>
                             @endforeach
                         </ul>
                     @endif
 
-                    @if ($networks != [] && count($networks) > 0)
+                    @if ($selectedDevice->network != [] && count($selectedDevice->network) > 0)
                         <h4>{{ __('Networks') }}</h4>
                         <ul>
-                            @foreach ((array) $networks as $network)
+                            @foreach ((array) $selectedDevice->networks as $network)
                                 <li>{{ $network }}</li>
                             @endforeach
                         </ul>
