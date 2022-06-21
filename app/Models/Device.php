@@ -12,7 +12,10 @@ class Device extends Model
     use HasFactory;
     public function getDrivesAttribute($value)
     {
-        return json_decode($value, true);
+        if (null !== json_decode($value, true)) {
+            return (array) json_decode($value, true);
+        }
+        return [];
     }
 
     public function setDrivesAttribute($value)
@@ -47,6 +50,17 @@ class Device extends Model
         }
 
         return true;
+    }
+
+    public function getRestartPendingAttribute()
+    {
+        if (null !== json_decode($this->data)->machine->restart_pending) {
+            if (json_decode($this->data)->machine->restart_pending) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function getLastLogonUserAttribute()

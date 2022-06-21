@@ -67,24 +67,13 @@
                         </h3>
                     </div>
                     <p>{{ $selectedDevice->lastLogonUser }}</p>
-
-
-                    @if ($device->offline)
-                        <div class="alert alert-secondary" role="alert">
-                            {{ __('Device is offline!') }}
-                        </div>
-                    @else
+                    @if (!$selectedDevice->offline)
                         @if (!empty($selectedDevice->NiceUptime))
                             <p>{{ $selectedDevice->NiceUptime }}</p>
                         @endif
                     @endif
 
-                    @if (isset(json_decode($selectedDevice->data)->machine->restart_pending) && filter_var(json_decode($selectedDevice->data)->machine->restart_pending, FILTER_VALIDATE_BOOLEAN) == true)
-                        <div class="alert alert-warning" role="alert">
-                            {{ __('Device is in restart pending state!') }}
-                        </div>
-                    @endif
-
+                    @livewire('device-alerts', ['selectedDeviceId' => $selectedDevice->id], key($selectedDevice->id))
                     @livewire('device-commands', ['selectedDeviceId' => $selectedDevice->id], key($selectedDevice->id))
 
                     @if (!empty($selectedDevice->drives))
