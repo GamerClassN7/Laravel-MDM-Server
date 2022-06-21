@@ -37,34 +37,36 @@
                             @endif
                             {{ $selectedDevice->name }}
                         </h2>
-                        <h3 class="offcanvas-title" id="offcanvasRightLabel">
-                            @php
-                                $power = json_decode($selectedDevice->data)->machine->power;
-                            @endphp
-
-                            {{-- <i class="bi bi-wifi-off"></i> --}}
-                            {{-- <i class="bi bi-bluetooth"></i> --}}
-
-                            @if ($power != [])
+                        @if (!$selectedDevice->offline)
+                            <h3 class="offcanvas-title" id="offcanvasRightLabel">
                                 @php
-                                    $charging_status = $power->charging_status ?? $power->charging_Status;
+                                    $power = json_decode($selectedDevice->data)->machine->power;
                                 @endphp
-                                @if (isset($charging_status) || $charging_status == 'AC')
-                                    <i class="bi bi-battery-charging"></i>
-                                @else
-                                    @if ($power->battery < 20)
-                                        <i class="bi bi-battery text-danger"></i>
-                                    @elseif($power->battery < 60)
-                                        <i class="bi bi-battery-half"></i>
+
+                                {{-- <i class="bi bi-wifi-off"></i> --}}
+                                {{-- <i class="bi bi-bluetooth"></i> --}}
+
+                                @if ($power != [])
+                                    @php
+                                        $charging_status = $power->charging_status ?? $power->charging_Status;
+                                    @endphp
+                                    @if (isset($charging_status) || $charging_status == 'AC')
+                                        <i class="bi bi-battery-charging"></i>
                                     @else
-                                        <i class="bi bi-battery-full"></i>
+                                        @if ($power->battery < 20)
+                                            <i class="bi bi-battery text-danger"></i>
+                                        @elseif($power->battery < 60)
+                                            <i class="bi bi-battery-half"></i>
+                                        @else
+                                            <i class="bi bi-battery-full"></i>
+                                        @endif
                                     @endif
+                                    {{ $power->battery }} %
+                                @else
+                                    <i class="bi bi-plug"></i>
                                 @endif
-                                {{ $power->battery }} %
-                            @else
-                                <i class="bi bi-plug"></i>
-                            @endif
-                        </h3>
+                            </h3>
+                        @endif
                     </div>
                     <p>{{ $selectedDevice->lastLogonUser }}</p>
                     @if (!$selectedDevice->offline)
@@ -89,12 +91,8 @@
                                     <div style="width:180px">
                                         {{ $drive['VolumeLabel'] ?? '' }} ({{ $drive['Name'] }})
                                         @if (isset($drive['TotalSize']) && isset($drive['AvailableFreeSpace']))
-                                            @php
-                                                $usedSpace = (int) $drive['TotalSize'] - (int) $drive['AvailableFreeSpace'];
-                                                $usedPercent = $usedSpace / ((int) $drive['TotalSize'] / 100);
-                                            @endphp
                                             <div class="progress">
-                                                <div class="progress-bar {{ $usedPercent > 90 ? 'bg-danger' : '' }}" role="progressbar" style="width: {{ round($usedPercent) ?? 0 }}%" aria-valuenow="{{ round($usedPercent) }}" aria-valuemin="0" aria-valuemax="100"></div>
+                                                <div class="progress-bar {{ $drive['PercentUsed'] > 90 ? 'bg-danger' : '' }}" role="progressbar" style="width: {{ $drive['PercentUsed'] ?? 0 }}%" aria-valuenow="{{ $drive['PercentUsed'] }}" aria-valuemin="0" aria-valuemax="100"></div>
                                             </div>
                                             {{ round($drive['AvailableFreeSpace'] / 1024 / 1024 / 1024) }} GB free of {{ round($drive['TotalSize'] / 1024 / 1024 / 1024) }} GB
                                         @endif
