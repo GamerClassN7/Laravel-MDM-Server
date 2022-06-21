@@ -51,11 +51,13 @@
             </h3>
         @endif
     </div>
-    <p>{{ $selectedDevice->lastLogonUser }}</p>
-
     @if (!$selectedDevice->offline)
+        @if (!empty($selectedDevice->lastLogonUser))
+            <p class="mb-0"><i class="bi bi-person-fill"></i> {{ $selectedDevice->lastLogonUser }}</p>
+        @endif
+
         @if (!empty($selectedDevice->NiceUptime))
-            <p>{{ $selectedDevice->NiceUptime }}</p>
+            <p class="mb-0">{{ $selectedDevice->NiceUptime }}</p>
         @endif
     @endif
 
