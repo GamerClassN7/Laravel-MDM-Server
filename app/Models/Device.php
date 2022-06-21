@@ -42,6 +42,15 @@ class Device extends Model
         $this->attributes['commands'] = json_encode((array) $value);
     }
 
+    public function getDisplayNameAttribute()
+    {
+        $name = $this->friendly_name;
+        if (empty($name)) {
+            $name = $this->name;
+        }
+        return $name;
+    }
+
     public function getNiceUptimeAttribute()
     {
         if (isset(json_decode($this->data)->machine->uptime)) {

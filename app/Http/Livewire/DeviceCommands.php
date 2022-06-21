@@ -9,17 +9,19 @@ class DeviceCommands extends Component
 {
     public $selectedDeviceId;
 
-    public function sendCommandToDevice($command){
+    public function sendCommandToDevice($command)
+    {
         $device = Device::find($this->selectedDeviceId);
-        
-        if (in_array($command,$device->commands))
+
+        if (in_array($command, $device->commands) || $device->offline)
             return;
 
         $device->commands = array_merge($device->commands, (array) $command);
         $device->save();
     }
 
-    public function deleteDevice(){
+    public function deleteDevice()
+    {
         $device = Device::find($this->selectedDeviceId);
         $device->delete();
     }
