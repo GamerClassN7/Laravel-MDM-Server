@@ -13,11 +13,12 @@ use Illuminate\Support\Facades\Route;
 |
 */
 
-Route::get('/', function () {
-    return view('welcome');
+
+Auth::routes([
+    'register' => false,
+]);
+Route::middleware('auth')->group(function() {
+    Route::get('/', function () {return redirect()->route('devices');});
+    Route::get('/home', [App\Http\Controllers\HomeController::class, 'index'])->name('home');
+    Route::get('/devices', App\Http\Livewire\ShowDevices::class)->name('devices');
 });
-
-Auth::routes();
-
-Route::get('/home', [App\Http\Controllers\HomeController::class, 'index'])->name('home');
-Route::get('/devices', App\Http\Livewire\ShowDevices::class);

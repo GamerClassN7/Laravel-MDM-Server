@@ -20,14 +20,14 @@
                 </div>
             </div>
             @if ($addDevice == true)
-                <div class="col col-lg-8">
+                <div class="col-12 col-lg-8">
                     <h5>{{ __('AddNewDevice') }}</h5>
                     <h2>{{ $enrollmentCode }}</h2>
                     <p>{{ $enrollmentCodeExpiration }} ({{ $enrollmentCodeExpiration->diffForHumans() }})
                     <p>
                 </div>
             @elseif (isset($selectedDevice))
-                <div class="col col-lg-8">
+                <div class="col-12 col-lg-8">
                     @livewire('device-detail', ['selectedDeviceId' => $selectedDevice->id], key($selectedDevice->id))
                 </div>
             @endif

@@ -17,7 +17,6 @@ class ShowDevices extends Component
     public $enrollmentCode;
     public $enrollmentCodeExpiration;
 
-
     protected $queryString = [
         'selectedDeviceId'
     ];
