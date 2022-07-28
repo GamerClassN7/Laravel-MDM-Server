@@ -97,11 +97,20 @@
         </ul>
     @endif
 
-    @if ($selectedDevice->network != [] && count($selectedDevice->network) > 0)
+    @if ($selectedDevice->app_updates != [] && count($selectedDevice->app_updates) > 0)
+        <h4>{{ __('Updates') }}</h4>
+        <ul>
+            @foreach ((array) $selectedDevice->app_updates as $app_update)
+                <li>{{ $app_update }}</li>
+            @endforeach
+        </ul>
+    @endif
+
+    @if ($selectedDevice->addresses != [] && count($selectedDevice->addresses) > 0)
         <h4>{{ __('Networks') }}</h4>
         <ul>
-            @foreach ((array) $selectedDevice->networks as $network)
-                <li>{{ $network }}</li>
+            @foreach ((array) $selectedDevice->addresses as $address)
+                <li>{{ $address }}</li>
             @endforeach
         </ul>
     @endif
