@@ -96,21 +96,19 @@
             @endforeach
         </ul>
     @endif
-
-    @if ($selectedDevice->app_updates != [] && count($selectedDevice->app_updates) > 0)
+    @if ($selectedDevice->apps_packages_updates != [] && count($selectedDevice->apps_packages_updates) > 0)
         <h4>{{ __('Updates') }}</h4>
         <ul>
-            @foreach ((array) $selectedDevice->app_updates as $app_update)
+            @foreach ((array) $selectedDevice->apps_packages_updates as $app_update)
                 <li>{{ $app_update }}</li>
             @endforeach
         </ul>
     @endif
-
-    @if ($selectedDevice->addresses != [] && count($selectedDevice->addresses) > 0)
+    @if ($selectedDevice->networks != [] && count($selectedDevice->networks) > 0)
         <h4>{{ __('Networks') }}</h4>
         <ul>
-            @foreach ((array) $selectedDevice->addresses as $address)
-                <li>{{ $address }}</li>
+            @foreach ((array) $selectedDevice->networks as $network)
+                <li>{{ $network }}</li>
             @endforeach
         </ul>
     @endif
