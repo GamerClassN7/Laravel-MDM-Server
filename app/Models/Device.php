@@ -89,6 +89,14 @@ class Device extends Model
         return false;
     }
 
+    public function getAppsPackagesUpdatesAttribute()
+    {
+        if (isset(json_decode($this->data)->machine->app_updates)) {
+            return (array) json_decode($this->data)->machine->app_updates;
+        }
+        return [];
+    }
+
     public function getUpdatesAttribute()
     {
         if (isset(json_decode($this->data)->machine->updates)) {
