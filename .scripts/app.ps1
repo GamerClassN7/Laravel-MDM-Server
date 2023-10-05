@@ -167,10 +167,60 @@ function Get-DockerContainers {
     }
 }
 
+function Show-Notification {
+    Param (
+        [string]
+        $ToastTitle,
+        [string]
+        $ToastText
+    )
+
+    Add-Type -AssemblyName System.Windows.Forms
+    $global:balmsg = New-Object System.Windows.Forms.NotifyIcon
+    $path = (Get-Process -id $pid).Path
+    $balmsg.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($path)
+    $balmsg.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Warning
+    $balmsg.BalloonTipText = $ToastText
+    $balmsg.BalloonTipTitle = $ToastTitle
+    $balmsg.Visible = $true
+    $balmsg.ShowBalloonTip([DateTimeOffset]::Now.AddMinutes(1).Millisecond)
+}
+
+function New-JobRegistration {
+    $Trigger1 = New-ScheduledTaskTrigger -Daily -DaysInterval 1 -At 0am
+    $Trigger1.Repetition = $(New-ScheduledTaskTrigger -Once -At 0am -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration  (New-TimeSpan -Hours 23 -Minutes 59)).Repetition
+    $Trigger2 = New-ScheduledTaskTrigger -AtLogOn
+    $Trigger3 = New-ScheduledTaskTrigger -AtStartup
+
+    #$User = "NT AUTHORITY\SYSTEM"
+    $Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument ("-windowstyle hidden -executionpolicy bypass -NoLogo -file {0}/app.ps1" -f $PSScriptRoot)
+    Register-ScheduledTask -AsJob -TaskName "Laravell-MDM-Agent" -Trigger @($Trigger1,$Trigger2,$Trigger3) <#-User $User#> -Action $Action -RunLevel Highest -Force
+}
+
+function Invoke-ApiRequest {
+    param (
+        $data
+    )
+    return Invoke-RestMethod -Method Post -Uri https://loclhost -Body $data
+}
+
+$init = [scriptblock]::create(@"
+    function Get-WingetSoftware {${function:Get-WingetSoftware}}
+    function Get-WindowsUpdate {${function:Get-WindowsUpdate}}
+    function Get-DockerContainers {${function:Get-DockerContainers}}
+"@)
+
+$jobs = @()
+$jobs += Start-Job -ScriptBlock { Get-WindowsUpdate } -Name 'os_updates' -InitializationScript $init
+$jobs += Start-Job -ScriptBlock { Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source } -Name 'packages_updates' -InitializationScript $init
+$jobs += Start-Job -ScriptBlock { Get-DockerContainers | Select-Object -Property Names, Status } -Name 'docker_containers' -InitializationScript $init
+$jobs | Wait-Job >> $null
+
 $data = @{}
 $data['machine'] = Get-MachineInfo
-$data['packages_updates'] = Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source
-$data['os_updates'] = Get-WindowsUpdate
-$data['docker_containers'] = Get-DockerContainers | Select-Object -Property Names, Status
+$jobs | ForEach-Object { $data[$_.Name] = Receive-Job $_ }
+# $data | ConvertTo-Json -Depth 3
 
-$data | ConvertTo-Json -Depth 3
+#Show-Notification -ToastTitle "Laravell - MDM" -ToastText "PLS Restart your computer"
+#New-JobRegistration
+Invoke-ApiRequest -data $data
