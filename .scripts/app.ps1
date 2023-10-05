@@ -169,7 +169,7 @@ function Get-DockerContainers {
 
 $data = @{}
 $data['machine'] = Get-MachineInfo
-$data['packages_updates'] = Get-WingetSoftware -Updatable
+$data['packages_updates'] = Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source
 $data['os_updates'] = Get-WindowsUpdate
 $data['docker_containers'] = Get-DockerContainers | Select-Object -Property Names, Status
 
