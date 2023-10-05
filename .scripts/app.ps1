@@ -3,9 +3,17 @@ function Get-MachineInfo {
     [PSCustomObject]@{
         Hostname        = $DnsInfo.HostName
         User            = $env:USERNAME
-        IPAddresses     = $DnsInfo.AddressList.IPAddressToString
         Battery         = (Get-WmiObject  win32_battery -Property EstimatedChargeRemaining).EstimatedChargeRemaining
         RestartRequired = Test-PendingReboot
+        IPAddresses     = $DnsInfo.AddressList.IPAddressToString
+        Disks           = Get-Volume | Where-Object -Property DriveLetter -Value '' -NotLike | ForEach-Object {
+            [PSCustomObject]@{
+                "DriveLetter"   = $_.DriveLetter
+                "FriendlyName"  = $_.FileSystemLabel
+                "SizeRemaining" = $_.SizeRemaining
+                "Size"          = $_.Size
+            }
+        }
     }
 }
 
@@ -104,7 +112,7 @@ function Test-PendingReboot {
     try {
         $util = [wmiclass]"\\.\root\ccm\clientsdk:CCM_ClientUtilities"
         $status = $util.DetermineIfRebootPending()
-        if (($status -ne $null) -and $status.RebootPending) {
+        if (( $null -ne $status) -and $status.RebootPending) {
             return $true
         }
     }
@@ -113,9 +121,56 @@ function Test-PendingReboot {
     return $false
 }
 
+function Get-DockerContainers {
+    begin {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $upgradeResult = $(docker ps --no-trunc | Out-String)
+        $lines = $upgradeResult.Split([Environment]::NewLine)
+
+        $fl = 0
+        while ( -not $lines[$fl].StartsWith("CONTAINER ID")) {
+            $fl++
+        }
+
+        $ContainerIdStart = $lines[$fl].IndexOf("CONTAINER ID")
+        $ImageStart = $lines[$fl].IndexOf("IMAGE")
+        $CommandStart = $lines[$fl].IndexOf("COMMAND")
+        $CreatedStart = $lines[$fl].IndexOf("CREATED")
+        $StatusStart = $lines[$fl].IndexOf("STATUS")
+        $PortsStart = $lines[$fl].IndexOf("PORTS")
+        $NamesStart = $lines[$fl].IndexOf("NAMES")
+    }
+
+    process {
+        For ($i = $fl + 1; $i -le $lines.Length; $i++) {
+            $line = $lines[$i]
+            if (-not [string]::IsNullOrEmpty($line)) {
+                $ContainerId = $line.Substring(0, $ImageStart).TrimEnd();
+                $Image = $line.Substring($ImageStart, ($CommandStart - $ImageStart)).TrimEnd();
+                $Command = $line.Substring($CommandStart, ($CreatedStart - $CommandStart)).TrimEnd();
+                $Created = $line.Substring($CreatedStart, ($StatusStart - $CreatedStart)).TrimEnd();
+                $Status = $line.Substring($StatusStart, ($PortsStart - $StatusStart)).TrimEnd();
+                $Ports = $line.Substring($PortsStart, ($NamesStart - $PortsStart)).TrimEnd();
+                $Names = $line.Substring($NamesStart, ($line.Length - $NamesStart)).TrimEnd();
+
+                [PSCustomObject]@{
+                    ContainerId = $ContainerId
+                    Image       = $Image
+                    Command     = $Command
+                    Created     = $Created
+                    Status      = $Status
+                    Ports       = ($Ports -split ",")
+                    Names       = $Names
+                }
+            }
+        }
+    }
+}
+
 $data = @{}
 $data['machine'] = Get-MachineInfo
 $data['packages_updates'] = Get-WingetSoftware -Updatable
 $data['os_updates'] = Get-WindowsUpdate
+$data['docker_containers'] = Get-DockerContainers | Select-Object -Property Names, Status
 
 $data | ConvertTo-Json -Depth 3
