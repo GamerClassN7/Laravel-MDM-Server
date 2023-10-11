@@ -14,7 +14,7 @@ class AddCommandsColumnToDevicesTable extends Migration
     public function up()
     {
         Schema::table('devices', function (Blueprint $table) {
-            $table->json('commands')->default("[]");
+            $table->json('commands');
         });
     }
 
