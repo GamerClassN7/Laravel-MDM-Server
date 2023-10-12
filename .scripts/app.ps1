@@ -1,11 +1,10 @@
 function Get-MachineInfo {
     $DnsInfo = [System.Net.Dns]::GetHostByName($env:computerName)
-    [PSCustomObject]@{
+    [PSCustomObject] @{
         Hostname        = $DnsInfo.HostName
         User            = $env:USERNAME
         Battery         = (Get-WmiObject  win32_battery -Property EstimatedChargeRemaining).EstimatedChargeRemaining
         RestartRequired = Test-PendingReboot
-        IPAddresses     = $DnsInfo.AddressList.IPAddressToString
         Drives          = Get-Volume | Where-Object -Property DriveLetter -Value '' -NotLike | ForEach-Object {
             [PSCustomObject]@{
                 "DriveLetter"   = $_.DriveLetter
@@ -15,13 +14,15 @@ function Get-MachineInfo {
                 "DriveType"     = $_.DriveType
             }
         }
-        # Networks        = Get-NetIPAddress | ForEach-Object {
-        #     [PSCustomObject]@{
-        #         "InterfaceAlias" = $_.InterfaceAlias
-        #         "IPAddress"      = $_.IPAddress
-        #         "Type"           = $_.Type
-        #     }
-        # }
+        Networks        = @(Get-NetAdapter | Where-Object -Property Status -Value 'Disabled' -NotLike | Where-Object -Property Status -Value 'Disconnected' -NotLike | Where-Object -Property ConnectorPresent -Value 'False' -NotLike | ForEach-Object {
+            $address = Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex
+            [PSCustomObject]@{
+                "Name"                 = $_.Name
+                "InterfaceDescription" = $_.InterfaceDescription
+                "Status"               = $_.Status
+                "IPAddresses"          = $address.IPAddress
+            }
+        })
     }
 }
 
@@ -225,7 +226,7 @@ function Invoke-ApiRequest {
     )
 
     $url = ''
-    $response = Invoke-RestMethod -Method Post -Uri $url -Body $($data | ConvertTo-Json -Depth 4) -Headers @{ "Authorization" = "Bearer $Token" }
+    $response = Invoke-RestMethod -Method Post -Uri $url -Body $($data | ConvertTo-Json -Depth 6) -Headers @{ "Authorization" = "Bearer $Token" }
     return $response
 }
 
@@ -246,7 +247,7 @@ $jobs | Wait-Job >> $null
 $data = @{}
 $data['machine'] = Get-MachineInfo
 $jobs | ForEach-Object { $data[$_.Name] = Receive-Job $_ | Select-Object -ExcludeProperty "PSComputerName", "RunspaceId", "PSShowComputerName" }
-$data | ConvertTo-Json -Depth 3 > E:\_GIT\LAR_MDM\.scripts\payload.log
+$data | ConvertTo-Json -Depth 6 > E:\_GIT\LAR_MDM\.scripts\payload.log
 
 #New-JobRegistration
 $AuthFilePath = "$PSScriptRoot\Token.xml"
@@ -256,4 +257,4 @@ if (-not (Test-Path -Path $AuthFilePath)) {
     } | Export-Clixml -Path $AuthFilePath
 }
 $Auth = Import-Clixml -Path $AuthFilePath
-$(Invoke-ApiRequest -data $data -Token ($Auth.token | ConvertFrom-SecureString -AsPlainText) | ConvertTo-Json -Depth 4) > E:\_GIT\LAR_MDM\.scripts\request.log
+$(Invoke-ApiRequest -data $data -Token ($Auth.token | ConvertFrom-SecureString -AsPlainText) | ConvertTo-Json -Depth 6) > E:\_GIT\LAR_MDM\.scripts\request.log

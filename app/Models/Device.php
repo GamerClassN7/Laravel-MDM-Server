@@ -118,8 +118,8 @@ class Device extends Model
 
     public function getNetworksAttribute()
     {
-        if (isset($this->data->machine->IPAddresses)) {
-            return $this->data->machine->IPAddresses;
+        if (isset($this->data->machine->Networks)) {
+            return (array) $this->data->machine->Networks;
         }
         return [];
     }

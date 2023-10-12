@@ -61,6 +61,7 @@
     @endif
     @livewire('device-commands', ['selectedDeviceId' => $selectedDevice->id], key('device-commands' . $selectedDevice->id))
 
+
     <ul class="nav nav-tabs  mt-2" id="myTab" role="tablist">
         @if (!empty($selectedDevice->drives))
             <li class="nav-item" role="presentation">
@@ -72,7 +73,7 @@
                 <button aria-controls="updates-tab-plane" aria-selected="false" class="nav-link" data-bs-target="#updates-tab-plane" data-bs-toggle="tab" id="profile-tab" role="tab" type="button">Updates</button>
             </li>
         @endif
-        @if ($selectedDevice->networks != [] && count($selectedDevice->networks) > 0)
+        @if (count($selectedDevice->networks) > 0)
             <li class="nav-item" role="presentation">
                 <button aria-controls="networks-tab-plane" aria-selected="false" class="nav-link" data-bs-target="#networks-tab-plane" data-bs-toggle="tab" id="contact-tab" role="tab" type="button">Networks</button>
             </li>
@@ -124,12 +125,18 @@
                 @endif
             </div>
         @endif
-        @if ($selectedDevice->networks != [] && count($selectedDevice->networks) > 0)
+        @if (count($selectedDevice->networks) > 0)
             <div aria-labelledby="contact-tab" class="tab-pane fade" id="networks-tab-plane" role="tabpanel" tabindex="0">
                 <h4>{{ __('Networks') }}</h4>
                 <ul>
                     @foreach ((array) $selectedDevice->networks as $network)
-                        <li>{{ $network }}</li>
+                        <li>{{ $network->Name }} ({{$network->Status}})
+                            <ul>
+                                @foreach ($network->IPAddresses as $IPAddres)
+                                    <li>{{ $IPAddres }}</li>
+                                @endforeach
+                            </ul>
+                        </li>
                     @endforeach
                 </ul>
             </div>
