@@ -4,10 +4,10 @@
             @if ($editMode)
                 <div class="row g-3 align-items-center">
                     <div class="col-auto">
-                        <input type="text" id="friendlyName" class="form-control" wire:model="friendlyName">
+                        <input class="form-control" id="friendlyName" type="text" wire:model="friendlyName">
                     </div>
                     <div class="col-auto">
-                        <button type="submit" wire:click="saveFriendlyName" class="btn btn-primary">{{ __('save') }}</button>
+                        <button class="btn btn-primary" type="submit" wire:click="saveFriendlyName">{{ __('save') }}</button>
                     </div>
                 </div>
             @else
@@ -23,22 +23,21 @@
         @if (!$selectedDevice->offline)
             <h3 class="offcanvas-title" id="offcanvasRightLabel">
                 @php
-                    $power = $this->data->machine->Battery ?? [];
+                    $power = $selectedDevice->data->machine->Battery ?? [];
                 @endphp
-
                 {{-- <i class="bi bi-wifi-off"></i>
                 <i class="bi bi-bluetooth"></i> --}}
                 @if ($power != [])
                     {{-- @if ($power == [])
                         <i class="bi bi-battery-charging"></i>
                     @else --}}
-                        @if ($power < 20)
-                            <i class="bi bi-battery text-danger"></i>
-                        @elseif($power < 85)
-                            <i class="bi bi-battery-half"></i>
-                        @else
-                            <i class="bi bi-battery-full"></i>
-                        @endif
+                    @if ($power < 20)
+                        <i class="bi bi-battery text-danger"></i>
+                    @elseif($power < 85)
+                        <i class="bi bi-battery-half"></i>
+                    @else
+                        <i class="bi bi-battery-full"></i>
+                    @endif
                     {{-- @endif --}}
                     {{ $power }} %
                 @else
@@ -57,9 +56,9 @@
         @endif
     @endif
 
-@if (!empty($selectedDevice->data))
-    @livewire('device-alerts', ['selectedDeviceId' => $selectedDevice->id], key('device-alerts' . $selectedDevice->id))
-   @endif
+    @if (!empty($selectedDevice->data))
+        @livewire('device-alerts', ['selectedDeviceId' => $selectedDevice->id], key('device-alerts' . $selectedDevice->id))
+    @endif
     @livewire('device-commands', ['selectedDeviceId' => $selectedDevice->id], key('device-commands' . $selectedDevice->id))
 
     @if (!empty($selectedDevice->drives))
@@ -68,15 +67,15 @@
             @foreach ($selectedDevice->drives as $drive)
                 <div class="me-3 d-flex">
                     @if ($drive['DriveType'] == 5)
-                        <i style="font-size: 3rem;" class="bi bi-disc"></i>
+                        <i class="bi bi-disc" style="font-size: 3rem;"></i>
                     @else
-                        <i style="font-size: 3rem;" class="bi bi-device-hdd"></i>
+                        <i class="bi bi-device-hdd" style="font-size: 3rem;"></i>
                     @endif
                     <div style="width:180px">
                         {{ $drive['FriendlyName'] ?? '' }} ({{ $drive['DriveLetter'] }})
                         @if (isset($drive['Size']) && isset($drive['SizeRemaining']))
                             <div class="progress">
-                                <div class="progress-bar {{ $drive['PercentUsed'] > 90 ? 'bg-danger' : '' }}" role="progressbar" style="width: {{ $drive['PercentUsed'] ?? 0 }}%" aria-valuenow="{{ $drive['PercentUsed'] }}" aria-valuemin="0" aria-valuemax="100"></div>
+                                <div aria-valuemax="100" aria-valuemin="0" aria-valuenow="{{ $drive['PercentUsed'] }}" class="progress-bar {{ $drive['PercentUsed'] > 90 ? 'bg-danger' : '' }}" role="progressbar" style="width: {{ $drive['PercentUsed'] ?? 0 }}%"></div>
                             </div>
                             {{ round($drive['SizeRemaining'] / 1024 / 1024 / 1024) }} GB free of {{ round($drive['Size'] / 1024 / 1024 / 1024) }} GB
                         @endif

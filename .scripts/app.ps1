@@ -15,6 +15,13 @@ function Get-MachineInfo {
                 "DriveType"     = $_.DriveType
             }
         }
+        Networks        = Get-NetIPAddress | Where-Object -Property DriveLetter -Value '' -NotLike | ForEach-Object {
+            [PSCustomObject]@{
+                "InterfaceAlias" = $_.InterfaceAlias
+                "IPAddress"      = $_.IPAddress
+                "Type"           = $_.Type
+            }
+        }
     }
 }
 
