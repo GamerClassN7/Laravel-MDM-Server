@@ -6,12 +6,13 @@ function Get-MachineInfo {
         Battery         = (Get-WmiObject  win32_battery -Property EstimatedChargeRemaining).EstimatedChargeRemaining
         RestartRequired = Test-PendingReboot
         IPAddresses     = $DnsInfo.AddressList.IPAddressToString
-        Disks           = Get-Volume | Where-Object -Property DriveLetter -Value '' -NotLike | ForEach-Object {
+        Drives          = Get-Volume | Where-Object -Property DriveLetter -Value '' -NotLike | ForEach-Object {
             [PSCustomObject]@{
                 "DriveLetter"   = $_.DriveLetter
                 "FriendlyName"  = $_.FileSystemLabel
                 "SizeRemaining" = $_.SizeRemaining
                 "Size"          = $_.Size
+                "DriveType"     = $_.DriveType
             }
         }
     }
@@ -53,17 +54,17 @@ function Get-WingetSoftware {
                 continue
             }
             if (-not [string]::IsNullOrEmpty($line) -and -not $line.StartsWith('-')) {
-                $name = $line.Substring(0, $idStart).TrimEnd();
-                $id = $line.Substring($idStart, ($versionStart - $idStart)).TrimEnd();
+                $name = $line.Substring(0, $idStart).TrimEnd()
+                $id = $line.Substring($idStart, ($versionStart - $idStart)).TrimEnd()
 
                 if ($Updatable) {
-                    $version = $line.Substring($versionStart, ($sourceStart - $availableStart)).TrimEnd();
-                    $available = $line.Substring($availableStart, ($sourceStart - $availableStart)).TrimEnd();
+                    $version = $line.Substring($versionStart, ($availableStart - $versionStart)).TrimEnd()
+                    $available = $line.Substring($availableStart, ($sourceStart - $availableStart)).TrimEnd()
                 }
                 else {
-                    $version = $line.Substring($versionStart, ($sourceStart - $versionStart)).TrimEnd();
+                    $version = $line.Substring($versionStart, ($sourceStart - $versionStart)).TrimEnd()
                 }
-                $source = $line.Substring($sourceStart, ($line.Length - $sourceStart)).TrimEnd();
+                $source = $line.Substring($sourceStart, ($line.Length - $sourceStart)).TrimEnd()
 
                 $tempObjLine = [PSCustomObject]@{
                     Name    = $name
@@ -87,12 +88,19 @@ function Get-WindowsUpdate {
         [switch]
         $Install
     )
+
     $u = New-Object -ComObject Microsoft.Update.Session
     $u.ClientApplicationID = 'MSDN Sample Script'
     $s = $u.CreateUpdateSearcher()
     #$r = $s.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
     $r = $s.Search('IsInstalled=0')
-    $r.updates | Select-Object -Property Title, IsDownloaded, RebootRequired
+    $r.updates | Select-Object -Property Title, IsDownloaded, RebootRequired | foreach-object {
+        return [PSCustomObject]@{
+            Title          = $_.Title
+            IsDownloaded   = $_.IsDownloaded
+            RebootRequired = $_.RebootRequired
+        }
+    }
 
     if ($Install) {
         $downloader = $updateSession.CreateUpdateDownloader()
@@ -106,9 +114,15 @@ function Get-WindowsUpdate {
 }
 
 function Test-PendingReboot {
-    if (Get-ChildItem "HKLM:\Software\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending" -EA Ignore) { return $true }
-    if (Get-Item "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired" -EA Ignore) { return $true }
-    if (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -Name PendingFileRenameOperations -EA Ignore) { return $true }
+    if (Get-ChildItem "HKLM:\Software\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending" -EA Ignore) {
+        return $true
+    }
+    if (Get-Item "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired" -EA Ignore) {
+        return $true
+    }
+    if (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -Name PendingFileRenameOperations -EA Ignore) {
+        return $true
+    }
     try {
         $util = [wmiclass]"\\.\root\ccm\clientsdk:CCM_ClientUtilities"
         $status = $util.DetermineIfRebootPending()
@@ -116,7 +130,8 @@ function Test-PendingReboot {
             return $true
         }
     }
-    catch {}
+    catch {
+    }
 
     return $false
 }
@@ -145,13 +160,13 @@ function Get-DockerContainers {
         For ($i = $fl + 1; $i -le $lines.Length; $i++) {
             $line = $lines[$i]
             if (-not [string]::IsNullOrEmpty($line)) {
-                $ContainerId = $line.Substring(0, $ImageStart).TrimEnd();
-                $Image = $line.Substring($ImageStart, ($CommandStart - $ImageStart)).TrimEnd();
-                $Command = $line.Substring($CommandStart, ($CreatedStart - $CommandStart)).TrimEnd();
-                $Created = $line.Substring($CreatedStart, ($StatusStart - $CreatedStart)).TrimEnd();
-                $Status = $line.Substring($StatusStart, ($PortsStart - $StatusStart)).TrimEnd();
-                $Ports = $line.Substring($PortsStart, ($NamesStart - $PortsStart)).TrimEnd();
-                $Names = $line.Substring($NamesStart, ($line.Length - $NamesStart)).TrimEnd();
+                $ContainerId = $line.Substring(0, $ImageStart).TrimEnd()
+                $Image = $line.Substring($ImageStart, ($CommandStart - $ImageStart)).TrimEnd()
+                $Command = $line.Substring($CommandStart, ($CreatedStart - $CommandStart)).TrimEnd()
+                $Created = $line.Substring($CreatedStart, ($StatusStart - $CreatedStart)).TrimEnd()
+                $Status = $line.Substring($StatusStart, ($PortsStart - $StatusStart)).TrimEnd()
+                $Ports = $line.Substring($PortsStart, ($NamesStart - $PortsStart)).TrimEnd()
+                $Names = $line.Substring($NamesStart, ($line.Length - $NamesStart)).TrimEnd()
 
                 [PSCustomObject]@{
                     ContainerId = $ContainerId
@@ -167,25 +182,6 @@ function Get-DockerContainers {
     }
 }
 
-function Show-Notification {
-    Param (
-        [string]
-        $ToastTitle,
-        [string]
-        $ToastText
-    )
-
-    Add-Type -AssemblyName System.Windows.Forms
-    $global:balmsg = New-Object System.Windows.Forms.NotifyIcon
-    $path = (Get-Process -id $pid).Path
-    $balmsg.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($path)
-    $balmsg.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Warning
-    $balmsg.BalloonTipText = $ToastText
-    $balmsg.BalloonTipTitle = $ToastTitle
-    $balmsg.Visible = $true
-    $balmsg.ShowBalloonTip([DateTimeOffset]::Now.AddMinutes(1).Millisecond)
-}
-
 function New-JobRegistration {
     $Trigger1 = New-ScheduledTaskTrigger -Daily -DaysInterval 1 -At 0am
     $Trigger1.Repetition = $(New-ScheduledTaskTrigger -Once -At 0am -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration  (New-TimeSpan -Hours 23 -Minutes 59)).Repetition
@@ -194,15 +190,39 @@ function New-JobRegistration {
 
     #$User = "NT AUTHORITY\SYSTEM"
     $Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument ("-windowstyle hidden -executionpolicy bypass -NoLogo -file {0}/app.ps1" -f $PSScriptRoot)
-    Register-ScheduledTask -AsJob -TaskName "Laravell-MDM-Agent" -Trigger @($Trigger1,$Trigger2,$Trigger3) <#-User $User#> -Action $Action -RunLevel Highest -Force
+    Register-ScheduledTask -AsJob -TaskName "Laravell-MDM-Agent" -Trigger @($Trigger1, $Trigger2, $Trigger3) <#-User $User#> -Action $Action -RunLevel Highest -Force
+}
+
+function Register-MDMDevice {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $EnrolmentCode,
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Url
+    )
+
+    $response = Invoke-RestMethod -Method Post -Uri $url -Body $(@{ 'enrolment_code' = $EnrolmentCode } | ConvertTo-Json)
+    return $response
 }
 
 function Invoke-ApiRequest {
     param (
-        $data
+        [Parameter(Mandatory = $true)]
+        [array]
+        $data,
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Token
     )
-    return Invoke-RestMethod -Method Post -Uri https://loclhost -Body $data
+
+    $url = ''
+    $response = Invoke-RestMethod -Method Post -Uri $url -Body $($data | ConvertTo-Json -Depth 4) -Headers @{ "Authorization" = "Bearer $Token" }
+    return $response
 }
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $init = [scriptblock]::create(@"
     function Get-WingetSoftware {${function:Get-WingetSoftware}}
@@ -218,9 +238,16 @@ $jobs | Wait-Job >> $null
 
 $data = @{}
 $data['machine'] = Get-MachineInfo
-$jobs | ForEach-Object { $data[$_.Name] = Receive-Job $_ }
-# $data | ConvertTo-Json -Depth 3
+$jobs | ForEach-Object { $data[$_.Name] = Receive-Job $_ | Select-Object -ExcludeProperty "PSComputerName", "RunspaceId", "PSShowComputerName" }
+$data | ConvertTo-Json -Depth 3 >> E:\_GIT\LAR_MDM\.scripts\payload.log
 
-#Show-Notification -ToastTitle "Laravell - MDM" -ToastText "PLS Restart your computer"
 #New-JobRegistration
-Invoke-ApiRequest -data $data
+$AuthFilePath =  "$PSScriptRoot\Token.xml"
+if (-not (Test-Path -Path $AuthFilePath)){
+    @{
+        "token" = ((Register-MDMDevice).token | ConvertTo-SecureString -AsPlainText -Force)
+    } | Export-Clixml -Path $AuthFilePath
+}
+$Auth = Import-Clixml -Path $AuthFilePath
+$(Invoke-ApiRequest -data $data -Token ($Auth.token | ConvertFrom-SecureString -AsPlainText) | ConvertTo-Json -Depth 4) >> E:\_GIT\LAR_MDM\.scripts\request.log
+
