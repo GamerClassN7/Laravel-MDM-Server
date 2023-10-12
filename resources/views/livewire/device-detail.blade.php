@@ -61,52 +61,78 @@
     @endif
     @livewire('device-commands', ['selectedDeviceId' => $selectedDevice->id], key('device-commands' . $selectedDevice->id))
 
-    @if (!empty($selectedDevice->drives))
-        <h4>{{ __('Drives') }}</h4>
-        <div class="d-flex flex-wrap justify-content-between">
-            @foreach ($selectedDevice->drives as $drive)
-                <div class="me-3 d-flex">
-                    @if ($drive['DriveType'] == 5)
-                        <i class="bi bi-disc" style="font-size: 3rem;"></i>
-                    @else
-                        <i class="bi bi-device-hdd" style="font-size: 3rem;"></i>
-                    @endif
-                    <div style="width:180px">
-                        {{ $drive['FriendlyName'] ?? '' }} ({{ $drive['DriveLetter'] }})
-                        @if (isset($drive['Size']) && isset($drive['SizeRemaining']))
-                            <div class="progress">
-                                <div aria-valuemax="100" aria-valuemin="0" aria-valuenow="{{ $drive['PercentUsed'] }}" class="progress-bar {{ $drive['PercentUsed'] > 90 ? 'bg-danger' : '' }}" role="progressbar" style="width: {{ $drive['PercentUsed'] ?? 0 }}%"></div>
+    <ul class="nav nav-tabs  mt-2" id="myTab" role="tablist">
+        @if (!empty($selectedDevice->drives))
+            <li class="nav-item" role="presentation">
+                <button aria-controls="drives-tab-plane" aria-selected="true" class="nav-link active" data-bs-target="#drives-tab-plane" data-bs-toggle="tab" id="home-tab" role="tab" type="button">Drives</button>
+            </li>
+        @endif
+        @if (($selectedDevice->updates != [] && count($selectedDevice->updates) > 0) || ($selectedDevice->apps_packages_updates != [] && count($selectedDevice->apps_packages_updates) > 0))
+            <li class="nav-item" role="presentation">
+                <button aria-controls="updates-tab-plane" aria-selected="false" class="nav-link" data-bs-target="#updates-tab-plane" data-bs-toggle="tab" id="profile-tab" role="tab" type="button">Updates</button>
+            </li>
+        @endif
+        @if ($selectedDevice->networks != [] && count($selectedDevice->networks) > 0)
+            <li class="nav-item" role="presentation">
+                <button aria-controls="networks-tab-plane" aria-selected="false" class="nav-link" data-bs-target="#networks-tab-plane" data-bs-toggle="tab" id="contact-tab" role="tab" type="button">Networks</button>
+            </li>
+        @endif
+    </ul>
+    <div class="tab-content" id="myTabContent">
+        @if (!empty($selectedDevice->drives))
+            <div aria-labelledby="home-tab" class="tab-pane fade show active" id="drives-tab-plane" role="tabpanel" tabindex="0">
+                <h4>{{ __('Drives') }}</h4>
+                <div class="d-flex flex-wrap justify-content-between">
+                    @foreach ($selectedDevice->drives as $drive)
+                        <div class="me-3 d-flex">
+                            @if ($drive['DriveType'] == 5)
+                                <i class="bi bi-disc" style="font-size: 3rem;"></i>
+                            @else
+                                <i class="bi bi-device-hdd" style="font-size: 3rem;"></i>
+                            @endif
+                            <div style="width:180px">
+                                {{ $drive['FriendlyName'] ?? '' }} ({{ $drive['DriveLetter'] }})
+                                @if (isset($drive['Size']) && isset($drive['SizeRemaining']))
+                                    <div class="progress">
+                                        <div aria-valuemax="100" aria-valuemin="0" aria-valuenow="{{ $drive['PercentUsed'] }}" class="progress-bar {{ $drive['PercentUsed'] > 90 ? 'bg-danger' : '' }}" role="progressbar" style="width: {{ $drive['PercentUsed'] ?? 0 }}%"></div>
+                                    </div>
+                                    {{ round($drive['SizeRemaining'] / 1024 / 1024 / 1024) }} GB free of {{ round($drive['Size'] / 1024 / 1024 / 1024) }} GB
+                                @endif
                             </div>
-                            {{ round($drive['SizeRemaining'] / 1024 / 1024 / 1024) }} GB free of {{ round($drive['Size'] / 1024 / 1024 / 1024) }} GB
-                        @endif
-                    </div>
+                        </div>
+                    @endforeach
                 </div>
-            @endforeach
-        </div>
-    @endif
-
-    @if ($selectedDevice->updates != [] && count($selectedDevice->updates) > 0)
-        <h4>{{ __('Updates.OS') }}</h4>
-        <ul>
-            @foreach ((array) $selectedDevice->updates as $update)
-                <li>{{ $update->Title }}</li>
-            @endforeach
-        </ul>
-    @endif
-    @if ($selectedDevice->apps_packages_updates != [] && count($selectedDevice->apps_packages_updates) > 0)
-        <h4>{{ __('Updates') }}</h4>
-        <ul>
-            @foreach ((array) $selectedDevice->apps_packages_updates as $app_update)
-                <li>{{ $app_update->Id }} ({{ $app_update->Version }})</li>
-            @endforeach
-        </ul>
-    @endif
-    @if ($selectedDevice->networks != [] && count($selectedDevice->networks) > 0)
-        <h4>{{ __('Networks') }}</h4>
-        <ul>
-            @foreach ((array) $selectedDevice->networks as $network)
-                <li>{{ $network }}</li>
-            @endforeach
-        </ul>
-    @endif
+            </div>
+        @endif
+        @if (($selectedDevice->updates != [] && count($selectedDevice->updates) > 0) || ($selectedDevice->apps_packages_updates != [] && count($selectedDevice->apps_packages_updates) > 0))
+            <div aria-labelledby="profile-tab" class="tab-pane fade" id="updates-tab-plane" role="tabpanel" tabindex="0">
+                @if ($selectedDevice->updates != [] && count($selectedDevice->updates) > 0)
+                    <h4>{{ __('Updates.OS') }}</h4>
+                    <ul>
+                        @foreach ((array) $selectedDevice->updates as $update)
+                            <li>{{ $update->Title }}</li>
+                        @endforeach
+                    </ul>
+                @endif
+                @if ($selectedDevice->apps_packages_updates != [] && count($selectedDevice->apps_packages_updates) > 0)
+                    <h4>{{ __('Updates') }}</h4>
+                    <ul>
+                        @foreach ((array) $selectedDevice->apps_packages_updates as $app_update)
+                            <li>{{ $app_update->Id }} ({{ $app_update->Version }})</li>
+                        @endforeach
+                    </ul>
+                @endif
+            </div>
+        @endif
+        @if ($selectedDevice->networks != [] && count($selectedDevice->networks) > 0)
+            <div aria-labelledby="contact-tab" class="tab-pane fade" id="networks-tab-plane" role="tabpanel" tabindex="0">
+                <h4>{{ __('Networks') }}</h4>
+                <ul>
+                    @foreach ((array) $selectedDevice->networks as $network)
+                        <li>{{ $network }}</li>
+                    @endforeach
+                </ul>
+            </div>
+        @endif
+    </div>
 </div>
