@@ -23,7 +23,7 @@
         @if (!$selectedDevice->offline)
             <h3 class="offcanvas-title" id="offcanvasRightLabel">
                 @php
-                    $power = json_decode($selectedDevice->data)->machine->power;
+                    $power = json_decode($selectedDevice->data)->machine->power ?? [];
                 @endphp
 
                 {{-- <i class="bi bi-wifi-off"></i>
@@ -75,12 +75,12 @@
                         <i style="font-size: 3rem;" class="bi bi-device-hdd"></i>
                     @endif
                     <div style="width:180px">
-                        {{ $drive['VolumeLabel'] ?? '' }} ({{ $drive['Name'] }})
-                        @if (isset($drive['TotalSize']) && isset($drive['AvailableFreeSpace']))
+                        {{ $drive['FriendlyName'] ?? '' }} ({{ $drive['DriveLetter'] }})
+                        @if (isset($drive['Size']) && isset($drive['SizeRemaining']))
                             <div class="progress">
                                 <div class="progress-bar {{ $drive['PercentUsed'] > 90 ? 'bg-danger' : '' }}" role="progressbar" style="width: {{ $drive['PercentUsed'] ?? 0 }}%" aria-valuenow="{{ $drive['PercentUsed'] }}" aria-valuemin="0" aria-valuemax="100"></div>
                             </div>
-                            {{ round($drive['AvailableFreeSpace'] / 1024 / 1024 / 1024) }} GB free of {{ round($drive['TotalSize'] / 1024 / 1024 / 1024) }} GB
+                            {{ round($drive['SizeRemaining'] / 1024 / 1024 / 1024) }} GB free of {{ round($drive['Size'] / 1024 / 1024 / 1024) }} GB
                         @endif
                     </div>
                 </div>
@@ -92,7 +92,7 @@
         <h4>{{ __('Updates') }}</h4>
         <ul>
             @foreach ((array) $selectedDevice->updates as $update)
-                <li>{{ $update }}</li>
+                <li>{{ $update->Title }}</li>
             @endforeach
         </ul>
     @endif
@@ -100,7 +100,7 @@
         <h4>{{ __('Updates') }}</h4>
         <ul>
             @foreach ((array) $selectedDevice->apps_packages_updates as $app_update)
-                <li>{{ $app_update }}</li>
+                <li>{{ $app_update->Id }}</li>
             @endforeach
         </ul>
     @endif

@@ -19,8 +19,6 @@ use Illuminate\Support\Facades\Route;
 |
 */
 
-
-
 Route::middleware('auth:api')->post('/device', function (Request $request) {
     /** @var Devices $device */
     $device = auth()->user();
@@ -44,11 +42,11 @@ Route::middleware('auth:api')->post('/device', function (Request $request) {
     //     $ip = $_SERVER['HTTP_X_FORWARDED_FOR'];
     // }
 
-    $device->drives = $data['machine']['drives'];
+    $device->drives = $data['machine']['Drives'];
     //$device->public_ip = $ip;
     //$table->ipAddress('public_ip');
-    $device->name = $data['machine']['hostname'];
-    $device->os = $data['machine']['os'];
+    $device->name = $data['machine']['Hostname'];
+    $device->os = $data['machine']['os'] ?? '';
     $device->data = json_encode($data);
 
     $commands = $device->commands;

@@ -15,12 +15,12 @@ class Device extends Model
         if (null !== json_decode($value, true)) {
             $drives = (array) json_decode($value, true);
             foreach ($drives as $key => $drive) {
-                if ($drive['TotalSize'] <= 0) {
+                if ($drive['Size'] <= 0) {
                     continue;
                 }
 
-                $usedSpace = (int) $drive['TotalSize'] - (int) $drive['AvailableFreeSpace'];
-                $drives[$key]['PercentUsed'] = round($usedSpace / ((int) $drive['TotalSize'] / 100));
+                $usedSpace = (int) $drive['Size'] - (int) $drive['SizeRemaining'];
+                $drives[$key]['PercentUsed'] = round($usedSpace / ((int) $drive['Size'] / 100));
             }
             return $drives;
         }
@@ -61,10 +61,13 @@ class Device extends Model
 
     public function getOfflineAttribute()
     {
-        if (isset(json_decode($this->data)->settings->timeout)) {
-            if (json_decode($this->data)->settings->timeout >= $this->updated_at->diffInSeconds()) {
-                return false;
-            }
+        // if (isset(json_decode($this->data)->settings->timeout)) {
+        //     if (json_decode($this->data)->settings->timeout >= $this->updated_at->diffInSeconds()) {
+        //         return false;
+        //     }
+        // }
+        if (900 >= $this->updated_at->diffInSeconds()) {
+            return false;
         }
 
         return true;
@@ -72,8 +75,8 @@ class Device extends Model
 
     public function getRestartPendingAttribute()
     {
-        if (null !== json_decode($this->data)->machine->restart_pending) {
-            if (filter_var(json_decode($this->data)->machine->restart_pending, FILTER_VALIDATE_BOOLEAN) === true) {
+        if (null !== json_decode($this->data)->machine->RestartRequired) {
+            if (filter_var(json_decode($this->data)->machine->RestartRequired, FILTER_VALIDATE_BOOLEAN) === true) {
                 return true;
             }
         }
@@ -91,16 +94,16 @@ class Device extends Model
 
     public function getAppsPackagesUpdatesAttribute()
     {
-        if (isset(json_decode($this->data)->machine->app_updates)) {
-            return (array) json_decode($this->data)->machine->app_updates;
+        if (isset(json_decode($this->data)->packages_updates)) {
+            return (array) json_decode($this->data)->packages_updates;
         }
         return [];
     }
 
     public function getUpdatesAttribute()
     {
-        if (isset(json_decode($this->data)->machine->updates)) {
-            return (array) json_decode($this->data)->machine->updates;
+        if (isset(json_decode($this->data)->os_updates)) {
+            return (array) json_decode($this->data)->os_updates;
         }
         return [];
     }
