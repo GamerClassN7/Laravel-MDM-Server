@@ -10,21 +10,29 @@ use Illuminate\Database\Eloquent\Model;
 class Device extends Model
 {
     use HasFactory;
+
+    public function getDataAttribute($value)
+    {
+        return (json_decode($value) ?? []);
+    }
+
     public function getDrivesAttribute($value)
     {
-        if (null !== json_decode($value, true)) {
-            $drives = (array) json_decode($value, true);
-            foreach ($drives as $key => $drive) {
-                if ($drive['Size'] <= 0) {
-                    continue;
-                }
-
-                $usedSpace = (int) $drive['Size'] - (int) $drive['SizeRemaining'];
-                $drives[$key]['PercentUsed'] = round($usedSpace / ((int) $drive['Size'] / 100));
-            }
-            return $drives;
+        if ([] === $this->data) {
+            return [];
         }
-        return [];
+
+        $drives =json_decode(json_encode($this->data->machine), true)["Drives"];
+        foreach ( $drives  as $key => $drive) {
+            $drive = (array)$drive;
+            if ($drive['Size'] <= 0) {
+                continue;
+            }
+
+            $usedSpace = (int) $drive['Size'] - (int) $drive['SizeRemaining'];
+            $drives[$key]['PercentUsed'] = round($usedSpace / ((int) $drive['Size'] / 100));
+        }
+        return $drives;
     }
 
     public function setDrivesAttribute($value)
@@ -53,7 +61,7 @@ class Device extends Model
 
     public function getNiceUptimeAttribute()
     {
-        if (isset(json_decode($this->data)->machine->uptime)) {
+        if (isset($this->data->machine->uptime)) {
             return CarbonInterval::seconds(json_decode($this->data)->machine->uptime)->cascade()->forHumans();
         }
         return false;
@@ -75,8 +83,8 @@ class Device extends Model
 
     public function getRestartPendingAttribute()
     {
-        if (null !== json_decode($this->data)->machine->RestartRequired) {
-            if (filter_var(json_decode($this->data)->machine->RestartRequired, FILTER_VALIDATE_BOOLEAN) === true) {
+        if (null !== $this->data->machine->RestartRequired) {
+            if (filter_var($this->data->machine->RestartRequired, FILTER_VALIDATE_BOOLEAN) === true) {
                 return true;
             }
         }
@@ -86,32 +94,32 @@ class Device extends Model
 
     public function getLastLogonUserAttribute()
     {
-        if (isset(json_decode($this->data)->machine->last_logon_user)) {
-            return json_decode($this->data)->machine->last_logon_user;
+        if (isset($this->data->machine->last_logon_user)) {
+            return $this->data->machine->last_logon_user;
         }
         return false;
     }
 
     public function getAppsPackagesUpdatesAttribute()
     {
-        if (isset(json_decode($this->data)->packages_updates)) {
-            return (array) json_decode($this->data)->packages_updates;
+        if (isset($this->data->packages_updates)) {
+            return $this->data->packages_updates;
         }
         return [];
     }
 
     public function getUpdatesAttribute()
     {
-        if (isset(json_decode($this->data)->os_updates)) {
-            return (array) json_decode($this->data)->os_updates;
+        if (isset($this->data->os_updates)) {
+            return $this->data->os_updates;
         }
         return [];
     }
 
     public function getNetworksAttribute()
     {
-        if (isset(json_decode($this->data)->machine->addresses)) {
-            return (array) json_decode($this->data)->machine->addresses;
+        if (isset($this->data->machine->addresses)) {
+            return $this->data->machine->addresses;
         }
         return [];
     }

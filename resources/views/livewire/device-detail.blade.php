@@ -23,7 +23,7 @@
         @if (!$selectedDevice->offline)
             <h3 class="offcanvas-title" id="offcanvasRightLabel">
                 @php
-                    $power = json_decode($selectedDevice->data)->machine->Battery ?? [];
+                    $power = $this->data->machine->Battery ?? [];
                 @endphp
 
                 {{-- <i class="bi bi-wifi-off"></i>
@@ -57,7 +57,9 @@
         @endif
     @endif
 
+@if (!empty($selectedDevice->data))
     @livewire('device-alerts', ['selectedDeviceId' => $selectedDevice->id], key('device-alerts' . $selectedDevice->id))
+   @endif
     @livewire('device-commands', ['selectedDeviceId' => $selectedDevice->id], key('device-commands' . $selectedDevice->id))
 
     @if (!empty($selectedDevice->drives))
