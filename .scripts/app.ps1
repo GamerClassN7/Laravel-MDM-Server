@@ -89,12 +89,11 @@ function Get-WindowsUpdate {
         $Install
     )
 
-    $u = New-Object -ComObject Microsoft.Update.Session
-    $u.ClientApplicationID = 'MSDN Sample Script'
-    $s = $u.CreateUpdateSearcher()
-    #$r = $s.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
-    $r = $s.Search('IsInstalled=0')
-    $r.updates | Select-Object -Property Title, IsDownloaded, RebootRequired | foreach-object {
+    $UpdateSession = New-Object -ComObject Microsoft.Update.Session
+    $UpdateSearcher = $UpdateSession.CreateupdateSearcher()
+    $Updates = $UpdateSearcher.Search("IsInstalled=0").Updates
+    #$s.Search("IsInstalled=0 and Type='Software' and IsHidden=0 and IsHidden=0 and IsInstalled=0")
+    $Updates | Select-Object -Property Title, IsDownloaded, RebootRequired | foreach-object {
         return [PSCustomObject]@{
             Title          = $_.Title
             IsDownloaded   = $_.IsDownloaded
@@ -103,13 +102,14 @@ function Get-WindowsUpdate {
     }
 
     if ($Install) {
-        $downloader = $updateSession.CreateUpdateDownloader()
-        $downloader.Updates = $updates
-        $null = $downloader.Download()
+        $Session = New-Object -ComObject Microsoft.Update.Session
+        $Downloader = $Session.CreateUpdateDownloader()
+        $Downloader.Updates = @($Updates)
+        $Downloader.Download()
 
-        $installer = $updateSession.CreateUpdateInstaller()
-        $installer.Updates = $updates
-        $null = $installer.Install()
+        $Installer = New-Object -ComObject Microsoft.Update.Installer
+        $Installer.Updates = $Updates
+        $Result = $Installer.Install()
     }
 }
 
@@ -239,15 +239,14 @@ $jobs | Wait-Job >> $null
 $data = @{}
 $data['machine'] = Get-MachineInfo
 $jobs | ForEach-Object { $data[$_.Name] = Receive-Job $_ | Select-Object -ExcludeProperty "PSComputerName", "RunspaceId", "PSShowComputerName" }
-$data | ConvertTo-Json -Depth 3 >> E:\_GIT\LAR_MDM\.scripts\payload.log
+$data | ConvertTo-Json -Depth 3 > E:\_GIT\LAR_MDM\.scripts\payload.log
 
 #New-JobRegistration
-$AuthFilePath =  "$PSScriptRoot\Token.xml"
-if (-not (Test-Path -Path $AuthFilePath)){
+$AuthFilePath = "$PSScriptRoot\Token.xml"
+if (-not (Test-Path -Path $AuthFilePath)) {
     @{
         "token" = ((Register-MDMDevice).token | ConvertTo-SecureString -AsPlainText -Force)
     } | Export-Clixml -Path $AuthFilePath
 }
 $Auth = Import-Clixml -Path $AuthFilePath
-$(Invoke-ApiRequest -data $data -Token ($Auth.token | ConvertFrom-SecureString -AsPlainText) | ConvertTo-Json -Depth 4) >> E:\_GIT\LAR_MDM\.scripts\request.log
-
+$(Invoke-ApiRequest -data $data -Token ($Auth.token | ConvertFrom-SecureString -AsPlainText) | ConvertTo-Json -Depth 4) > E:\_GIT\LAR_MDM\.scripts\request.log

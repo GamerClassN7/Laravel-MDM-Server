@@ -23,28 +23,24 @@
         @if (!$selectedDevice->offline)
             <h3 class="offcanvas-title" id="offcanvasRightLabel">
                 @php
-                    $power = json_decode($selectedDevice->data)->machine->power ?? [];
+                    $power = json_decode($selectedDevice->data)->machine->Battery ?? [];
                 @endphp
 
                 {{-- <i class="bi bi-wifi-off"></i>
                 <i class="bi bi-bluetooth"></i> --}}
-
                 @if ($power != [])
-                    @php
-                        $charging_status = $power->charging_status ?? $power->charging_Status;
-                    @endphp
-                    @if (isset($charging_status) || $charging_status == 'AC')
+                    {{-- @if ($power == [])
                         <i class="bi bi-battery-charging"></i>
-                    @else
-                        @if ($power->battery < 20)
+                    @else --}}
+                        @if ($power < 20)
                             <i class="bi bi-battery text-danger"></i>
-                        @elseif($power->battery < 60)
+                        @elseif($power < 85)
                             <i class="bi bi-battery-half"></i>
                         @else
                             <i class="bi bi-battery-full"></i>
                         @endif
-                    @endif
-                    {{ $power->battery }} %
+                    {{-- @endif --}}
+                    {{ $power }} %
                 @else
                     <i class="bi bi-plug"></i>
                 @endif
@@ -89,7 +85,7 @@
     @endif
 
     @if ($selectedDevice->updates != [] && count($selectedDevice->updates) > 0)
-        <h4>{{ __('Updates') }}</h4>
+        <h4>{{ __('Updates.OS') }}</h4>
         <ul>
             @foreach ((array) $selectedDevice->updates as $update)
                 <li>{{ $update->Title }}</li>
@@ -100,7 +96,7 @@
         <h4>{{ __('Updates') }}</h4>
         <ul>
             @foreach ((array) $selectedDevice->apps_packages_updates as $app_update)
-                <li>{{ $app_update->Id }}</li>
+                <li>{{ $app_update->Id }} ({{ $app_update->Version }})</li>
             @endforeach
         </ul>
     @endif
