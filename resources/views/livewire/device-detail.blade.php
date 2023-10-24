@@ -93,7 +93,7 @@
                             @endif
                             <div style="width:180px">
                                 {{ $drive['FriendlyName'] ?? '' }} ({{ $drive['DriveLetter'] }})
-                                @if (isset($drive['Size']) && isset($drive['SizeRemaining']))
+                                @if (isset($drive['Size']) && isset($drive['PercentUsed']))
                                     <div class="progress">
                                         <div aria-valuemax="100" aria-valuemin="0" aria-valuenow="{{ $drive['PercentUsed'] }}" class="progress-bar {{ $drive['PercentUsed'] > 90 ? 'bg-danger' : '' }}" role="progressbar" style="width: {{ $drive['PercentUsed'] ?? 0 }}%"></div>
                                     </div>
