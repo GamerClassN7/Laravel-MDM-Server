@@ -22,7 +22,7 @@ class Device extends Model
             return [];
         }
 
-        $drives =json_decode(json_encode($this->data->machine), true)["Drives"];
+        $drives = json_decode(json_encode($this->data->machine), true)["Drives"];
         foreach ( $drives  as $key => $drive) {
             $drive = (array)$drive;
             if ($drive['Size'] <= 0) {
@@ -32,6 +32,7 @@ class Device extends Model
             $usedSpace = (int) $drive['Size'] - (int) $drive['SizeRemaining'];
             $drives[$key]['PercentUsed'] = round($usedSpace / ((int) $drive['Size'] / 100));
         }
+      
         return $drives;
     }
 
