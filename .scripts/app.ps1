@@ -239,15 +239,15 @@ $init = [scriptblock]::create(@"
 "@)
 
 $jobs = @()
-$jobs += Start-Job -ScriptBlock { Get-WindowsUpdate } -Name 'os_updates' -InitializationScript $init
+$jobs +=  (Start-Job -ScriptBlock { [array] $(Get-WindowsUpdate )} -Name 'os_updates' -InitializationScript $init)
 $jobs += Start-Job -ScriptBlock { Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source } -Name 'packages_updates' -InitializationScript $init
-$jobs += Start-Job -ScriptBlock { Get-DockerContainers | Select-Object -Property Names, Status } -Name 'docker_containers' -InitializationScript $init
+#$jobs += Start-Job -ScriptBlock { Get-DockerContainers | Select-Object -Property Names, Status } -Name 'docker_containers' -InitializationScript $init
 $jobs | Wait-Job >> $null
 
 $data = @{}
 $data['machine'] = Get-MachineInfo
 $jobs | ForEach-Object { $data[$_.Name] = Receive-Job $_ | Select-Object -ExcludeProperty "PSComputerName", "RunspaceId", "PSShowComputerName" }
-$data | ConvertTo-Json -Depth 6 > E:\_GIT\LAR_MDM\.scripts\payload.log
+$data | ConvertTo-Json -Depth 6 >.\payload.log
 
 #New-JobRegistration
 $AuthFilePath = "$PSScriptRoot\Token.xml"
@@ -257,4 +257,5 @@ if (-not (Test-Path -Path $AuthFilePath)) {
     } | Export-Clixml -Path $AuthFilePath
 }
 $Auth = Import-Clixml -Path $AuthFilePath
-$(Invoke-ApiRequest -data $data -Token ($Auth.token | ConvertFrom-SecureString -AsPlainText) | ConvertTo-Json -Depth 6) > E:\_GIT\LAR_MDM\.scripts\request.log
+$(Invoke-ApiRequest -data $data -Token ([System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Auth.token))) | ConvertTo-Json -Depth 6) >.\request.log
+
