@@ -211,7 +211,7 @@ function Register-MDMDevice {
         $Url
     )
 
-    $response = Invoke-RestMethod -Method Post -Uri $url -Body $(@{ 'enrolment_code' = $EnrolmentCode } | ConvertTo-Json)
+    $response = Invoke-RestMethod -Method Post -Uri $url -Body $(@{ 'enrolment_code' = $EnrolmentCode } | ConvertTo-Json | % { [System.Text.RegularExpressions.Regex]::Unescape($_) })
     return $response
 }
 
@@ -225,8 +225,8 @@ function Invoke-ApiRequest {
         $Token
     )
 
-    $url = ''
-    $response = Invoke-RestMethod -Method Post -Uri $url -Body $($data | ConvertTo-Json -Depth 6) -Headers @{ "Authorization" = "Bearer $Token" }
+    $url = 'http://sa-dev.cz/laravel-mdm/public/api/device'
+    $response = Invoke-RestMethod -Method Post -Uri $url -Body $([System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::UTF8.GetBytes(($data | ConvertTo-Json -Depth 6 -Compress).ToString()))) -Headers @{ "Authorization" = "Bearer $Token" ; "ContentType" = "application/json;charset=utf-8"}
     return $response
 }
 
@@ -239,7 +239,7 @@ $init = [scriptblock]::create(@"
 "@)
 
 $jobs = @()
-$jobs +=  (Start-Job -ScriptBlock { [array] $(Get-WindowsUpdate )} -Name 'os_updates' -InitializationScript $init)
+$jobs +=  (Start-Job -ScriptBlock { Get-WindowsUpdate } -Name 'os_updates' -InitializationScript $init)
 $jobs += Start-Job -ScriptBlock { Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source } -Name 'packages_updates' -InitializationScript $init
 #$jobs += Start-Job -ScriptBlock { Get-DockerContainers | Select-Object -Property Names, Status } -Name 'docker_containers' -InitializationScript $init
 $jobs | Wait-Job >> $null
@@ -257,5 +257,5 @@ if (-not (Test-Path -Path $AuthFilePath)) {
     } | Export-Clixml -Path $AuthFilePath
 }
 $Auth = Import-Clixml -Path $AuthFilePath
-$(Invoke-ApiRequest -data $data -Token ([System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Auth.token))) | ConvertTo-Json -Depth 6) >.\request.log
+$(Invoke-ApiRequest -data $data -Token ([System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Auth.token))) | ConvertTo-Json -Depth 6) >.\request.html
 

@@ -23,8 +23,10 @@ Route::middleware('auth:api')->post('/device', function (Request $request) {
     /** @var Devices $device */
     $device = auth()->user();
 
-    $data = $request->json()->all();
-    Log::error($data);
+    Log::error($request->getContent());
+    $data = json_decode($request->getContent(), true);
+
+    Log::error($data['machine']);
 
     if ($device === null) {
         return;
