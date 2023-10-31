@@ -110,16 +110,16 @@
                 @if ($selectedDevice->updates != [] && count($selectedDevice->updates) > 0)
                     <h4>{{ __('Updates.OS') }}</h4>
                     <ul>
-                        @foreach ((array) $selectedDevice->updates as $update)
-                            <li>{{ $update->Title }}</li>
+                        @foreach ($selectedDevice->updates as $update)
+                            <li>{{ $update["Title"] }}</li>
                         @endforeach
                     </ul>
                 @endif
                 @if ($selectedDevice->apps_packages_updates != [] && count($selectedDevice->apps_packages_updates) > 0)
                     <h4>{{ __('Updates') }}</h4>
                     <ul>
-                        @foreach ((array) $selectedDevice->apps_packages_updates as $app_update)
-                            <li>{{ $app_update->Id }} ({{ $app_update->Version }})</li>
+                        @foreach ($selectedDevice->apps_packages_updates as $app_update)
+                            <li>{{ $app_update["Id"] }} {{  $app_update["Version"] }}</li>
                         @endforeach
                     </ul>
                 @endif

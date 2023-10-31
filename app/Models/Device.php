@@ -32,7 +32,7 @@ class Device extends Model
             $usedSpace = (int) $drive['Size'] - (int) $drive['SizeRemaining'];
             $drives[$key]['PercentUsed'] = round($usedSpace / ((int) $drive['Size'] / 100));
         }
-      
+
         return $drives;
     }
 
@@ -104,7 +104,7 @@ class Device extends Model
     public function getAppsPackagesUpdatesAttribute()
     {
         if (isset($this->data->packages_updates)) {
-            return $this->data->packages_updates;
+            return (array) self::stdToArray($this->data->packages_updates);
         }
         return [];
     }
@@ -112,7 +112,7 @@ class Device extends Model
     public function getUpdatesAttribute()
     {
         if (isset($this->data->os_updates)) {
-            return $this->data->os_updates;
+            return (array)  self::stdToArray($this->data->os_updates);
         }
         return [];
     }
@@ -123,5 +123,12 @@ class Device extends Model
             return (array) $this->data->machine->Networks;
         }
         return [];
+    }
+
+    private static function  stdToArray($stdObject){
+        if (is_object($stdObject)){
+            return [json_decode(json_encode($stdObject), true)];
+        }
+        return json_decode(json_encode($stdObject), true);
     }
 }
