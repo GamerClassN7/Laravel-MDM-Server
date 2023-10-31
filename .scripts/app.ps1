@@ -15,14 +15,14 @@ function Get-MachineInfo {
             }
         }
         Networks        = @(Get-NetAdapter | Where-Object -Property Status -Value 'Disabled' -NotLike | Where-Object -Property Status -Value 'Disconnected' -NotLike | Where-Object -Property ConnectorPresent -Value 'False' -NotLike | ForEach-Object {
-            $address = Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex
-            [PSCustomObject]@{
-                "Name"                 = $_.Name
-                "InterfaceDescription" = $_.InterfaceDescription
-                "Status"               = $_.Status
-                "IPAddresses"          = $address.IPAddress
-            }
-        })
+                $address = Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex
+                [PSCustomObject]@{
+                    "Name"                 = $_.Name
+                    "InterfaceDescription" = $_.InterfaceDescription
+                    "Status"               = $_.Status
+                    "IPAddresses"          = $address.IPAddress
+                }
+            })
     }
 }
 
@@ -101,7 +101,7 @@ function Get-WindowsUpdate {
     $UpdateSearcher = $UpdateSession.CreateupdateSearcher()
     $Updates = $UpdateSearcher.Search("IsInstalled=0").Updates
     #$s.Search("IsInstalled=0 and Type='Software' and IsHidden=0 and IsHidden=0 and IsInstalled=0")
-    $Updates | Select-Object -Property Title, IsDownloaded, RebootRequired | foreach-object {
+    return $Updates | Select-Object -Property Title, IsDownloaded, RebootRequired | foreach-object {
         return [PSCustomObject]@{
             Title          = $_.Title
             IsDownloaded   = $_.IsDownloaded
@@ -196,9 +196,9 @@ function New-JobRegistration {
     $Trigger2 = New-ScheduledTaskTrigger -AtLogOn
     $Trigger3 = New-ScheduledTaskTrigger -AtStartup
 
-    #$User = "NT AUTHORITY\SYSTEM"
+    $User = "NT AUTHORITY\SYSTEM"
     $Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument ("-windowstyle hidden -executionpolicy bypass -NoLogo -file {0}/app.ps1" -f $PSScriptRoot)
-    Register-ScheduledTask -AsJob -TaskName "Laravell-MDM-Agent" -Trigger @($Trigger1, $Trigger2, $Trigger3) <#-User $User#> -Action $Action -RunLevel Highest -Force
+    Register-ScheduledTask -TaskName "Laravell-MDM-Agent" -Trigger @($Trigger1, $Trigger2, $Trigger3) -User $User -Action $Action -RunLevel Highest -Force -
 }
 
 function Register-MDMDevice {
@@ -211,7 +211,7 @@ function Register-MDMDevice {
         $Url
     )
 
-    $response = Invoke-RestMethod -Method Post -Uri $url -Body $(@{ 'enrolment_code' = $EnrolmentCode } | ConvertTo-Json | % { [System.Text.RegularExpressions.Regex]::Unescape($_) })
+    $response = Invoke-RestMethod -Method Post -Uri $url -Body $(@{ 'enrolment_code' = $EnrolmentCode })
     return $response
 }
 
@@ -225,37 +225,50 @@ function Invoke-ApiRequest {
         $Token
     )
 
-    $url = 'http://sa-dev.cz/laravel-mdm/public/api/device'
-    $response = Invoke-RestMethod -Method Post -Uri $url -Body $([System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::UTF8.GetBytes(($data | ConvertTo-Json -Depth 6 -Compress).ToString()))) -Headers @{ "Authorization" = "Bearer $Token" ; "ContentType" = "application/json;charset=utf-8"}
+    $body = $([System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::UTF8.GetBytes(($data | ConvertTo-Json -Depth 6)))) -replace "�", "-"
+    $body | Set-Content -Path "$PSScriptRoot\payload.json" -Encoding ascii -Force
+    $body = Get-Content -Path "$PSScriptRoot\payload.json" -Encoding ascii
+    $url = 'https://sa-dev.cz/laravel-mdm/public/index.php/api/device'
+    $response = Invoke-WebRequest -Method Post -Uri $url -Body $body -Headers  @{ "Authorization" = "Bearer $Token" } -ContentType "application/json"
+    #$response = Invoke-RestMethod -Method Post -Uri $url -Body  $body -Headers @{ "Authorization" = "Bearer $Token" ; "ContentType" = ";charset=utf-8"}
     return $response
 }
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-$init = [scriptblock]::create(@"
+    $init = [scriptblock]::create(@"
     function Get-WingetSoftware {${function:Get-WingetSoftware}}
     function Get-WindowsUpdate {${function:Get-WindowsUpdate}}
     function Get-DockerContainers {${function:Get-DockerContainers}}
 "@)
 
-$jobs = @()
-$jobs +=  (Start-Job -ScriptBlock { Get-WindowsUpdate } -Name 'os_updates' -InitializationScript $init)
-$jobs += Start-Job -ScriptBlock { Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source } -Name 'packages_updates' -InitializationScript $init
-#$jobs += Start-Job -ScriptBlock { Get-DockerContainers | Select-Object -Property Names, Status } -Name 'docker_containers' -InitializationScript $init
-$jobs | Wait-Job >> $null
+    $jobs = @()
+    $jobs += (Start-Job -ScriptBlock { Get-WindowsUpdate } -Name 'os_updates' -InitializationScript $init)
+    $jobs += Start-Job -ScriptBlock { Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source } -Name 'packages_updates' -InitializationScript $init
+    #$jobs += Start-Job -ScriptBlock { Get-DockerContainers | Select-Object -Property Names, Status } -Name 'docker_containers' -InitializationScript $init
+    $jobs | Wait-Job >> $null
 
-$data = @{}
-$data['machine'] = Get-MachineInfo
-$jobs | ForEach-Object { $data[$_.Name] = Receive-Job $_ | Select-Object -ExcludeProperty "PSComputerName", "RunspaceId", "PSShowComputerName" }
-$data | ConvertTo-Json -Depth 6 >.\payload.log
+    $data = @{}
+    $data['machine'] = Get-MachineInfo
+    $jobs | ForEach-Object { $data[$_.Name] = Receive-Job $_ | Select-Object -ExcludeProperty "PSComputerName", "RunspaceId", "PSShowComputerName" }
 
-#New-JobRegistration
-$AuthFilePath = "$PSScriptRoot\Token.xml"
-if (-not (Test-Path -Path $AuthFilePath)) {
-    @{
-        "token" = ((Register-MDMDevice).token | ConvertTo-SecureString -AsPlainText -Force)
-    } | Export-Clixml -Path $AuthFilePath
+    #New-JobRegistration
+    $AuthFilePath = "$PSScriptRoot\Token.xml"
+    if (-not (Test-Path -Path $AuthFilePath)) {
+         @{
+             "token" = ((Register-MDMDevice).token | ConvertTo-SecureString -AsPlainText -Force)
+        } | Export-Clixml -Path $AuthFilePath
+    }
+    $Auth = Import-Clixml -Path $AuthFilePath
+    $Token = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Auth.token))
+    ((Invoke-ApiRequest -data $data -Token $Token).Content) > "$PSScriptRoot\request.json"
 }
-$Auth = Import-Clixml -Path $AuthFilePath
-$(Invoke-ApiRequest -data $data -Token ([System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Auth.token))) | ConvertTo-Json -Depth 6) >.\request.html
+catch {
+    $e = $_.Exception
+    #this is wrong
+    $line = $_.Exception.InvocationInfo.ScriptLineNumber
+    $msg = $e.Message
+
+    $_.Exception | Set-Content "$PSScriptRoot\log.log" -Force
+}
 
