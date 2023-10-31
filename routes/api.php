@@ -23,15 +23,16 @@ Route::middleware('auth:api')->post('/device', function (Request $request) {
     /** @var Devices $device */
     $device = auth()->user();
 
-    Log::error($request->getContent());
-    $data = json_decode($request->getContent(), true);
-
-    Log::error($data['machine']);
-
     if ($device === null) {
         return;
     }
 
+    $data = json_decode($request->getContent(), true);
+    Log::info($data);
+
+    if ($data === null) {
+        return;
+    }
 
     // //whether ip is from the remote address
     // $ip = $_SERVER['REMOTE_ADDR'];
@@ -49,6 +50,7 @@ Route::middleware('auth:api')->post('/device', function (Request $request) {
     //$table->ipAddress('public_ip');
     $device->name = $data['machine']['Hostname'];
     $device->os = $data['machine']['os'] ?? '';
+
     $device->data = json_encode($data);
 
     $commands = $device->commands;
