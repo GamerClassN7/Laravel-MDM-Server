@@ -1,21 +1,26 @@
-#!/bin/bash
+#!/bin/sh
+# Starts nginx, PHP-FPM, Reverb and the scheduler under supervisord.
+set -e
 
-if [ ! -f "vendor/autoload.php" ]; then
-    composer install --no-progress --no-interaction
+# PID 1 ignores signals without a handler; stop promptly even during startup.
+trap 'exit 143' TERM INT QUIT
+
+if [ -z "$APP_KEY" ]; then
+    echo "APP_KEY is not set, generate one with: php artisan key:generate --show" >&2
+    exit 1
 fi
 
-if [ ! -f ".env" ]; then
-    echo "Creating .env"
-    cp .env.example .env
-else
-    echo "env exist"
+# Named volumes start empty, recreate the storage skeleton.
+mkdir -p storage/app/public storage/framework/cache/data storage/framework/sessions storage/framework/views storage/logs
+
+if [ $# -gt 0 ]; then
+    exec "$@"
 fi
 
-php artisan migrate
-php artisan key:generate
-php artisan cache:clear
-php artisan config:clear
-php artisan route:clear
+php artisan optimize
 
-php artisan serve --port=$PORT --host=0.0.0.0 --env=.env
-exec docker-php-entrypoint "$@"
+if [ "${RUN_MIGRATIONS:-true}" = "true" ]; then
+    php artisan migrate --force
+fi
+
+exec supervisord -c /etc/supervisord.conf

@@ -1,0 +1,21 @@
+# Only src/laravel and docker/ are needed to build the image
+*
+!docker/
+!src/laravel/
+src/laravel/.env
+src/laravel/.env.*
+!src/laravel/.env.example
+src/laravel/node_modules
+src/laravel/vendor
+src/laravel/public/build
+src/laravel/public/hot
+src/laravel/public/storage
+src/laravel/storage/app/*
+src/laravel/storage/framework/cache/*
+src/laravel/storage/framework/sessions/*
+src/laravel/storage/framework/views/*
+src/laravel/storage/logs/*
+src/laravel/storage/boilerplate_install.json
+src/laravel/database/*.sqlite*
+src/laravel/bootstrap/cache/*.php
+src/laravel/.phpunit.result.cache
