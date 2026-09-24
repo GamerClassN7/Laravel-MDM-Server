@@ -58,7 +58,7 @@ RUN npm run build
 
 FROM php AS runtime
 
-RUN apk add --no-cache nginx php84-fpm \
+RUN apk add --no-cache nginx php84-fpm supervisor \
     && adduser -D -H -u 1000 -s /sbin/nologin app \
     && mkdir -p /run/nginx /var/lib/nginx/tmp /var/log/nginx \
     && chown -R app:app /run/nginx /var/lib/nginx /var/log/nginx
@@ -66,6 +66,7 @@ RUN apk add --no-cache nginx php84-fpm \
 COPY docker/nginx/nginx.conf /etc/nginx/nginx.conf
 COPY docker/php/php.ini /etc/php84/conf.d/zz-app.ini
 COPY docker/php/fpm.conf /etc/php84/php-fpm.d/www.conf
+COPY docker/supervisor/supervisord.conf /etc/supervisord.conf
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint
 
 COPY --from=vendor --chown=app:app /var/www ./
@@ -81,7 +82,9 @@ USER app
 ENV APP_ENV=production \
     APP_DEBUG=false \
     LOG_CHANNEL=stderr \
-    CONTAINER_ROLE=app
+    REVERB_ENABLED=true \
+    REVERB_SERVER_PORT=8080 \
+    SCHEDULER_ENABLED=true
 
 VOLUME ["/var/www/storage"]
 EXPOSE 8000 8080

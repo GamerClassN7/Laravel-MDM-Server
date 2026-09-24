@@ -1,35 +1,19 @@
 # docker compose --env-file src/laravel/.env up -d
-x-app: &app
-  image: ghcr.io/gamerclassn7/laravel-mdm-server:latest
-  build: .
-  env_file: src/laravel/.env
-  environment:
-    DB_HOST: database
-  volumes:
-    - storage:/var/www/storage
-  restart: unless-stopped
-  depends_on:
-    - database
-
 services:
   app:
-    <<: *app
-    ports:
-      - "8000:8000"
-
-  reverb:
-    <<: *app
+    image: ghcr.io/gamerclassn7/laravel-mdm-server:latest
+    build: .
+    env_file: src/laravel/.env
     environment:
       DB_HOST: database
-      CONTAINER_ROLE: reverb
     ports:
-      - "8080:8080"
-
-  scheduler:
-    <<: *app
-    environment:
-      DB_HOST: database
-      CONTAINER_ROLE: scheduler
+      - "8000:8000"  # web
+      - "8080:8080"  # Reverb (WebSocket)
+    volumes:
+      - storage:/var/www/storage
+    restart: unless-stopped
+    depends_on:
+      - database
 
   database:
     image: mysql:8.0
