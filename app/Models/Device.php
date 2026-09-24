@@ -13,6 +13,19 @@ class Device extends Model
 
     public const COMMANDS = ['turnOff', 'restart', 'doUpdates'];
 
+    /** Seconds without a heartbeat after which the device is considered offline. */
+    public const HEARTBEAT_TIMEOUT = 90;
+
+    protected $casts = [
+        'last_seen_at' => 'datetime',
+    ];
+
+    public static function markSeen(int $id): void
+    {
+        // Query builder update, so the heartbeat does not touch updated_at (time of the last report).
+        static::query()->whereKey($id)->toBase()->update(['last_seen_at' => now()]);
+    }
+
     public function getDataAttribute($value)
     {
         return (json_decode($value) ?? []);
@@ -72,16 +85,12 @@ class Device extends Model
 
     public function getOfflineAttribute()
     {
-        // if (isset(json_decode($this->data)->settings->timeout)) {
-        //     if (json_decode($this->data)->settings->timeout >= $this->updated_at->diffInSeconds()) {
-        //         return false;
-        //     }
-        // }
-        if (900 >= $this->updated_at->diffInSeconds()) {
-            return false;
+        if ($this->last_seen_at !== null) {
+            return $this->last_seen_at->diffInSeconds() > self::HEARTBEAT_TIMEOUT;
         }
 
-        return true;
+        // Agents without heartbeat support only send the periodic report.
+        return $this->updated_at->diffInSeconds() > 900;
     }
 
     public function getRestartPendingAttribute()

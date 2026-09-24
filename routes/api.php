@@ -99,6 +99,13 @@ Route::middleware('auth:api')->group(function () {
         ]);
     });
 
+    // Heartbeat fallback for agents without a WebSocket connection.
+    Route::post('/device/heartbeat', function (Request $request) {
+        Device::markSeen($request->user()->id);
+
+        return response()->noContent();
+    });
+
     // The agent acknowledges a command before executing it so it is not delivered twice.
     Route::post('/device/commands/ack', function (Request $request) {
         /** @var Device $device */

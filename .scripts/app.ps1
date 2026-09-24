@@ -7,9 +7,19 @@
     to receive commands instantly and periodically sends a device report over HTTP. When the
     WebSocket is unavailable, commands are still delivered in the response to the HTTP report.
 
+.PARAMETER ReverbHost
+    Overrides the WebSocket host announced by the server (also -ReverbPort, -ReverbScheme, -ReverbKey).
+
+.PARAMETER NoRealtime
+    Do not use the WebSocket, rely on HTTP only.
+
 .EXAMPLE
     # Enrol the device and register the agent as a scheduled task running as SYSTEM
     .\app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -Install
+
+.EXAMPLE
+    # Reverb reachable on a different address than the one configured on the server
+    .\app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -ReverbHost ws.example.com -ReverbPort 443 -ReverbScheme https -Install
 #>
 param (
     [string]
@@ -21,7 +31,20 @@ param (
     [switch]
     $Once,
     [int]
-    $ReportInterval = 300
+    $ReportInterval = 300,
+    [int]
+    $HeartbeatInterval = 30,
+    [string]
+    $ReverbHost,
+    [int]
+    $ReverbPort,
+    [ValidateSet('http', 'https')]
+    [string]
+    $ReverbScheme,
+    [string]
+    $ReverbKey,
+    [switch]
+    $NoRealtime
 )
 
 $ErrorActionPreference = 'Stop'
@@ -299,7 +322,13 @@ function Register-AgentTask {
     $Trigger1 = New-ScheduledTaskTrigger -AtStartup
     $Trigger2 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15)
     $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-    $Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument ('-WindowStyle Hidden -ExecutionPolicy Bypass -NoLogo -File "{0}\app.ps1" -ServerUrl "{1}"' -f $PSScriptRoot, $ServerUrl)
+    $arguments = '-WindowStyle Hidden -ExecutionPolicy Bypass -NoLogo -File "{0}\app.ps1" -ServerUrl "{1}" -ReportInterval {2} -HeartbeatInterval {3}' -f $PSScriptRoot, $ServerUrl, $ReportInterval, $HeartbeatInterval
+    if ($ReverbHost) { $arguments += ' -ReverbHost "{0}"' -f $ReverbHost }
+    if ($ReverbPort) { $arguments += ' -ReverbPort {0}' -f $ReverbPort }
+    if ($ReverbScheme) { $arguments += ' -ReverbScheme {0}' -f $ReverbScheme }
+    if ($ReverbKey) { $arguments += ' -ReverbKey "{0}"' -f $ReverbKey }
+    if ($NoRealtime) { $arguments += ' -NoRealtime' }
+    $Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument $arguments
 
     Register-ScheduledTask -TaskName "Laravel-MDM-Agent" -Trigger @($Trigger1, $Trigger2) -Settings $Settings -User "NT AUTHORITY\SYSTEM" -Action $Action -RunLevel Highest -Force | Out-Null
     Start-ScheduledTask -TaskName "Laravel-MDM-Agent"
@@ -389,10 +418,20 @@ function Start-Realtime {
         $Token
     )
 
+    if ($NoRealtime) {
+        return $null
+    }
+
     $config = Invoke-MdmApi -Path 'device/realtime' -Token $Token
     if (-not $config.enabled) {
         return $null
     }
+
+    # Local overrides for installations where the WebSocket is reachable on a different address.
+    if ($ReverbHost) { $config.host = $ReverbHost }
+    if ($ReverbPort) { $config.port = $ReverbPort }
+    if ($ReverbScheme) { $config.scheme = $ReverbScheme }
+    if ($ReverbKey) { $config.key = $ReverbKey }
 
     $scheme = if ($config.scheme -eq 'https') { 'wss' } else { 'ws' }
     $uri = "{0}://{1}:{2}{3}/app/{4}?protocol=7&client=laravel-mdm-agent&version=1.0&flash=false" -f $scheme, $config.host, $config.port, $config.path, $config.key
@@ -402,7 +441,7 @@ function Start-Realtime {
     $socket.ConnectAsync([Uri]$uri, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
     Write-AgentLog "WebSocket connected to $uri"
 
-    return @{ Socket = $socket; Config = $config }
+    return @{ Socket = $socket; Config = $config; Subscribed = $false }
 }
 
 function Receive-WsMessage {
@@ -475,6 +514,7 @@ function Invoke-RealtimeMessage {
             }
         }
         'pusher_internal:subscription_succeeded' {
+            $Realtime.Subscribed = $true
             Write-AgentLog "Subscribed to $($Message.channel)"
         }
         'pusher:ping' {
@@ -493,6 +533,21 @@ function Invoke-RealtimeMessage {
     }
 }
 
+function Send-Heartbeat {
+    param (
+        $Realtime,
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Token
+    )
+
+    if ($Realtime -and $Realtime.Subscribed) {
+        Send-WsMessage -Socket $Realtime.Socket -Message @{ event = 'client-heartbeat'; channel = $Realtime.Config.channel; data = @{} }
+    } else {
+        Invoke-MdmApi -Method Post -Path 'device/heartbeat' -Token $Token | Out-Null
+    }
+}
+
 function Start-Agent {
     $Token = Get-AgentToken
     $reportJob = Start-ReportCollection
@@ -500,9 +555,16 @@ function Start-Agent {
     $realtime = $null
     $nextConnect = Get-Date
     $lastActivity = Get-Date
+    $lastHeartbeat = [DateTime]::MinValue
 
     while ($true) {
         try {
+            if (-not $Once -and ((Get-Date) - $lastHeartbeat).TotalSeconds -ge $HeartbeatInterval) {
+                $lastHeartbeat = Get-Date
+                Send-Heartbeat -Realtime $realtime -Token $Token
+                $lastActivity = Get-Date
+            }
+
             if ($reportJob -and $reportJob.State -ne 'Running') {
                 if ($reportJob.State -eq 'Completed') {
                     Send-Report -Data (Receive-Job -Job $reportJob) -Token $Token

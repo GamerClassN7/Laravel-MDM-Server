@@ -54,7 +54,9 @@ the next periodic report of the agent.
 ## Windows agent
 
 The agent (`.scripts/app.ps1`) runs continuously as a scheduled task under `SYSTEM`. It keeps a
-WebSocket connection for commands and sends a device report every 5 minutes over HTTPS.
+WebSocket connection for commands, sends a heartbeat every 30 seconds (over the WebSocket, or HTTPS
+when it is unavailable) and a device report every 5 minutes over HTTPS. A device without a heartbeat
+for 90 seconds is shown as offline.
 
 1. Add a device in the portal to get an enrolment code.
 2. Copy `app.ps1` to the device and run it from an elevated PowerShell:
@@ -62,6 +64,15 @@ WebSocket connection for commands and sends a device report every 5 minutes over
    ```powershell
    .\app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -Install
    ```
+
+Optional parameters (stored in the scheduled task by `-Install`):
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `-ReportInterval` | `300` | Seconds between device reports |
+| `-HeartbeatInterval` | `30` | Seconds between heartbeats |
+| `-ReverbHost`, `-ReverbPort`, `-ReverbScheme`, `-ReverbKey` | from server | Override the WebSocket address announced by the server |
+| `-NoRealtime` | | Use HTTPS only, no WebSocket |
 
 The token is stored next to the script in `Token.xml`, logs are written to `agent.log`.
 Only the commands `turnOff`, `restart` and `doUpdates` are executed.
