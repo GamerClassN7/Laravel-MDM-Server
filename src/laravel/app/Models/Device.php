@@ -1,0 +1,155 @@
+<?php
+
+namespace App\Models;
+
+use Carbon\CarbonInterval;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+
+class Device extends Model
+{
+    use HasFactory;
+
+    public const COMMANDS = ['turnOff', 'restart', 'doUpdates'];
+
+    /** Seconds without a heartbeat after which the device is considered offline. */
+    public const HEARTBEAT_TIMEOUT = 90;
+
+    protected $casts = [
+        'last_seen_at' => 'datetime',
+    ];
+
+    public static function recordHeartbeat(int $id, mixed $metrics = null): void
+    {
+        // Query builder update, so the heartbeat does not touch updated_at (time of the last report).
+        $updated = static::query()->whereKey($id)->toBase()->update(['last_seen_at' => now()]);
+
+        if ($updated && $metrics = DeviceMetric::sanitize($metrics)) {
+            DeviceMetric::query()->create($metrics + ['device_id' => $id]);
+        }
+    }
+
+    public function metrics(): HasMany
+    {
+        return $this->hasMany(DeviceMetric::class);
+    }
+
+    public function getDataAttribute($value)
+    {
+        return (json_decode($value) ?? []);
+    }
+
+    public function getDrivesAttribute($value)
+    {
+        if ([] === $this->data) {
+            return [];
+        }
+
+        $drives = json_decode(json_encode($this->data->machine), true)["Drives"];
+        foreach ( $drives  as $key => $drive) {
+            $drive = (array)$drive;
+            if ($drive['Size'] <= 0) {
+                continue;
+            }
+
+            $usedSpace = (int) $drive['Size'] - (int) $drive['SizeRemaining'];
+            $drives[$key]['PercentUsed'] = round($usedSpace / ((int) $drive['Size'] / 100));
+        }
+
+        return $drives;
+    }
+
+    public function setDrivesAttribute($value)
+    {
+        $this->attributes['drives'] = json_encode($value);
+    }
+
+    public function getCommandsAttribute($value)
+    {
+        return json_decode($value);
+    }
+
+    public function setCommandsAttribute($value)
+    {
+        $this->attributes['commands'] = json_encode((array) $value);
+    }
+
+    public function getDisplayNameAttribute()
+    {
+        $name = $this->friendly_name;
+        if (empty($name)) {
+            $name = $this->name;
+        }
+        return $name;
+    }
+
+    public function getNiceUptimeAttribute()
+    {
+        if (isset($this->data->machine->uptime)) {
+            return CarbonInterval::seconds($this->data->machine->uptime)->cascade()->forHumans();
+        }
+        return false;
+    }
+
+    public function getOfflineAttribute()
+    {
+        if ($this->last_seen_at !== null) {
+            return $this->last_seen_at->diffInSeconds() > self::HEARTBEAT_TIMEOUT;
+        }
+
+        // Agents without heartbeat support only send the periodic report.
+        return $this->updated_at->diffInSeconds() > 900;
+    }
+
+    public function getRestartPendingAttribute()
+    {
+        if (null !== $this->data->machine->RestartRequired) {
+            if (filter_var($this->data->machine->RestartRequired, FILTER_VALIDATE_BOOLEAN) === true) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function getLastLogonUserAttribute()
+    {
+        if (isset($this->data->machine->last_logon_user)) {
+            return $this->data->machine->last_logon_user;
+        }
+        return false;
+    }
+
+    public function getAppsPackagesUpdatesAttribute()
+    {
+        if (isset($this->data->packages_updates)) {
+            return (array) self::stdToArray($this->data->packages_updates);
+        }
+        return [];
+    }
+
+    public function getUpdatesAttribute()
+    {
+        if (isset($this->data->os_updates)) {
+            return (array)  self::stdToArray($this->data->os_updates);
+        }
+        return [];
+    }
+
+    public function getNetworksAttribute()
+    {
+        if (isset($this->data->machine->Networks)) {
+            return (array) $this->data->machine->Networks;
+        }
+        return [];
+    }
+
+    private static function  stdToArray($stdObject){
+        if (is_object($stdObject)){
+            return [json_decode(json_encode($stdObject), true)];
+        }
+        return json_decode(json_encode($stdObject), true);
+    }
+}

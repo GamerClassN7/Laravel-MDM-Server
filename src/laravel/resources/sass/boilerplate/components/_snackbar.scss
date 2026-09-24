@@ -1,0 +1,77 @@
+.snackbar-container {
+  position: fixed;
+  bottom: 2rem;
+  right: 2rem;
+  height: auto;
+  // display: flex;
+  // align-items: center;
+  // justify-content: center;
+  // flex-direction: column;
+  z-index: 200;
+  display: flex;
+  gap: 1rem;
+  flex-direction: column;
+  align-items: end;
+}
+
+.snackbar {
+  position: relative;
+  color: var(--bs-body-color);
+  background: var(--bs-body-bg);
+  max-width: 360px;
+  font-size: 0.875rem;
+  box-shadow: var(--bs-dropdown-box-shadow);
+  border: 1px solid rgba(128,128,128,.2);
+  margin-bottom: 0;
+
+  &:not(.snackbar-persist){
+    margin-right: -400px;
+    opacity: 0;
+    animation: slideSnackbar 3s forwards;
+    animation-delay: 0.2s;
+  }
+}
+
+@include color-mode(dark) {
+	.snackbar {
+        --bs-dropdown-border-color: rgba(115, 115, 115, 0.25);
+        background-color: #0f0f0f;
+	}
+}
+
+@keyframes slideSnackbar {
+  6% {
+    margin-right: 0;
+    opacity: 1;
+  }
+  94% {
+    margin-right: 0;
+    opacity: 1;
+  }
+  99% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+    display: none;
+  }
+}
+
+.alert-content {
+  display: flex;
+  padding-right: 1rem;
+}
+
+.alert-ico {
+  font-size: 1.1rem;
+  margin-right: 0.75rem;
+  display: inline-block;
+}
+
+.alert-title {
+  font-weight: 500;
+}
+
+.alert .close {
+  float: right;
+}
