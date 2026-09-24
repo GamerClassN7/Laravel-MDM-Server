@@ -27,8 +27,8 @@
         <div class="row g-0 h-100">
             <div class="align-content-center col-md-6 d-none d-md-flex flex-column justify-content-center bg-body-tertiary">
                 <div class="container py-4 text-center">
-                    <a href="{{ url('/') }}">
-                        <i class="fas fa-desktop fa-4x mb-4 text-body-secondary"></i>
+                    <a class="d-inline-block mb-3" href="{{ url('/') }}">
+                        <i class="fas fa-desktop fa-4x text-body-secondary w-auto"></i>
                     </a>
                     <h1>{{ config('app.name', 'Laravel') }}</h1>
                     <p class="text-black-50">
