@@ -1,10 +1,7 @@
 <div>
     <div class="container-xl">
-        <div class="page-header">
-            <h1 class="hide-mobile">{{ __('Devices') }}</h1>
-            <button class="btn btn-primary" type="button" wire:click.prevent="$set('addDevice', true)">
-                <i class="fas fa-plus me-2"></i>{{ __('Add device') }}
-            </button>
+        <div class="page-header hide-mobile">
+            <h1>{{ __('Devices') }}</h1>
         </div>
     </div>
 
@@ -26,6 +23,11 @@
                     @empty
                         <div class="list-group-item text-muted">{{ __('No devices enrolled yet.') }}</div>
                     @endforelse
+                </div>
+                <div class="d-grid mt-2">
+                    <button class="btn btn-primary" type="button" wire:click.prevent="$set('addDevice', true)">
+                        <i class="fas fa-plus me-2"></i>{{ __('Add device') }}
+                    </button>
                 </div>
             </div>
 
