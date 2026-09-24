@@ -1,11 +1,5 @@
 <div>
     <div class="container-xl">
-        <div class="page-header hide-mobile">
-            <h1>{{ __('Devices') }}</h1>
-        </div>
-    </div>
-
-    <div class="container-xl">
         <div class="row g-4">
             <div class="col-12 col-lg-4">
                 <div class="list-group">
