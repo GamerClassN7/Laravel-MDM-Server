@@ -32,7 +32,9 @@ WORKDIR /var/www
 
 FROM php AS vendor
 
-RUN apk add --no-cache composer
+# Composer phar run by our PHP 8.4 (Alpine's composer package depends on a different PHP version).
+RUN apk add --no-cache php84-phar php84-zip
+COPY --from=composer/composer:2-bin /composer /usr/bin/composer
 
 COPY src/laravel/composer.json src/laravel/composer.lock ./
 RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --no-progress
