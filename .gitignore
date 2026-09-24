@@ -29,3 +29,4 @@ docker-compose.override.yml
 .scripts/payload.log
 .scripts/request.log
 .scripts/*.xml
+.scripts/*.html
