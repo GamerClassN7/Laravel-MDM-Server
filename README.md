@@ -13,9 +13,18 @@ Answer is simple threw years computers i need to take care of (My girlfriend NTB
 
 
 
+## Repository structure
+
+| Path | Content |
+|------|---------|
+| `src/laravel` | Server application (Laravel) |
+| `src/powershell` | Windows agent |
+| `Dockerfile`, `docker-compose.yml`, `docker/` | Container setup |
+
 ## Server setup
 
 ```bash
+cd src/laravel
 composer install
 cp .env.example .env
 php artisan key:generate
@@ -33,7 +42,8 @@ the next periodic report of the agent.
 
 1. Fill `REVERB_APP_KEY` and `REVERB_APP_SECRET` in `.env` with random strings.
 2. Point `REVERB_HOST`, `REVERB_PORT` and `REVERB_SCHEME` to the public address agents connect to.
-3. Keep the server running, e.g. with Supervisor or the `reverb` service in `docker-compose.yml`:
+3. Keep the server running, e.g. with Supervisor or the `reverb` service in `docker-compose.yml`
+   (`docker compose --env-file src/laravel/.env up`):
 
    ```bash
    php artisan reverb:start
@@ -53,7 +63,7 @@ the next periodic report of the agent.
 
 ## Windows agent
 
-The agent (`.scripts/app.ps1`) runs continuously as a scheduled task under `SYSTEM`. It keeps a
+The agent (`src/powershell/app.ps1`) runs continuously as a scheduled task under `SYSTEM`. It keeps a
 WebSocket connection for commands, sends a heartbeat every 30 seconds (over the WebSocket, or HTTPS
 when it is unavailable) and a device report every 5 minutes over HTTPS. A device without a heartbeat
 for 90 seconds is shown as offline.

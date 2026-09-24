@@ -1,0 +1,6 @@
+# Runtime files written by the agent next to the script
+Token.xml
+agent.log*
+payload.json
+request.json
+log.log

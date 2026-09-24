@@ -9,9 +9,9 @@ services:
     environment:
       - APP_ENV=${APP_ENV}
       - CONTAINER_ROLE=app
-    working_dir: /vaw/www/
+    working_dir: /var/www/
     volumes:
-      - ./:/vaw/www/
+      - ./src/laravel:/var/www/
     ports:
       - 8000:8000
     depends_on:
@@ -24,9 +24,9 @@ services:
     environment:
       - APP_ENV=${APP_ENV}
       - CONTAINER_ROLE=reverb
-    working_dir: /vaw/www/
+    working_dir: /var/www/
     volumes:
-      - ./:/vaw/www/
+      - ./src/laravel:/var/www/
     entrypoint: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8080"]
     restart: unless-stopped
     ports:
