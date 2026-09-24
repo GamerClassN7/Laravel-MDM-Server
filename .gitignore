@@ -30,3 +30,6 @@ docker-compose.override.yml
 .scripts/request.log
 .scripts/*.xml
 .scripts/*.html
+.scripts/agent.log*
+.scripts/request.json
+.scripts/log.log

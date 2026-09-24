@@ -11,6 +11,8 @@ class Device extends Model
 {
     use HasFactory;
 
+    public const COMMANDS = ['turnOff', 'restart', 'doUpdates'];
+
     public function getDataAttribute($value)
     {
         return (json_decode($value) ?? []);

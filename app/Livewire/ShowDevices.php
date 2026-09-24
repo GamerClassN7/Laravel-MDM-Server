@@ -21,17 +21,6 @@ class ShowDevices extends Component
     public $enrollmentCode;
     public $enrollmentCodeExpiration;
 
-    public function sendCommandToDevice($command)
-    {
-        $device = Device::find($this->selectedDeviceId);
-
-        if (in_array($command, $device->commands))
-            return;
-
-        $device->commands = array_merge($device->commands, (array) $command);
-        $device->save();
-    }
-
     public function selectDevice($id)
     {
         $this->selectedDeviceId = $id;

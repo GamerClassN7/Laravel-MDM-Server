@@ -74,3 +74,40 @@ Route::post('/device/register', function (Request $request) {
         'token' => $token,
     ]);
 });
+
+Route::middleware('auth:api')->group(function () {
+    // Connection details for the agent's WebSocket (Reverb / Pusher protocol) client.
+    Route::get('/device/realtime', function (Request $request) {
+        /** @var Device $device */
+        $device = $request->user();
+
+        if (config('broadcasting.default') !== 'reverb') {
+            return response()->json(['enabled' => false]);
+        }
+
+        $options = config('broadcasting.connections.reverb.options');
+
+        return response()->json([
+            'enabled' => true,
+            'key' => config('broadcasting.connections.reverb.key'),
+            'host' => $options['host'],
+            'port' => (int) $options['port'],
+            'scheme' => $options['scheme'],
+            'path' => config('reverb.servers.reverb.path', ''),
+            'channel' => 'private-device.'.$device->id,
+            'auth_url' => url('/api/broadcasting/auth'),
+        ]);
+    });
+
+    // The agent acknowledges a command before executing it so it is not delivered twice.
+    Route::post('/device/commands/ack', function (Request $request) {
+        /** @var Device $device */
+        $device = $request->user();
+        $command = $request->input('command');
+
+        $device->commands = array_values(array_diff($device->commands ?? [], [$command]));
+        $device->save();
+
+        return response()->json(['commands' => $device->commands]);
+    });
+});
