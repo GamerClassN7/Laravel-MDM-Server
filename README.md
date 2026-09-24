@@ -44,6 +44,27 @@ Run the scheduler every minute (it removes CPU/RAM history older than 7 days and
 * * * * * cd /path/to/src/laravel && php artisan schedule:run >> /dev/null 2>&1
 ```
 
+### Docker
+
+A small Alpine-based image (nginx + PHP-FPM, running as a non-root user) is built by GitHub Actions
+and published to `ghcr.io/gamerclassn7/laravel-mdm-server`. One image covers all roles, selected
+with `CONTAINER_ROLE`:
+
+| Role | Description |
+|------|-------------|
+| `app` (default) | Web application on port 8000, runs migrations on start (`RUN_MIGRATIONS=false` to skip) |
+| `reverb` | WebSocket server on port 8080 |
+| `scheduler` | Laravel scheduler |
+
+```bash
+cp src/laravel/.env.example src/laravel/.env   # set APP_KEY, DB_* and REVERB_* values
+docker compose --env-file src/laravel/.env up -d
+```
+
+Generate `APP_KEY` with `php artisan key:generate --show`. Uploaded files and logs are stored in the
+`storage` volume. Database backups from the system pages are not supported in the image (no
+`mysqldump`).
+
 ### Real-time commands (WebSocket)
 
 Commands (turn off, restart, install updates) are pushed to agents instantly over a WebSocket
@@ -52,8 +73,7 @@ the agent's next periodic report.
 
 1. Set `REVERB_APP_KEY` and `REVERB_APP_SECRET` in `.env` to random strings.
 2. Point `REVERB_HOST`, `REVERB_PORT` and `REVERB_SCHEME` to the public address the agents connect to.
-3. Keep the Reverb server running, e.g. with Supervisor or the `reverb` service in `docker-compose.yml`
-   (`docker compose --env-file src/laravel/.env up`):
+3. Keep the Reverb server running, e.g. with Supervisor or the `reverb` service in `docker-compose.yml`:
 
    ```bash
    php artisan reverb:start
