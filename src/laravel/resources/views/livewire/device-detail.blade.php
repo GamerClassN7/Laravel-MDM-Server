@@ -38,6 +38,9 @@
                             @if (!empty($selectedDevice->os))
                                 <span><i class="fas fa-info-circle me-1"></i>{{ $selectedDevice->os }}</span>
                             @endif
+                            @if (!empty($selectedDevice->data->machine->Processor))
+                                <span><i class="fas fa-microchip me-1"></i>{{ $selectedDevice->data->machine->Processor }} ({{ __(':count cores', ['count' => $selectedDevice->data->machine->Cores ?? '?']) }})</span>
+                            @endif
                         </div>
                     @endif
                 </div>
@@ -66,6 +69,8 @@
             @livewire('device-commands', ['selectedDeviceId' => $selectedDevice->id], key('device-commands' . $selectedDevice->id))
         </div>
     </div>
+
+    @livewire('device-metrics', ['selectedDeviceId' => $selectedDevice->id], key('device-metrics' . $selectedDevice->id))
 
     <div class="mt-4">
         <ul class="nav nav-tabs" role="tablist">

@@ -101,7 +101,7 @@ Route::middleware('auth:api')->group(function () {
 
     // Heartbeat fallback for agents without a WebSocket connection.
     Route::post('/device/heartbeat', function (Request $request) {
-        Device::markSeen($request->user()->id);
+        Device::recordHeartbeat($request->user()->id, $request->input('metrics'));
 
         return response()->noContent();
     });

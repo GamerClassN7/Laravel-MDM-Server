@@ -33,6 +33,6 @@ class RecordDeviceHeartbeat
             return;
         }
 
-        Device::markSeen((int) $matches[1]);
+        Device::recordHeartbeat((int) $matches[1], $message['data'] ?? null);
     }
 }

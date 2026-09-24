@@ -5,6 +5,7 @@ namespace App\Models;
 use Carbon\CarbonInterval;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 
 class Device extends Model
@@ -20,10 +21,19 @@ class Device extends Model
         'last_seen_at' => 'datetime',
     ];
 
-    public static function markSeen(int $id): void
+    public static function recordHeartbeat(int $id, mixed $metrics = null): void
     {
         // Query builder update, so the heartbeat does not touch updated_at (time of the last report).
-        static::query()->whereKey($id)->toBase()->update(['last_seen_at' => now()]);
+        $updated = static::query()->whereKey($id)->toBase()->update(['last_seen_at' => now()]);
+
+        if ($updated && $metrics = DeviceMetric::sanitize($metrics)) {
+            DeviceMetric::query()->create($metrics + ['device_id' => $id]);
+        }
+    }
+
+    public function metrics(): HasMany
+    {
+        return $this->hasMany(DeviceMetric::class);
     }
 
     public function getDataAttribute($value)

@@ -4,3 +4,4 @@ agent.log*
 payload.json
 request.json
 log.log
+inventory.json

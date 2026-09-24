@@ -8,7 +8,13 @@
     WebSocket is unavailable, commands are still delivered in the response to the HTTP report.
 
 .PARAMETER ReverbHost
-    Overrides the WebSocket host announced by the server (also -ReverbPort, -ReverbScheme, -ReverbKey).
+    Overrides the WebSocket host announced by the server (also -ReverbPort, -ReverbKey).
+
+.PARAMETER ReverbScheme
+    WebSocket scheme, defaults to the scheme of -ServerUrl (https => wss).
+
+.PARAMETER InventoryInterval
+    Seconds between the (expensive) Windows Update and winget checks, default 6 hours.
 
 .PARAMETER NoRealtime
     Do not use the WebSocket, rely on HTTP only.
@@ -34,6 +40,8 @@ param (
     $ReportInterval = 300,
     [int]
     $HeartbeatInterval = 30,
+    [int]
+    $InventoryInterval = 21600,
     [string]
     $ReverbHost,
     [int]
@@ -52,10 +60,16 @@ $AllowedCommands = @('turnOff', 'restart', 'doUpdates')
 
 function Get-MachineInfo {
     $DnsInfo = [System.Net.Dns]::GetHostByName($env:computerName)
+    $OperatingSystem = Get-CimInstance -ClassName Win32_OperatingSystem -Property Caption, Version, LastBootUpTime
     [PSCustomObject] @{
         Hostname        = $DnsInfo.HostName
         User            = $env:USERNAME
-        Battery         = (Get-WmiObject  win32_battery -Property EstimatedChargeRemaining).EstimatedChargeRemaining
+        os              = "$($OperatingSystem.Caption) ($($OperatingSystem.Version))"
+        uptime          = [int]((Get-Date) - $OperatingSystem.LastBootUpTime).TotalSeconds
+        last_logon_user = (Get-CimInstance -ClassName Win32_ComputerSystem -Property UserName).UserName
+        Processor       = (Get-ItemProperty -Path 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name ProcessorNameString -ErrorAction SilentlyContinue).ProcessorNameString
+        Cores           = [Environment]::ProcessorCount
+        Battery         = (Get-CimInstance -ClassName Win32_Battery -Property EstimatedChargeRemaining).EstimatedChargeRemaining
         RestartRequired = Test-PendingReboot
         Drives          = Get-Volume | Where-Object -Property DriveLetter -Value '' -NotLike | ForEach-Object {
             [PSCustomObject]@{
@@ -322,7 +336,7 @@ function Register-AgentTask {
     $Trigger1 = New-ScheduledTaskTrigger -AtStartup
     $Trigger2 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15)
     $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-    $arguments = '-WindowStyle Hidden -ExecutionPolicy Bypass -NoLogo -File "{0}\app.ps1" -ServerUrl "{1}" -ReportInterval {2} -HeartbeatInterval {3}' -f $PSScriptRoot, $ServerUrl, $ReportInterval, $HeartbeatInterval
+    $arguments = '-WindowStyle Hidden -ExecutionPolicy Bypass -NoLogo -File "{0}\app.ps1" -ServerUrl "{1}" -ReportInterval {2} -HeartbeatInterval {3} -InventoryInterval {4}' -f $PSScriptRoot, $ServerUrl, $ReportInterval, $HeartbeatInterval, $InventoryInterval
     if ($ReverbHost) { $arguments += ' -ReverbHost "{0}"' -f $ReverbHost }
     if ($ReverbPort) { $arguments += ' -ReverbPort {0}' -f $ReverbPort }
     if ($ReverbScheme) { $arguments += ' -ReverbScheme {0}' -f $ReverbScheme }
@@ -334,22 +348,58 @@ function Register-AgentTask {
     Start-ScheduledTask -TaskName "Laravel-MDM-Agent"
 }
 
-function Start-ReportCollection {
+function Start-InventoryCollection {
+    # Windows Update search and winget are expensive, run them rarely in a separate idle-priority process.
     $init = [scriptblock]::Create(@"
-    function Get-MachineInfo {${function:Get-MachineInfo}}
-    function Test-PendingReboot {${function:Test-PendingReboot}}
     function Get-WingetSoftware {${function:Get-WingetSoftware}}
     function Get-WindowsUpdate {${function:Get-WindowsUpdate}}
-    function Get-DockerContainers {${function:Get-DockerContainers}}
 "@)
 
-    return Start-Job -Name 'report' -InitializationScript $init -ScriptBlock {
+    return Start-Job -Name 'inventory' -InitializationScript $init -ScriptBlock {
+        [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle
         $data = @{}
-        $data['machine'] = Get-MachineInfo
         try { $data['os_updates'] = @(Get-WindowsUpdate) } catch { }
         try { $data['packages_updates'] = @(Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source) } catch { }
         return $data
     }
+}
+
+function Get-CachedInventory {
+    $path = "$PSScriptRoot\inventory.json"
+    if (-not (Test-Path -Path $path)) {
+        return $null
+    }
+
+    try {
+        $cache = Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        return @{ CollectedAt = [DateTime]$cache.collected_at; Data = $cache.data }
+    }
+    catch {
+        return $null
+    }
+}
+
+function Save-CachedInventory {
+    param (
+        [Parameter(Mandatory = $true)]
+        $Data
+    )
+
+    @{ collected_at = (Get-Date).ToString('o'); data = $Data } | ConvertTo-Json -Depth 6 -Compress | Set-Content -Path "$PSScriptRoot\inventory.json" -Encoding UTF8
+}
+
+function Get-Report {
+    param (
+        $Inventory
+    )
+
+    $data = @{ machine = Get-MachineInfo }
+    if ($Inventory) {
+        $data['os_updates'] = $Inventory.os_updates
+        $data['packages_updates'] = $Inventory.packages_updates
+    }
+
+    return $data
 }
 
 function Send-Report {
@@ -429,9 +479,16 @@ function Start-Realtime {
 
     # Local overrides for installations where the WebSocket is reachable on a different address.
     if ($ReverbHost) { $config.host = $ReverbHost }
-    if ($ReverbPort) { $config.port = $ReverbPort }
-    if ($ReverbScheme) { $config.scheme = $ReverbScheme }
     if ($ReverbKey) { $config.key = $ReverbKey }
+
+    # The scheme follows -ServerUrl unless given explicitly (an https portal means wss).
+    $scheme = if ($ReverbScheme) { $ReverbScheme } else { ([Uri]$ServerUrl).Scheme }
+    if ($ReverbPort) {
+        $config.port = $ReverbPort
+    } elseif ($scheme -ne $config.scheme) {
+        $config.port = if ($scheme -eq 'https') { 443 } else { 80 }
+    }
+    $config.scheme = $scheme
 
     $scheme = if ($config.scheme -eq 'https') { 'wss' } else { 'ws' }
     $uri = "{0}://{1}:{2}{3}/app/{4}?protocol=7&client=laravel-mdm-agent&version=1.0&flash=false" -f $scheme, $config.host, $config.port, $config.path, $config.key
@@ -533,6 +590,62 @@ function Invoke-RealtimeMessage {
     }
 }
 
+function Initialize-SystemMetrics {
+    # Plain Win32 calls: negligible cost and independent of the system language (unlike performance counters).
+    if (-not ('MdmAgent.SystemMetrics' -as [type])) {
+        Add-Type -Namespace MdmAgent -Name SystemMetrics -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool GetSystemTimes(out long idleTime, out long kernelTime, out long userTime);
+
+[StructLayout(LayoutKind.Sequential)]
+public class MemoryStatusEx {
+    public uint dwLength = (uint)Marshal.SizeOf(typeof(MemoryStatusEx));
+    public uint dwMemoryLoad;
+    public ulong ullTotalPhys;
+    public ulong ullAvailPhys;
+    public ulong ullTotalPageFile;
+    public ulong ullAvailPageFile;
+    public ulong ullTotalVirtual;
+    public ulong ullAvailVirtual;
+    public ulong ullAvailExtendedVirtual;
+}
+
+[DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool GlobalMemoryStatusEx([In, Out] MemoryStatusEx buffer);
+'@
+    }
+}
+
+function Get-SystemMetrics {
+    # CPU usage is the average since the previous call (i.e. over the whole heartbeat interval), so nothing is sampled in between.
+    try {
+        Initialize-SystemMetrics
+
+        $idle = $kernel = $user = [long]0
+        [MdmAgent.SystemMetrics]::GetSystemTimes([ref]$idle, [ref]$kernel, [ref]$user) | Out-Null
+        $memory = New-Object MdmAgent.SystemMetrics+MemoryStatusEx
+        [MdmAgent.SystemMetrics]::GlobalMemoryStatusEx($memory) | Out-Null
+
+        $previous = $script:CpuTimes
+        $script:CpuTimes = @{ Idle = $idle; Total = $kernel + $user }
+        if (-not $previous) {
+            return $null
+        }
+
+        $total = $script:CpuTimes.Total - $previous.Total
+        $cpu = if ($total -gt 0) { [math]::Round((1 - ($idle - $previous.Idle) / $total) * 100, 1) } else { 0 }
+
+        return @{
+            cpu          = [math]::Max(0, $cpu)
+            memory_used  = $memory.ullTotalPhys - $memory.ullAvailPhys
+            memory_total = $memory.ullTotalPhys
+        }
+    }
+    catch {
+        return $null
+    }
+}
+
 function Send-Heartbeat {
     param (
         $Realtime,
@@ -541,17 +654,30 @@ function Send-Heartbeat {
         $Token
     )
 
+    $metrics = Get-SystemMetrics
     if ($Realtime -and $Realtime.Subscribed) {
-        Send-WsMessage -Socket $Realtime.Socket -Message @{ event = 'client-heartbeat'; channel = $Realtime.Config.channel; data = @{} }
+        $data = if ($metrics) { $metrics } else { @{} }
+        Send-WsMessage -Socket $Realtime.Socket -Message @{ event = 'client-heartbeat'; channel = $Realtime.Config.channel; data = $data }
     } else {
-        Invoke-MdmApi -Method Post -Path 'device/heartbeat' -Token $Token | Out-Null
+        try {
+            Invoke-MdmApi -Method Post -Path 'device/heartbeat' -Token $Token -Body @{ metrics = $metrics } | Out-Null
+        }
+        catch {
+            Write-AgentLog "Heartbeat failed: $($_.Exception.Message)"
+        }
     }
 }
 
 function Start-Agent {
+    # Keep the agent in the background, user applications take precedence.
+    [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal
+
     $Token = Get-AgentToken
-    $reportJob = Start-ReportCollection
-    $lastReport = Get-Date
+    $inventory = Get-CachedInventory
+    # First inventory a few minutes after start, so it does not add to the load during boot.
+    $nextInventory = if ($inventory) { $inventory.CollectedAt.AddSeconds($InventoryInterval) } else { (Get-Date).AddMinutes(5) }
+    $inventoryJob = $null
+    $lastReport = [DateTime]::MinValue
     $realtime = $null
     $nextConnect = Get-Date
     $lastActivity = Get-Date
@@ -565,26 +691,35 @@ function Start-Agent {
                 $lastActivity = Get-Date
             }
 
-            if ($reportJob -and $reportJob.State -ne 'Running') {
-                if ($reportJob.State -eq 'Completed') {
-                    Send-Report -Data (Receive-Job -Job $reportJob) -Token $Token
+            if ($inventoryJob -and $inventoryJob.State -ne 'Running') {
+                if ($inventoryJob.State -eq 'Completed') {
+                    $data = Receive-Job -Job $inventoryJob
+                    Save-CachedInventory -Data $data
+                    $inventory = @{ CollectedAt = Get-Date; Data = $data }
+                    $lastReport = [DateTime]::MinValue
                 } else {
-                    Write-AgentLog "Report collection failed: $($reportJob.ChildJobs[0].JobStateInfo.Reason)"
+                    Write-AgentLog "Inventory collection failed: $($inventoryJob.ChildJobs[0].JobStateInfo.Reason)"
                 }
-                Remove-Job -Job $reportJob -Force
-                $reportJob = $null
+                Remove-Job -Job $inventoryJob -Force
+                $inventoryJob = $null
+            }
+            if (-not $inventoryJob -and (Get-Date) -ge $nextInventory) {
+                $inventoryJob = Start-InventoryCollection
+                $nextInventory = (Get-Date).AddSeconds($InventoryInterval)
+            }
+
+            if (((Get-Date) - $lastReport).TotalSeconds -ge $ReportInterval) {
+                $lastReport = Get-Date
+                try {
+                    Send-Report -Data (Get-Report -Inventory $inventory.Data) -Token $Token
+                }
+                catch {
+                    # HTTP problems must not tear down the WebSocket connection.
+                    Write-AgentLog "Report failed: $($_.Exception.Message)"
+                }
                 if ($Once) {
                     return
                 }
-            }
-            if (-not $reportJob -and ((Get-Date) - $lastReport).TotalSeconds -ge $ReportInterval) {
-                $reportJob = Start-ReportCollection
-                $lastReport = Get-Date
-            }
-
-            if ($Once) {
-                Start-Sleep -Seconds 1
-                continue
             }
 
             if (-not $realtime -and (Get-Date) -ge $nextConnect) {

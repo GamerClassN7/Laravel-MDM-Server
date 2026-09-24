@@ -34,6 +34,12 @@ npm install && npm run build
 
 Set `APP_SYSTEM_ADMINS` in `.env` to the IDs of users with access to the system pages.
 
+Run the scheduler every minute (cleans CPU/RAM history older than 7 days, backups):
+
+```cron
+* * * * * cd /path/to/src/laravel && php artisan schedule:run >> /dev/null 2>&1
+```
+
 ### Real-time commands (WebSocket)
 
 Commands (turn off, restart, install updates) are pushed to agents instantly over WebSocket
@@ -64,9 +70,17 @@ the next periodic report of the agent.
 ## Windows agent
 
 The agent (`src/powershell/app.ps1`) runs continuously as a scheduled task under `SYSTEM`. It keeps a
-WebSocket connection for commands, sends a heartbeat every 30 seconds (over the WebSocket, or HTTPS
-when it is unavailable) and a device report every 5 minutes over HTTPS. A device without a heartbeat
-for 90 seconds is shown as offline.
+WebSocket connection for commands, sends a heartbeat with CPU and RAM usage every 30 seconds (over the
+WebSocket, or HTTPS when it is unavailable) and a device report every 5 minutes over HTTPS. A device
+without a heartbeat for 90 seconds is shown as offline.
+
+The agent is designed to stay out of the way:
+
+- runs with below normal priority,
+- CPU/RAM come from plain Win32 calls (`GetSystemTimes`, `GlobalMemoryStatusEx`); CPU usage is the
+  average over the heartbeat interval, nothing is sampled in between,
+- the expensive Windows Update and winget checks run every 6 hours in an idle priority process, the
+  result is cached in `inventory.json` and reused in reports.
 
 1. Add a device in the portal to get an enrolment code.
 2. Copy `app.ps1` to the device and run it from an elevated PowerShell:
@@ -80,8 +94,10 @@ Optional parameters (stored in the scheduled task by `-Install`):
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `-ReportInterval` | `300` | Seconds between device reports |
-| `-HeartbeatInterval` | `30` | Seconds between heartbeats |
-| `-ReverbHost`, `-ReverbPort`, `-ReverbScheme`, `-ReverbKey` | from server | Override the WebSocket address announced by the server |
+| `-HeartbeatInterval` | `30` | Seconds between heartbeats (with CPU/RAM) |
+| `-InventoryInterval` | `21600` | Seconds between Windows Update / winget checks |
+| `-ReverbScheme` | scheme of `-ServerUrl` | `https` (wss) or `http` (ws) |
+| `-ReverbHost`, `-ReverbPort`, `-ReverbKey` | from server | Override the WebSocket address announced by the server |
 | `-NoRealtime` | | Use HTTPS only, no WebSocket |
 
 The token is stored next to the script in `Token.xml`, logs are written to `agent.log`.
