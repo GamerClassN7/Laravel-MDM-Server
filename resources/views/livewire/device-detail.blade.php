@@ -1,145 +1,164 @@
 <div>
-    <div class="d-flex justify-content-between">
-        <h2 class="offcanvas-title" id="offcanvasRightLabel" title="{{ $selectedDevice->updated_at->diffForHumans() }}">
-            @if ($editMode)
-                <div class="row g-3 align-items-center">
-                    <div class="col-auto">
-                        <input class="form-control" id="friendlyName" type="text" wire:model="friendlyName">
-                    </div>
-                    <div class="col-auto">
-                        <button class="btn btn-primary" type="submit" wire:click="saveFriendlyName">{{ __('save') }}</button>
-                    </div>
-                </div>
-            @else
-                @if ($selectedDevice->updates != [] && count($selectedDevice->updates) > 1)
-                    <i class="bi bi-exclamation-triangle-fill text-danger"></i>
-                @else
-                    <i class="bi bi-exclamation-triangle-fill text-warning"></i>
-                @endif
-                {{ $selectedDevice->DisplayName }} <i class="bi bi-pencil text-warning" wire:click="$set('editMode', 'true')"></i>
-            @endif
-        </h2>
+    @php
+        $hasUpdates = count($selectedDevice->updates) > 0 || count($selectedDevice->apps_packages_updates) > 0;
+        $power = $selectedDevice->data->machine->Battery ?? null;
+    @endphp
 
-        @if (!$selectedDevice->offline)
-            <h3 class="offcanvas-title" id="offcanvasRightLabel">
-                @php
-                    $power = $selectedDevice->data->machine->Battery ?? [];
-                @endphp
-                {{-- <i class="bi bi-wifi-off"></i>
-                <i class="bi bi-bluetooth"></i> --}}
-                @if ($power != [])
-                    {{-- @if ($power == [])
-                        <i class="bi bi-battery-charging"></i>
-                    @else --}}
-                    @if ($power < 20)
-                        <i class="bi bi-battery text-danger"></i>
-                    @elseif($power < 85)
-                        <i class="bi bi-battery-half"></i>
-                    @else
-                        <i class="bi bi-battery-full"></i>
-                    @endif
-                    {{-- @endif --}}
-                    {{ $power }} %
-                @else
-                    <i class="bi bi-plug"></i>
-                @endif
-            </h3>
-        @endif
-    </div>
-    @if (!$selectedDevice->offline)
-        @if (!empty($selectedDevice->lastLogonUser))
-            <p class="mb-0"><i class="bi bi-person-fill"></i> {{ $selectedDevice->lastLogonUser }}</p>
-        @endif
-
-        @if (!empty($selectedDevice->NiceUptime))
-            <p class="mb-0">{{ $selectedDevice->NiceUptime }}</p>
-        @endif
-    @endif
-
-    @if (!empty($selectedDevice->data))
-        @livewire('device-alerts', ['selectedDeviceId' => $selectedDevice->id], key('device-alerts' . $selectedDevice->id))
-    @endif
-    @livewire('device-commands', ['selectedDeviceId' => $selectedDevice->id], key('device-commands' . $selectedDevice->id))
-
-
-    <ul class="nav nav-tabs  mt-2" id="myTab" role="tablist">
-        @if (!empty($selectedDevice->drives))
-            <li class="nav-item" role="presentation">
-                <button aria-controls="drives-tab-plane" aria-selected="true" class="nav-link active" data-bs-target="#drives-tab-plane" data-bs-toggle="tab" id="home-tab" role="tab" type="button">Drives</button>
-            </li>
-        @endif
-        @if (($selectedDevice->updates != [] && count($selectedDevice->updates) > 0) || ($selectedDevice->apps_packages_updates != [] && count($selectedDevice->apps_packages_updates) > 0))
-            <li class="nav-item" role="presentation">
-                <button aria-controls="updates-tab-plane" aria-selected="false" class="nav-link" data-bs-target="#updates-tab-plane" data-bs-toggle="tab" id="profile-tab" role="tab" type="button">Updates</button>
-            </li>
-        @endif
-        @if (count($selectedDevice->networks) > 0)
-            <li class="nav-item" role="presentation">
-                <button aria-controls="networks-tab-plane" aria-selected="false" class="nav-link" data-bs-target="#networks-tab-plane" data-bs-toggle="tab" id="contact-tab" role="tab" type="button">Networks</button>
-            </li>
-        @endif
-    </ul>
-    <div class="tab-content" id="myTabContent">
-        @if (!empty($selectedDevice->drives))
-            <div aria-labelledby="home-tab" class="tab-pane fade show active" id="drives-tab-plane" role="tabpanel" tabindex="0">
-                <h4>{{ __('Drives') }}</h4>
-                <div class="d-flex flex-wrap justify-content-between">
-                    @foreach ($selectedDevice->drives as $drive)
-                        <div class="me-3 d-flex">
-                            @if ($drive['DriveType'] == 5)
-                                <i class="bi bi-disc" style="font-size: 3rem;"></i>
-                            @else
-                                <i class="bi bi-device-hdd" style="font-size: 3rem;"></i>
-                            @endif
-                            <div style="width:180px">
-                                {{ $drive['FriendlyName'] ?? '' }} ({{ $drive['DriveLetter'] }})
-                                @if (isset($drive['Size']) && isset($drive['PercentUsed']))
-                                    <div class="progress">
-                                        <div aria-valuemax="100" aria-valuemin="0" aria-valuenow="{{ $drive['PercentUsed'] }}" class="progress-bar {{ $drive['PercentUsed'] > 90 ? 'bg-danger' : '' }}" role="progressbar" style="width: {{ $drive['PercentUsed'] ?? 0 }}%"></div>
-                                    </div>
-                                    {{ round($drive['SizeRemaining'] / 1024 / 1024 / 1024) }} GB free of {{ round($drive['Size'] / 1024 / 1024 / 1024) }} GB
-                                @endif
-                            </div>
+    <div class="card">
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-start">
+                <div title="{{ $selectedDevice->updated_at->diffForHumans() }}">
+                    @if ($editMode)
+                        <div class="d-flex gap-2">
+                            <input class="form-control" id="friendlyName" type="text" wire:model="friendlyName" wire:keydown.enter="saveFriendlyName">
+                            <button class="btn btn-primary" type="button" wire:click="saveFriendlyName">{{ __('Save') }}</button>
                         </div>
-                    @endforeach
+                    @else
+                        <h2 class="mb-1">
+                            @if (count($selectedDevice->updates) > 1)
+                                <i class="fas fa-exclamation-triangle text-danger me-2" title="{{ __('Updates available') }}"></i>
+                            @elseif ($hasUpdates)
+                                <i class="fas fa-exclamation-triangle text-warning me-2" title="{{ __('Updates available') }}"></i>
+                            @endif
+                            {{ $selectedDevice->DisplayName }}
+                            <button class="btn btn-sm btn-sq" type="button" title="{{ __('Rename') }}" wire:click="$set('editMode', true)">
+                                <i class="fas fa-pen"></i>
+                            </button>
+                        </h2>
+                    @endif
+
+                    @if (!$selectedDevice->offline)
+                        <div class="text-muted small d-flex flex-wrap gap-3">
+                            @if (!empty($selectedDevice->lastLogonUser))
+                                <span><i class="fas fa-user me-1"></i>{{ $selectedDevice->lastLogonUser }}</span>
+                            @endif
+                            @if (!empty($selectedDevice->NiceUptime))
+                                <span><i class="far fa-clock me-1"></i>{{ $selectedDevice->NiceUptime }}</span>
+                            @endif
+                            @if (!empty($selectedDevice->os))
+                                <span><i class="fas fa-info-circle me-1"></i>{{ $selectedDevice->os }}</span>
+                            @endif
+                        </div>
+                    @endif
                 </div>
-            </div>
-        @endif
-        @if (($selectedDevice->updates != [] && count($selectedDevice->updates) > 0) || ($selectedDevice->apps_packages_updates != [] && count($selectedDevice->apps_packages_updates) > 0))
-            <div aria-labelledby="profile-tab" class="tab-pane fade" id="updates-tab-plane" role="tabpanel" tabindex="0">
-                @if ($selectedDevice->updates != [] && count($selectedDevice->updates) > 0)
-                    <h4>{{ __('Updates.OS') }}</h4>
-                    <ul>
-                        @foreach ($selectedDevice->updates as $update)
-                            <li>{{ $update["Title"] }}</li>
-                        @endforeach
-                    </ul>
-                @endif
-                @if ($selectedDevice->apps_packages_updates != [] && count($selectedDevice->apps_packages_updates) > 0)
-                    <h4>{{ __('Updates') }}</h4>
-                    <ul>
-                        @foreach ($selectedDevice->apps_packages_updates as $app_update)
-                            <li>{{ $app_update["Id"] }} {{  $app_update["Version"] }}</li>
-                        @endforeach
-                    </ul>
+
+                @if (!$selectedDevice->offline)
+                    <div class="fs-5 text-nowrap">
+                        @if ($power !== null && $power !== [])
+                            @if ($power < 20)
+                                <i class="fas fa-battery-quarter text-danger"></i>
+                            @elseif ($power < 85)
+                                <i class="fas fa-battery-half"></i>
+                            @else
+                                <i class="fas fa-battery-full"></i>
+                            @endif
+                            {{ $power }} %
+                        @else
+                            <i class="fas fa-plug" title="{{ __('Plugged in') }}"></i>
+                        @endif
+                    </div>
                 @endif
             </div>
-        @endif
-        @if (count($selectedDevice->networks) > 0)
-            <div aria-labelledby="contact-tab" class="tab-pane fade" id="networks-tab-plane" role="tabpanel" tabindex="0">
-                <h4>{{ __('Networks') }}</h4>
-                <ul>
-                    @foreach ((array) $selectedDevice->networks as $network)
-                        <li>{{ $network->Name }} ({{$network->Status}})
-                            <ul>
-                                @foreach ($network->IPAddresses as $IPAddres)
-                                    <li>{{ $IPAddres }}</li>
+
+            @if (!empty($selectedDevice->data))
+                @livewire('device-alerts', ['selectedDeviceId' => $selectedDevice->id], key('device-alerts' . $selectedDevice->id))
+            @endif
+            @livewire('device-commands', ['selectedDeviceId' => $selectedDevice->id], key('device-commands' . $selectedDevice->id))
+        </div>
+    </div>
+
+    <div class="mt-4">
+        <ul class="nav nav-tabs" role="tablist">
+            @if (!empty($selectedDevice->drives))
+                <li class="nav-item" role="presentation">
+                    <button aria-controls="drives-tab-pane" aria-selected="true" class="nav-link active" data-bs-target="#drives-tab-pane" data-bs-toggle="tab" id="drives-tab" role="tab" type="button">
+                        <i class="fas fa-hdd me-2"></i>{{ __('Drives') }}
+                    </button>
+                </li>
+            @endif
+            @if ($hasUpdates)
+                <li class="nav-item" role="presentation">
+                    <button aria-controls="updates-tab-pane" aria-selected="false" class="nav-link" data-bs-target="#updates-tab-pane" data-bs-toggle="tab" id="updates-tab" role="tab" type="button">
+                        <i class="fas fa-sync me-2"></i>{{ __('Updates') }}
+                    </button>
+                </li>
+            @endif
+            @if (count($selectedDevice->networks) > 0)
+                <li class="nav-item" role="presentation">
+                    <button aria-controls="networks-tab-pane" aria-selected="false" class="nav-link" data-bs-target="#networks-tab-pane" data-bs-toggle="tab" id="networks-tab" role="tab" type="button">
+                        <i class="fas fa-network-wired me-2"></i>{{ __('Networks') }}
+                    </button>
+                </li>
+            @endif
+        </ul>
+
+        <div class="tab-content pt-3">
+            @if (!empty($selectedDevice->drives))
+                <div aria-labelledby="drives-tab" class="tab-pane fade show active" id="drives-tab-pane" role="tabpanel" tabindex="0">
+                    <div class="row g-3">
+                        @foreach ($selectedDevice->drives as $drive)
+                            <div class="col-12 col-md-6">
+                                <div class="d-flex align-items-center gap-3">
+                                    <i class="fas {{ $drive['DriveType'] == 5 ? 'fa-compact-disc' : 'fa-hdd' }} fa-2x text-muted"></i>
+                                    <div class="flex-grow-1">
+                                        <div>{{ $drive['FriendlyName'] ?? '' }} ({{ $drive['DriveLetter'] }})</div>
+                                        @if (isset($drive['Size']) && isset($drive['PercentUsed']))
+                                            <div class="progress my-1" style="height: 6px;">
+                                                <div aria-valuemax="100" aria-valuemin="0" aria-valuenow="{{ $drive['PercentUsed'] }}" class="progress-bar {{ $drive['PercentUsed'] > 90 ? 'bg-danger' : '' }}" role="progressbar" style="width: {{ $drive['PercentUsed'] }}%"></div>
+                                            </div>
+                                            <small class="text-muted">
+                                                {{ __(':free GB free of :total GB', ['free' => round($drive['SizeRemaining'] / 1024 / 1024 / 1024), 'total' => round($drive['Size'] / 1024 / 1024 / 1024)]) }}
+                                            </small>
+                                        @endif
+                                    </div>
+                                </div>
+                            </div>
+                        @endforeach
+                    </div>
+                </div>
+            @endif
+
+            @if ($hasUpdates)
+                <div aria-labelledby="updates-tab" class="tab-pane fade" id="updates-tab-pane" role="tabpanel" tabindex="0">
+                    @if (count($selectedDevice->updates) > 0)
+                        <h5>{{ __('Operating system') }}</h5>
+                        <ul class="list-group mb-3">
+                            @foreach ($selectedDevice->updates as $update)
+                                <li class="list-group-item">{{ $update['Title'] }}</li>
+                            @endforeach
+                        </ul>
+                    @endif
+                    @if (count($selectedDevice->apps_packages_updates) > 0)
+                        <h5>{{ __('Applications') }}</h5>
+                        <ul class="list-group">
+                            @foreach ($selectedDevice->apps_packages_updates as $appUpdate)
+                                <li class="list-group-item d-flex justify-content-between">
+                                    <span>{{ $appUpdate['Id'] }}</span>
+                                    <x-badge color="primary" variant="subtle">{{ $appUpdate['Version'] }}</x-badge>
+                                </li>
+                            @endforeach
+                        </ul>
+                    @endif
+                </div>
+            @endif
+
+            @if (count($selectedDevice->networks) > 0)
+                <div aria-labelledby="networks-tab" class="tab-pane fade" id="networks-tab-pane" role="tabpanel" tabindex="0">
+                    <ul class="list-group">
+                        @foreach ($selectedDevice->networks as $network)
+                            <li class="list-group-item">
+                                <div class="d-flex justify-content-between">
+                                    <span class="fw-semibold">{{ $network->Name }}</span>
+                                    <x-badge color="{{ $network->Status === 'Up' ? 'success' : 'secondary' }}" variant="subtle">{{ $network->Status }}</x-badge>
+                                </div>
+                                @foreach ($network->IPAddresses as $ipAddress)
+                                    <div class="small text-muted">{{ $ipAddress }}</div>
                                 @endforeach
-                            </ul>
-                        </li>
-                    @endforeach
-                </ul>
-            </div>
-        @endif
+                            </li>
+                        @endforeach
+                    </ul>
+                </div>
+            @endif
+        </div>
     </div>
 </div>

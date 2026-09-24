@@ -1,1 +1,1 @@
-import './bootstrap';
+import './boilerplate/boilerplate.js';

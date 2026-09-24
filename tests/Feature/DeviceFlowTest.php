@@ -59,6 +59,8 @@ class DeviceFlowTest extends TestCase
         $device = Device::firstOrFail();
         $this->assertSame('pc1', $device->name);
 
+        $this->actingAs($user);
+
         $this->get('/devices?selectedDeviceId='.$device->id)
             ->assertOk()
             ->assertSee('pc1')
@@ -81,5 +83,29 @@ class DeviceFlowTest extends TestCase
     public function test_device_api_requires_token(): void
     {
         $this->postJson('/api/device', $this->payload)->assertUnauthorized();
+    }
+
+    public function test_registration_is_disabled(): void
+    {
+        $this->get('/register')->assertNotFound();
+        $this->post('/register', ['email' => 'a@b.c'])->assertNotFound();
+    }
+
+    public function test_deleting_device_resets_selection(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $device = new Device();
+        $device->token = hash('sha256', 'token');
+        $device->save();
+
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $device->id])
+            ->call('deleteDevice')
+            ->assertDispatched('device-deleted');
+
+        $this->assertDatabaseMissing('devices', ['id' => $device->id]);
+
+        Livewire::test(ShowDevices::class, ['selectedDeviceId' => $device->id])
+            ->dispatch('device-deleted')
+            ->assertSet('selectedDeviceId', null);
     }
 }

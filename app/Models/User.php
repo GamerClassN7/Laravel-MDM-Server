@@ -2,19 +2,48 @@
 
 namespace App\Models;
 
-use Database\Factories\UserFactory;
-use Illuminate\Database\Eloquent\Attributes\Fillable;
-use Illuminate\Database\Eloquent\Attributes\Hidden;
+// use Illuminate\Contracts\Auth\MustVerifyEmail;
+
+use App\Observers\UserObserver;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\Cache;
+use Laravel\Sanctum\HasApiTokens;
+use SteelAnts\LaravelBoilerplate\Models\Session;
+use SteelAnts\LaravelBoilerplate\Traits\Auditable;
+use SteelAnts\LaravelBoilerplate\Traits\HasSettings;
+use SteelAnts\LaravelBoilerplate\Traits\SupportSystemAdmins;
 
-#[Fillable(['name', 'email', 'password'])]
-#[Hidden(['password', 'remember_token'])]
+#[ObservedBy([UserObserver::class])]
 class User extends Authenticatable
 {
-    /** @use HasFactory<UserFactory> */
-    use HasFactory, Notifiable;
+    use Auditable, HasApiTokens, HasFactory, HasSettings, Notifiable, SupportSystemAdmins;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var array<int, string>
+     */
+    protected $fillable = [
+        'name',
+        'email',
+        'password',
+        'totp_force',
+    ];
+
+    /**
+     * The attributes that should be hidden for serialization.
+     *
+     * @var array<int, string>
+     */
+    protected $hidden = [
+        'password',
+        'remember_token',
+        'totp_secret',
+    ];
 
     /**
      * Get the attributes that should be cast.
@@ -25,7 +54,40 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
-            'password' => 'hashed',
+            'password'          => 'hashed',
         ];
+    }
+
+    protected function limitationSetting(): Attribute
+    {
+        return Attribute::make(
+            get: fn () => $this->getSettings('limitation.items_per_page'),
+        );
+    }
+
+    private static function parseSettingsToArray($settingsRaw)
+    {
+        $settings = [];
+        if (!empty($settingsRaw->value)) {
+            foreach (json_decode($settingsRaw->value, true) as $driver => $types) {
+                foreach ($types as $type) {
+                    $settings[$driver][$type] = true;
+                }
+            }
+        }
+
+        return $settings;
+    }
+
+    public function getSortPreference(): string
+    {
+        return once(fn (): string => Cache::remember(sprintf('user-%d-sorting-preference', $this->id), 500, function () {
+            return !empty($this->getSettings('profile.sort')) ? 'desc' : 'asc';
+        }));
+    }
+
+    public function sessions()
+    {
+        return $this->hasMany(Session::class);
     }
 }

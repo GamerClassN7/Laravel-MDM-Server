@@ -5,6 +5,7 @@ namespace App\Livewire;
 use App\Models\Device;
 use App\Models\Enrolment;
 use Carbon\CarbonImmutable;
+use Livewire\Attributes\On;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 
@@ -50,6 +51,13 @@ class ShowDevices extends Component
             $enrolment->expire_at = $this->enrollmentCodeExpiration;
             $enrolment->save();
         }
+    }
+
+    #[On('device-deleted')]
+    public function deviceDeleted()
+    {
+        $this->selectedDeviceId = null;
+        $this->devices = Device::all();
     }
 
     public function mount()

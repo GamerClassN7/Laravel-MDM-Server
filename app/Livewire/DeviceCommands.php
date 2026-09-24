@@ -22,8 +22,9 @@ class DeviceCommands extends Component
 
     public function deleteDevice()
     {
-        $device = Device::find($this->selectedDeviceId);
-        $device->delete();
+        Device::find($this->selectedDeviceId)?->delete();
+
+        $this->dispatch('device-deleted');
     }
 
     public function render()

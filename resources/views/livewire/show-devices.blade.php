@@ -1,36 +1,50 @@
 <div>
-    <div class="container">
-        <div class="row justify-content-center">
-            <div class="col col-lg-4">
-                <ul class="list-group">
-                    @foreach ($devices as $device)
-                        <a href="#" wire:click.prevent="selectDevice({{ $device->id }})" aria-current="true" class="list-group-item list-group-item-action d-flex justify-content-between {{ isset($selectedDevice) && $device->id == $selectedDevice->id ? 'active' : '' }}">
-                            {{ $device->DisplayName }}
+    <div class="container-xl">
+        <div class="page-header">
+            <h1 class="hide-mobile">{{ __('Devices') }}</h1>
+            <button class="btn btn-primary" type="button" wire:click.prevent="$set('addDevice', true)">
+                <i class="fas fa-plus me-2"></i>{{ __('Add device') }}
+            </button>
+        </div>
+    </div>
+
+    <div class="container-xl">
+        <div class="row g-4">
+            <div class="col-12 col-lg-4">
+                <div class="list-group">
+                    @forelse ($devices as $device)
+                        <a class="list-group-item list-group-item-action d-flex justify-content-between align-items-center {{ isset($selectedDevice) && $device->id == $selectedDevice->id ? 'active' : '' }}" href="#" wire:click.prevent="selectDevice({{ $device->id }})">
+                            <span>
+                                <i class="fas fa-desktop me-2"></i>{{ $device->DisplayName }}
+                            </span>
                             @if ($device->offline)
-                                <i class="bi bi-exclamation-triangle-fill text-dark"></i>
+                                <x-badge color="secondary" size="sm" variant="subtle">{{ __('Offline') }}</x-badge>
+                            @else
+                                <x-badge color="success" size="sm" variant="subtle">{{ __('Online') }}</x-badge>
                             @endif
                         </a>
-                    @endforeach
-                </ul>
-                <div class="d-grid gap-2 mb-3">
-                    <button wire:click.prevent="$set('addDevice', true)" class="btn btn-primary mt-2 btn-block" type="button">
-                        <i class="bi bi-plus-square"></i>
-                        {{ __('add') }}
-                    </button>
+                    @empty
+                        <div class="list-group-item text-muted">{{ __('No devices enrolled yet.') }}</div>
+                    @endforelse
                 </div>
             </div>
-            @if ($addDevice == true)
-                <div class="col-12 col-lg-8">
-                    <h5>{{ __('AddNewDevice') }}</h5>
-                    <h2>{{ $enrollmentCode }}</h2>
-                    <p>{{ $enrollmentCodeExpiration }} ({{ $enrollmentCodeExpiration->diffForHumans() }})
-                    <p>
-                </div>
-            @elseif (isset($selectedDevice))
-                <div class="col-12 col-lg-8">
+
+            <div class="col-12 col-lg-8">
+                @if ($addDevice)
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title">{{ __('Enrol new device') }}</h5>
+                            <p class="text-muted mb-2">{{ __('Enter this code in the agent to register the device.') }}</p>
+                            <h2 class="display-5 fw-semibold">{{ $enrollmentCode }}</h2>
+                            <p class="mb-0 text-muted">
+                                <i class="far fa-clock me-1"></i>{{ __('Expires') }} {{ $enrollmentCodeExpiration->diffForHumans() }} ({{ $enrollmentCodeExpiration }})
+                            </p>
+                        </div>
+                    </div>
+                @elseif (isset($selectedDevice))
                     @livewire('device-detail', ['selectedDeviceId' => $selectedDevice->id], key($selectedDevice->id))
-                </div>
-            @endif
+                @endif
+            </div>
         </div>
     </div>
 </div>
