@@ -63,7 +63,7 @@ class Device extends Model
     public function getNiceUptimeAttribute()
     {
         if (isset($this->data->machine->uptime)) {
-            return CarbonInterval::seconds(json_decode($this->data)->machine->uptime)->cascade()->forHumans();
+            return CarbonInterval::seconds($this->data->machine->uptime)->cascade()->forHumans();
         }
         return false;
     }

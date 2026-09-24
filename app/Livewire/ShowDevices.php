@@ -1,25 +1,24 @@
 <?php
 
-namespace App\Http\Livewire;
+namespace App\Livewire;
 
 use App\Models\Device;
 use App\Models\Enrolment;
 use Carbon\CarbonImmutable;
+use Livewire\Attributes\Url;
 use Livewire\Component;
 
 class ShowDevices extends Component
 {
     public $devices;
+
+    #[Url]
     public $selectedDeviceId;
 
     /* Device Enrolment*/
     public $addDevice = false;
     public $enrollmentCode;
     public $enrollmentCodeExpiration;
-
-    protected $queryString = [
-        'selectedDeviceId'
-    ];
 
     public function sendCommandToDevice($command)
     {
