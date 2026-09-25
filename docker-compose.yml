@@ -7,8 +7,7 @@ services:
     environment:
       DB_HOST: database
     ports:
-      - "8000:8000"  # web
-      - "8080:8080"  # Reverb (WebSocket)
+      - "8000:8000"  # web and Reverb WebSocket (/app)
     volumes:
       - storage:/var/www/storage
     restart: unless-stopped

@@ -61,13 +61,18 @@ A small Alpine-based image (running as a non-root user) is built by GitHub Actio
 | Process | Description | Disable with |
 |---------|-------------|--------------|
 | nginx + PHP-FPM | Web application on port 8000, migrations run on start | `RUN_MIGRATIONS=false` skips migrations |
-| Reverb | WebSocket server on port 8080 (`REVERB_SERVER_PORT`) | `REVERB_ENABLED=false` |
+| Reverb | WebSocket server, served by nginx on the same port under `/app` | `REVERB_ENABLED=false` |
 | Scheduler | `php artisan schedule:work` | `SCHEDULER_ENABLED=false` |
 
 ```bash
 cp src/laravel/.env.example src/laravel/.env   # set APP_KEY, DB_* and REVERB_* values
 docker compose --env-file src/laravel/.env up -d
 ```
+
+Only port 8000 is exposed: nginx serves the web and proxies `/app` (agent WebSockets) and `/apps`
+(Reverb API used by the application) to Reverb inside the container. Set `REVERB_HOST`, `REVERB_PORT`
+and `REVERB_SCHEME` to the public address of the web, e.g. `mdm.example.com`, `443`, `https` behind
+a TLS proxy, or `localhost`, `8000`, `http` locally.
 
 Generate `APP_KEY` with `php artisan key:generate --show`. Uploaded files and logs are stored in the
 `storage` volume. Database backups from the system pages are not supported in the image (no
@@ -87,14 +92,20 @@ the agent's next periodic report.
    php artisan reverb:start
    ```
 
-4. Behind a reverse proxy, forward the `/app` WebSocket path to Reverb, e.g. for nginx:
+4. Without Docker, forward the `/app` (WebSocket) and `/apps` paths to Reverb, e.g. for nginx:
 
    ```nginx
-   location /app {
+   location /app/ {
        proxy_http_version 1.1;
        proxy_set_header Host $http_host;
        proxy_set_header Upgrade $http_upgrade;
        proxy_set_header Connection "Upgrade";
+       proxy_read_timeout 1h;
+       proxy_pass http://127.0.0.1:8080;
+   }
+
+   location /apps/ {
+       proxy_set_header Host $http_host;
        proxy_pass http://127.0.0.1:8080;
    }
    ```
