@@ -83,10 +83,9 @@ ENV APP_ENV=production \
     APP_DEBUG=false \
     LOG_CHANNEL=stderr \
     REVERB_ENABLED=true \
-    REVERB_SERVER_PORT=8080 \
     SCHEDULER_ENABLED=true
 
 VOLUME ["/var/www/storage"]
-EXPOSE 8000 8080
+EXPOSE 8000
 
 ENTRYPOINT ["entrypoint"]
