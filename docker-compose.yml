@@ -12,7 +12,8 @@ services:
       - storage:/var/www/storage
     restart: unless-stopped
     depends_on:
-      - database
+      database:
+        condition: service_healthy
 
   database:
     image: mysql:8.0
@@ -26,6 +27,11 @@ services:
     volumes:
       - db-data:/var/lib/mysql
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
 volumes:
   storage:
