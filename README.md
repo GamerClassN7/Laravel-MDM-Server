@@ -65,7 +65,7 @@ A small Alpine-based image (running as a non-root user) is built by GitHub Actio
 | Scheduler | `php artisan schedule:work` | `SCHEDULER_ENABLED=false` |
 
 ```bash
-cp src/laravel/.env.example src/laravel/.env   # set APP_KEY, DB_* and REVERB_* values
+cp src/laravel/.env.example src/laravel/.env   # set DB_* and REVERB_HOST/PORT/SCHEME
 docker compose --env-file src/laravel/.env up -d
 ```
 
@@ -74,7 +74,10 @@ Only port 8000 is exposed: nginx serves the web and proxies `/app` (agent WebSoc
 and `REVERB_SCHEME` to the public address of the web, e.g. `mdm.example.com`, `443`, `https` behind
 a TLS proxy, or `localhost`, `8000`, `http` locally.
 
-Generate `APP_KEY` with `php artisan key:generate --show`. Uploaded files and logs are stored in the
+On start the container waits for the database and runs the migrations. `APP_KEY`, `REVERB_APP_KEY`
+and `REVERB_APP_SECRET` are generated on the first start when they are not set, and kept in
+`storage/secrets.env` in the `storage` volume, so they stay the same across restarts and updates.
+Values set in the environment always take precedence. Uploaded files and logs are stored in the
 `storage` volume. Database backups from the system pages are not supported in the image (no
 `mysqldump`).
 
