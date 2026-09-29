@@ -1,5 +1,5 @@
 <div>
-    <div class="container-xl">
+    <div class="container">
         <div class="row g-4">
             <div class="col-12 col-lg-4">
                 <div class="list-group">
