@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.7.1'
+$AgentVersion = '1.7.2'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent', 'runScripts')
 # The server's public key ("n:e", base64), filled in by the server when it serves this script.
 # The agent pins it on the first start and then trusts only what is signed with it.
@@ -1856,23 +1856,35 @@ function Register-AgentTask {
     Start-ScheduledTask -TaskName "Laravel-MDM-Agent"
 }
 
+function Start-AgentJob {
+    # Start-Job with the given agent functions defined in the job. Windows PowerShell passes an
+    # -InitializationScript on the command line of the job process (32767 characters at most), so
+    # the definitions go with the arguments instead, through the pipe to the job.
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Name,
+        [Parameter(Mandatory = $true)]
+        [string[]]
+        $Functions,
+        [Parameter(Mandatory = $true)]
+        [scriptblock]
+        $ScriptBlock,
+        [object[]]
+        $ArgumentList = @()
+    )
+
+    $definitions = ($Functions | ForEach-Object { "function $_ {$((Get-Item -Path "function:$_").ScriptBlock)}" }) -join "`n"
+    return Start-Job -Name $Name -ArgumentList (@($definitions, "$ScriptBlock") + $ArgumentList) -ScriptBlock {
+        param ($Definitions, $Body)
+        . ([scriptblock]::Create($Definitions))
+        & ([scriptblock]::Create($Body)) @args
+    }
+}
+
 function Start-InventoryCollection {
     # Windows Update search and winget are expensive, run them rarely in a separate idle-priority process.
-    $init = [scriptblock]::Create(@"
-    function Get-WingetSoftware {${function:Get-WingetSoftware}}
-    function Get-WindowsUpdate {${function:Get-WindowsUpdate}}
-    function Get-AptUpdates {${function:Get-AptUpdates}}
-    function Get-UserCommand {${function:Get-UserCommand}}
-    function Get-FlatpakUpdates {${function:Get-FlatpakUpdates}}
-    function Get-SnapUpdates {${function:Get-SnapUpdates}}
-    function Get-PowerShellReleaseUpdate {${function:Get-PowerShellReleaseUpdate}}
-    function ConvertFrom-WingetTable {${function:ConvertFrom-WingetTable}}
-    function Get-WingetPath {${function:Get-WingetPath}}
-    function Get-PowerShellHosts {${function:Get-PowerShellHosts}}
-    function Invoke-PowerShellModules {${function:Invoke-PowerShellModules}}
-"@)
-
-    return Start-Job -Name 'inventory' -InitializationScript $init -ArgumentList $OnLinux -ScriptBlock {
+    return Start-AgentJob -Name 'inventory' -Functions 'Get-WingetSoftware', 'Get-WindowsUpdate', 'Get-AptUpdates', 'Get-UserCommand', 'Get-FlatpakUpdates', 'Get-SnapUpdates', 'Get-PowerShellReleaseUpdate', 'ConvertFrom-WingetTable', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules' -ArgumentList $OnLinux -ScriptBlock {
         param ($OnLinux)
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
         $data = @{}
@@ -1898,12 +1910,7 @@ function Start-HealthCollection {
     )
 
     # smartctl / storage reliability counters talk to every disk, run them rarely and at idle priority.
-    $init = [scriptblock]::Create(@"
-    function Get-DiskHealth {${function:Get-DiskHealth}}
-    function Get-LinuxDiskHealth {${function:Get-LinuxDiskHealth}}
-"@)
-
-    return Start-Job -Name 'health' -InitializationScript $init -ArgumentList $OnLinux, $Previous -ScriptBlock {
+    return Start-AgentJob -Name 'health' -Functions 'Get-DiskHealth', 'Get-LinuxDiskHealth' -ArgumentList $OnLinux, $Previous -ScriptBlock {
         param ($OnLinux, $Previous)
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
         try {
@@ -2055,16 +2062,8 @@ function Start-UpdateJob {
         return
     }
 
-    $init = [scriptblock]::Create(@"
-    function Install-WindowsUpdate {${function:Install-WindowsUpdate}}
-    function Get-WingetPath {${function:Get-WingetPath}}
-    function Get-PowerShellHosts {${function:Get-PowerShellHosts}}
-    function Invoke-PowerShellModules {${function:Invoke-PowerShellModules}}
-    function Get-UserCommand {${function:Get-UserCommand}}
-"@)
-
     $script:UpdateJobStarted = Get-Date
-    $script:UpdateJob = Start-Job -Name 'updates' -InitializationScript $init -ArgumentList $OnLinux, "$AgentDir/updates.log" -ScriptBlock {
+    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log" -ScriptBlock {
         param ($OnLinux, $OutputLog)
 
         if ((Test-Path -Path $OutputLog) -and (Get-Item -Path $OutputLog).Length -gt 2MB) {
