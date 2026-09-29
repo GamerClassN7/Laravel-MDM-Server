@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.7.2'
+$AgentVersion = '1.7.3'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent', 'runScripts')
 # The server's public key ("n:e", base64), filled in by the server when it serves this script.
 # The agent pins it on the first start and then trusts only what is signed with it.
@@ -581,7 +581,8 @@ ConvertTo-Json -InputObject @($outdated) -Compress
                 return
             }
             $json = (Get-Content -Path $output -Raw) -as [string]
-            if ($json) { @($json.Trim() | ConvertFrom-Json) | Where-Object { $_ } }
+            # Windows PowerShell 5.1 outputs a JSON array as one object: enumerate it explicitly.
+            if ($json) { foreach ($item in @($json.Trim() | ConvertFrom-Json | ForEach-Object { $_ })) { if ($item) { $item } } }
         }
         catch {
         }

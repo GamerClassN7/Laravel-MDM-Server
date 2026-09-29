@@ -416,7 +416,28 @@ class Device extends Model
     /** Outdated PowerShell Gallery modules per edition (Windows PowerShell, PowerShell 7). */
     public function getModuleUpdatesAttribute(): array
     {
-        return self::listOf(json_decode(json_encode($this->data->module_updates ?? []), true));
+        $modules = [];
+        foreach (self::listOf(json_decode(json_encode($this->data->module_updates ?? []), true)) as $row) {
+            // Agents up to 1.7.2 on Windows PowerShell 5.1 sent all modules of an edition as one row
+            // with lists (Name: [..], Version: [..], ...): split it into one row per module.
+            $count = is_array($row['Name'] ?? null) ? count($row['Name']) : 1;
+            for ($i = 0; $i < $count; $i++) {
+                $module = [];
+                foreach (['Name', 'Version', 'Available', 'Edition', 'User', 'Error'] as $field) {
+                    $value = $row[$field] ?? null;
+                    if (is_array($value)) {
+                        // User and Error skip null values in such a list, they only line up when complete.
+                        $value = array_is_list($value) && count($value) === $count ? ($value[$i] ?? null) : null;
+                    }
+                    $module[$field] = is_scalar($value) ? (string) $value : null;
+                }
+                if (filled($module['Name'])) {
+                    $modules[] = $module;
+                }
+            }
+        }
+
+        return $modules;
     }
 
     /**
