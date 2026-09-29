@@ -86,13 +86,27 @@ Route::middleware('auth:api')->group(function () {
         }
 
         $options = config('broadcasting.connections.reverb.options');
+        $host = $options['host'] ?? null;
+        $port = (int) ($options['port'] ?? 0);
+        $scheme = $options['scheme'] ?? 'https';
+
+        // REVERB_HOST is also where the app publishes events. When it is local (the Docker image
+        // publishes to Reverb inside the container) or not set, agents connect to the address they
+        // reach this server on: nginx in front of the app proxies /app to Reverb.
+        if (blank($host) || in_array(strtolower($host), ['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'], true)) {
+            // Behind a TLS proxy this is http on port 80; the agent switches to 443 because its
+            // -ServerUrl is https.
+            $host = $request->getHost();
+            $scheme = $request->getScheme();
+            $port = (int) $request->getPort();
+        }
 
         return response()->json([
             'enabled' => true,
             'key' => config('broadcasting.connections.reverb.key'),
-            'host' => $options['host'],
-            'port' => (int) $options['port'],
-            'scheme' => $options['scheme'],
+            'host' => $host,
+            'port' => $port,
+            'scheme' => $scheme,
             'path' => config('reverb.servers.reverb.path', ''),
             'channel' => 'private-device.'.$device->id,
             'auth_url' => url('/api/broadcasting/auth'),
