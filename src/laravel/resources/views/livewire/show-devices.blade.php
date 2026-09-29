@@ -6,7 +6,7 @@
                     @forelse ($devices as $device)
                         <a class="list-group-item list-group-item-action d-flex justify-content-between align-items-center {{ isset($selectedDevice) && $device->id == $selectedDevice->id ? 'active' : '' }}" href="#" wire:click.prevent="selectDevice({{ $device->id }})">
                             <span>
-                                <i class="fas fa-desktop me-2"></i>{{ $device->DisplayName }}
+                                <i class="{{ $device->typeIcon }} me-2" title="{{ __(ucfirst($device->type)) }}"></i>{{ $device->DisplayName }}
                             </span>
                             @if ($device->offline)
                                 <x-badge color="secondary" size="sm" variant="subtle">{{ __('Offline') }}</x-badge>

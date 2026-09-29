@@ -41,6 +41,7 @@ Route::middleware('auth:api')->post('/device', function (Request $request) {
     $device->os = $data['machine']['os'] ?? '';
 
     $device->data = json_encode($data);
+    $device->last_http_at = now();
 
     $commands = $device->commands;
 
@@ -101,7 +102,7 @@ Route::middleware('auth:api')->group(function () {
 
     // Heartbeat fallback for agents without a WebSocket connection.
     Route::post('/device/heartbeat', function (Request $request) {
-        Device::recordHeartbeat($request->user()->id, $request->input('metrics'));
+        Device::recordHeartbeat($request->user()->id, $request->input('metrics'), 'http');
 
         return response()->noContent();
     });

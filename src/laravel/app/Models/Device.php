@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\AgentScript;
 use Carbon\CarbonInterval;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -12,19 +13,36 @@ class Device extends Model
 {
     use HasFactory;
 
-    public const COMMANDS = ['turnOff', 'restart', 'doUpdates'];
+    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'updateAgent'];
+
+    public const TYPE_ICONS = [
+        'server' => 'fas fa-server',
+        'laptop' => 'fas fa-laptop',
+        'desktop' => 'fas fa-desktop',
+    ];
+
+    /** Seconds without a report after which the REST API connection is shown as inactive (reports come every 5 min). */
+    public const REPORT_TIMEOUT = 660;
 
     /** Seconds without a heartbeat after which the device is considered offline. */
     public const HEARTBEAT_TIMEOUT = 90;
 
     protected $casts = [
         'last_seen_at' => 'datetime',
+        'last_ws_at' => 'datetime',
+        'last_http_at' => 'datetime',
     ];
 
-    public static function recordHeartbeat(int $id, mixed $metrics = null): void
+    /**
+     * @param  'ws'|'http'  $channel
+     */
+    public static function recordHeartbeat(int $id, mixed $metrics = null, string $channel = 'ws'): void
     {
         // Query builder update, so the heartbeat does not touch updated_at (time of the last report).
-        $updated = static::query()->whereKey($id)->toBase()->update(['last_seen_at' => now()]);
+        $updated = static::query()->whereKey($id)->toBase()->update([
+            'last_seen_at' => now(),
+            $channel === 'ws' ? 'last_ws_at' : 'last_http_at' => now(),
+        ]);
 
         if ($updated && $metrics = DeviceMetric::sanitize($metrics)) {
             DeviceMetric::query()->create($metrics + ['device_id' => $id]);
@@ -34,6 +52,79 @@ class Device extends Model
     public function metrics(): HasMany
     {
         return $this->hasMany(DeviceMetric::class);
+    }
+
+    /**
+     * Queues a command for the agent and pushes it over the WebSocket; returns false when it is not accepted.
+     */
+    public function queueCommand(string $command): bool
+    {
+        if (! in_array($command, self::COMMANDS, true) || in_array($command, $this->commands ?? [], true) || $this->offline) {
+            return false;
+        }
+
+        $this->commands = array_merge($this->commands ?? [], [$command]);
+        $this->save();
+
+        // Instant delivery over WebSocket; the command stays queued for the HTTP report as a fallback.
+        rescue(fn () => \App\Events\DeviceCommandIssued::dispatch($this, $command));
+
+        return true;
+    }
+
+    /** server, laptop or desktop, as detected by the agent. */
+    public function getTypeAttribute(): string
+    {
+        $type = $this->data->machine->Type ?? null;
+
+        return array_key_exists($type, self::TYPE_ICONS) ? $type : 'desktop';
+    }
+
+    /** windows or linux; older agents do not report it, guess from the OS name. */
+    public function getPlatformAttribute(): string
+    {
+        $platform = $this->data->machine->Platform ?? null;
+        if (in_array($platform, ['windows', 'linux'], true)) {
+            return $platform;
+        }
+
+        return preg_match('/linux|ubuntu|debian/i', (string) $this->os) ? 'linux' : 'windows';
+    }
+
+    public function getTypeIconAttribute(): string
+    {
+        return self::TYPE_ICONS[$this->type];
+    }
+
+    /** Version reported by the agent; null for agents older than version reporting. */
+    public function getAgentVersionAttribute(): ?string
+    {
+        return $this->data->machine->AgentVersion ?? null;
+    }
+
+    public function getAgentOutdatedAttribute(): bool
+    {
+        $latest = AgentScript::version();
+
+        return $latest !== null && ($this->agent_version === null || version_compare($this->agent_version, $latest, '<'));
+    }
+
+    /** Old agents cannot update themselves, they have to be reinstalled. */
+    public function getAgentUpdatableAttribute(): bool
+    {
+        return $this->agent_version !== null;
+    }
+
+    public function getConnectedViaWebsocketAttribute(): bool
+    {
+        return $this->last_ws_at !== null && $this->last_ws_at->diffInSeconds() <= self::HEARTBEAT_TIMEOUT;
+    }
+
+    public function getConnectedViaApiAttribute(): bool
+    {
+        $last = $this->last_http_at ?? $this->updated_at;
+
+        return $last !== null && $last->diffInSeconds() <= self::REPORT_TIMEOUT;
     }
 
     public function getDataAttribute($value)
@@ -82,7 +173,9 @@ class Device extends Model
         if (empty($name)) {
             $name = $this->name;
         }
-        return $name;
+
+        // Enrolled devices have no name until their first report.
+        return $name ?: __('Device #:id', ['id' => $this->id]);
     }
 
     public function getNiceUptimeAttribute()
