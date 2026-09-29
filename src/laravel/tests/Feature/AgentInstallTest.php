@@ -29,11 +29,13 @@ class AgentInstallTest extends TestCase
         $this->assertSame(['windows', 'pwsh'], array_keys($commands));
         foreach ($commands as $command) {
             $this->assertStringContainsString("'".url('agent/app.ps1')."'", $command);
-            $this->assertStringContainsString("-ServerUrl '".url('/')."' -EnrolmentCode 1234 -Install", $command);
+            $this->assertStringContainsString("-ServerUrl '".url('/')."' -EnrolmentCode 1234 -Install }", $command);
         }
         $this->assertStringStartsWith('iwr -useb ', $commands['windows']);
-        $this->assertStringContainsString('& powershell -ExecutionPolicy Bypass -File "$env:TEMP\\mdm-agent.ps1"', $commands['windows']);
-        $this->assertStringContainsString('& pwsh -ExecutionPolicy Bypass -File $f', $commands['pwsh']);
+        $this->assertStringContainsString('"$env:TEMP\\mdm-agent-$(Get-Random).ps1"', $commands['windows']);
+        $this->assertStringContainsString('if ($?) { & powershell -ExecutionPolicy Bypass -File $f ', $commands['windows']);
+        $this->assertStringContainsString('"mdm-agent-$(Get-Random).ps1"', $commands['pwsh']);
+        $this->assertStringContainsString('if ($?) { & pwsh -ExecutionPolicy Bypass -File $f ', $commands['pwsh']);
     }
 
     public function test_agent_download_url_can_be_overridden(): void

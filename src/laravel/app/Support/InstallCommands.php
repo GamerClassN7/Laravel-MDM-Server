@@ -16,16 +16,18 @@ class InstallCommands
         $scriptUrl = config('mdm.agent_download_url') ?: url('agent/app.ps1');
         $arguments = sprintf("-ServerUrl '%s' -EnrolmentCode %s -Install", $serverUrl, $enrolmentCode);
 
+        // A unique file name avoids reusing a stale download (e.g. one another user left in /tmp),
+        // and "if ($?)" only runs the installer when the download succeeded.
         return [
             // Windows PowerShell 5.1, run as Administrator.
             'windows' => sprintf(
-                'iwr -useb \'%s\' -OutFile "$env:TEMP\mdm-agent.ps1"; & powershell -ExecutionPolicy Bypass -File "$env:TEMP\mdm-agent.ps1" %s',
+                'iwr -useb \'%s\' -OutFile ($f = "$env:TEMP\mdm-agent-$(Get-Random).ps1"); if ($?) { & powershell -ExecutionPolicy Bypass -File $f %s }',
                 $scriptUrl,
                 $arguments,
             ),
             // PowerShell 7 on Windows (as Administrator) or Linux (sudo pwsh).
             'pwsh' => sprintf(
-                'iwr -useb \'%s\' -OutFile ($f = Join-Path ([IO.Path]::GetTempPath()) \'mdm-agent.ps1\'); & pwsh -ExecutionPolicy Bypass -File $f %s',
+                'iwr -useb \'%s\' -OutFile ($f = Join-Path ([IO.Path]::GetTempPath()) "mdm-agent-$(Get-Random).ps1"); if ($?) { & pwsh -ExecutionPolicy Bypass -File $f %s }',
                 $scriptUrl,
                 $arguments,
             ),
