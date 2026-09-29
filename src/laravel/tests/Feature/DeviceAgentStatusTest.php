@@ -144,4 +144,18 @@ class DeviceAgentStatusTest extends TestCase
             ->assertSee('Or run on the device (sudo pwsh):')
             ->assertSee(\App\Support\InstallCommands::update($device));
     }
+
+    public function test_agent_badge_colour_follows_the_version(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $current = $this->createDevice(['AgentVersion' => AgentScript::version()]);
+        $old = $this->createDevice(['AgentVersion' => '0.9.0']);
+
+        Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $current->id])
+            ->assertSeeHtml('bg-success-subtle')
+            ->assertSee('The agent is up to date');
+        Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $old->id])
+            ->assertSeeHtml('bg-warning-subtle')
+            ->assertSee('A newer agent is available');
+    }
 }

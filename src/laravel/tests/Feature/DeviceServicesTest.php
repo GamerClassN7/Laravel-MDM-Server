@@ -13,7 +13,7 @@ class DeviceServicesTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function report(array $extra): Device
+    private function report(array $extra, array $machine = []): Device
     {
         $device = new Device();
         $device->token = hash('sha256', 'secret-token');
@@ -26,7 +26,7 @@ class DeviceServicesTest extends TestCase
                 'os' => 'Debian GNU/Linux 12',
                 'RestartRequired' => false,
                 'Drives' => [],
-            ],
+            ] + $machine,
         ] + $extra)->assertOk();
 
         return $device->fresh();
@@ -119,11 +119,84 @@ class DeviceServicesTest extends TestCase
         $device = $this->report([
             'docker' => ['error' => 'Cannot connect to the Docker daemon'],
             'disk_health' => ['error' => 'smartctl not found, install smartmontools (apt install smartmontools).'],
-        ]);
+        ], ['AgentVersion' => '1.5.0']);
 
         Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
             ->assertSee('Cannot connect to the Docker daemon')
             ->assertSee('install smartmontools')
             ->assertDontSee('No containers.');
+    }
+
+    public function test_docker_tab_is_hidden_when_an_old_agent_found_only_the_cli(): void
+    {
+        $this->actingAs(User::factory()->create());
+        // Agents before 1.5.0 reported Docker whenever the docker command existed.
+        $device = $this->report(['docker' => ['error' => 'Cannot connect to the Docker daemon']], ['AgentVersion' => '1.4.0']);
+
+        $this->assertNull($device->docker);
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertDontSee('Cannot connect to the Docker daemon');
+
+        // Containers from an old agent are still shown.
+        $this->withToken('secret-token')->postJson('/api/device', [
+            'machine' => ['Hostname' => 'srv1', 'AgentVersion' => '1.4.0', 'Drives' => []],
+            'docker' => ['containers' => [['Name' => 'web', 'State' => 'running']]],
+        ])->assertOk();
+        $this->assertCount(1, $device->fresh()->docker['containers']);
+    }
+
+    public function test_phased_and_held_updates_are_marked_and_not_counted(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $device = $this->report(['os_updates' => [
+            ['Title' => 'drkonqi 6.6.6-0ubuntu0.1', 'Status' => 'phased'],
+            ['Title' => 'forticlient 7.4.8.1904', 'Status' => 'held'],
+            ['Title' => 'curl 8.18.0-1ubuntu2.7', 'Status' => 'installable'],
+        ]]);
+
+        $this->assertSame(['curl 8.18.0-1ubuntu2.7', 'drkonqi 6.6.6-0ubuntu0.1', 'forticlient 7.4.8.1904'], array_column($device->updates, 'Title'));
+        $this->assertCount(1, $device->installableUpdates);
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('Phased')
+            ->assertSee('Held back')
+            ->assertSeeHtml('fa-hourglass-half')
+            ->assertSeeHtml('fa-pause-circle')
+            ->assertSeeHtml('text-warning me-2" title="Updates available"');
+    }
+
+    public function test_only_deferred_updates_raise_no_warning(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $device = $this->report(['os_updates' => [['Title' => 'drkonqi 6.6.6', 'Status' => 'phased']]]);
+
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('drkonqi 6.6.6')
+            ->assertDontSeeHtml('title="Updates available"');
+
+        // Windows and older agents send no status: installable.
+        $this->withToken('secret-token')->postJson('/api/device', [
+            'machine' => ['Hostname' => 'srv1', 'Drives' => []],
+            'os_updates' => [['Title' => 'KB5031356']],
+        ])->assertOk();
+        $this->assertCount(1, $device->fresh()->installableUpdates);
+    }
+
+    public function test_application_updates_show_source_and_versions(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $device = $this->report([
+            'packages_updates' => [
+                ['Id' => 'org.mozilla.firefox', 'Version' => '130.0', 'Avaliable' => '131.0.2', 'Source' => 'flatpak'],
+                ['Id' => 'code', 'Version' => '1.93.0', 'Avaliable' => '1.94.2', 'Source' => 'snap'],
+            ],
+            'module_updates' => [['Name' => 'Pester', 'Version' => '5.5.0', 'Available' => '5.6.1', 'Edition' => 'PowerShell 7', 'User' => 'jonatanrek']],
+        ]);
+
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('org.mozilla.firefox')
+            ->assertSee('flatpak')
+            ->assertSee('130.0 → 131.0.2')
+            ->assertSee('snap')
+            ->assertSee('jonatanrek');
     }
 }

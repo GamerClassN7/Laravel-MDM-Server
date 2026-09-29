@@ -152,4 +152,35 @@ class DeviceLiveStateTest extends TestCase
         $this->withToken('secret-token')->postJson('/api/device', ['machine' => ['Hostname' => 'srv1', 'Drives' => []]])
             ->assertJson(['commands' => []]);
     }
+
+    public function test_power_status_comes_from_the_live_state(): void
+    {
+        $device = $this->createDevice();
+        $this->withToken('secret-token')->postJson('/api/device', [
+            'machine' => ['Hostname' => 'nb1', 'Battery' => 80, 'PluggedIn' => false, 'Drives' => []],
+        ])->assertOk();
+        $device->refresh();
+        $this->assertSame(80, $device->batteryLevel);
+        $this->assertFalse($device->pluggedIn);
+
+        $this->travel(30)->seconds();
+        Device::recordHeartbeat($device->id, null, 'ws', ['power' => ['battery' => 81, 'plugged' => true]]);
+        $device->refresh();
+        $this->assertSame(81, $device->batteryLevel);
+        $this->assertTrue($device->pluggedIn);
+
+        $this->actingAs(\App\Models\User::factory()->create());
+        \Livewire\Livewire::test(\App\Livewire\DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('fa-bolt', false)
+            ->assertSee('81 %');
+    }
+
+    public function test_devices_without_power_data_have_no_charging_state(): void
+    {
+        $device = $this->createDevice();
+        $this->withToken('secret-token')->postJson('/api/device', ['machine' => ['Hostname' => 'pc1', 'Battery' => 50, 'Drives' => []]])->assertOk();
+
+        $this->assertNull($device->fresh()->pluggedIn);
+        $this->assertSame(['battery' => 100, 'plugged' => false], Device::sanitizeLiveState(['power' => ['battery' => 250, 'plugged' => 'no']])['power']);
+    }
 }

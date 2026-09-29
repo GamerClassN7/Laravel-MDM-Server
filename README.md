@@ -153,17 +153,32 @@ The agent is designed to stay out of the way:
 | | Windows | Debian / Ubuntu |
 |---|---|---|
 | Report | OS, uptime, user, CPU, battery, drives, networks, pending reboot | the same, from `/etc/os-release`, `/proc`, `df`, `ip` and `/var/run/reboot-required` |
-| Updates | Windows Update, winget | `apt list --upgradable` |
-| PowerShell modules | outdated PowerShell Gallery modules in Windows PowerShell and PowerShell 7 | the same in PowerShell 7 |
+| Updates | Windows Update, winget (any system language) | `apt list --upgradable` (phased / held back marked), flatpak (system and users), snap |
+| PowerShell | outdated PowerShell Gallery modules in Windows PowerShell and PowerShell 7 (also users' own, listed only), a newer PowerShell 7 release | the same in PowerShell 7 |
 | Services | running and stopped automatic services (`Get-Service`) | running and failed units (`systemctl`) |
 | Docker (when installed) | containers and their state (`docker ps --all`) | the same |
+| Virtualization | manufacturer and model (Hyper-V, VMware, KVM / QEMU, VirtualBox, Xen …) | `systemd-detect-virt`, DMI (VMs and containers) |
+| Power | battery level and mains power (`GetSystemPowerStatus`) | `/sys/class/power_supply` |
 | Disk health | `Get-PhysicalDisk`, `Get-StorageReliabilityCounter` | `smartctl` ([smartmontools](https://www.smartmontools.org/), `apt install smartmontools`) |
 | Turn off / Restart | `Stop-Computer` / `Restart-Computer` | `systemctl poweroff` / `systemctl reboot` |
-| Install updates | winget (also PowerShell 7 itself), PowerShell modules, Windows Update | `apt-get update && apt-get upgrade` (also PowerShell 7), PowerShell modules |
+| Install updates | winget (also PowerShell 7 itself), PowerShell modules, Windows Update | `apt-get upgrade --with-new-pkgs`, flatpak, snap, PowerShell modules |
 
 The device detail has tabs for drives, updates, networks, **services** (with search, failed ones
-first), **Docker** containers (only on devices with Docker) and **disk health** (temperature,
-power-on hours, SSD wear, reallocated / pending sectors and media errors).
+first), **Docker** containers (only where the Docker engine is installed, not just the CLI) and
+**disk health** (temperature, power-on hours, SSD wear, reallocated / pending sectors and media
+errors). Virtual machines and containers get a badge with the hypervisor; their disk health tab is
+hidden unless a disk passed through to the VM reports real S.M.A.R.T. values. The battery shows a
+charging indicator while the device is on mains power.
+
+**Install updates** runs in the background: on Linux `apt-get upgrade --with-new-pkgs` (waits for a
+running apt, installs new dependencies, removes nothing), on Windows winget, Windows Update, and on
+both PowerShell module updates. Every step with its result is written to `agent.log`, the full
+output of apt / winget to `updates.log`, and the update list is collected again right after.
+On Linux the update list tells what apt would install now (a simulated `apt-get upgrade`, no
+network): updates deferred by phasing and held back ones (pinned, held, or needing other packages
+to change) are shown with an icon and do not count as available updates. The list is also
+collected again a few minutes after packages are installed outside the agent (apt,
+unattended-upgrades).
 
 ### Installation
 

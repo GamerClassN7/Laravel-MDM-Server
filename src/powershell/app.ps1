@@ -71,7 +71,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.4.0'
+$AgentVersion = '1.6.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent')
 # $IsLinux only exists in PowerShell 6+, Windows PowerShell 5.1 is always Windows.
 $OnLinux = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
@@ -81,7 +81,7 @@ $AgentDir = $PSScriptRoot
 function Get-MachineInfo {
     $DnsInfo = [System.Net.Dns]::GetHostByName($env:computerName)
     $OperatingSystem = Get-CimInstance -ClassName Win32_OperatingSystem -Property Caption, Version, LastBootUpTime, ProductType
-    $ComputerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -Property UserName, PCSystemType
+    $ComputerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -Property UserName, PCSystemType, Manufacturer, Model
     $Battery = (Get-CimInstance -ClassName Win32_Battery -Property EstimatedChargeRemaining).EstimatedChargeRemaining
     # ProductType 1 = workstation (2, 3 = server editions), PCSystemType 2 = mobile.
     $Type = if ($OperatingSystem.ProductType -ne 1) { 'server' } elseif ($ComputerSystem.PCSystemType -eq 2 -or $null -ne $Battery) { 'laptop' } else { 'desktop' }
@@ -89,6 +89,7 @@ function Get-MachineInfo {
         AgentVersion    = $AgentVersion
         Platform        = 'windows'
         Type            = $Type
+        Virtualization  = Get-Virtualization -Vendor $ComputerSystem.Manufacturer -Product $ComputerSystem.Model
         Hostname        = $DnsInfo.HostName
         User            = $env:USERNAME
         os              = "$($OperatingSystem.Caption) ($($OperatingSystem.Version))"
@@ -97,6 +98,7 @@ function Get-MachineInfo {
         Processor       = (Get-ItemProperty -Path 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name ProcessorNameString -ErrorAction SilentlyContinue).ProcessorNameString
         Cores           = [Environment]::ProcessorCount
         Battery         = $Battery
+        PluggedIn       = (Get-PowerStatus).plugged
         RestartRequired = Test-PendingReboot
         Drives          = Get-Volume | Where-Object -Property DriveLetter -Value '' -NotLike | ForEach-Object {
             [PSCustomObject]@{
@@ -135,73 +137,78 @@ function Get-WingetPath {
     return $null
 }
 
+function ConvertFrom-WingetTable {
+    param (
+        [string[]]
+        $Lines
+    )
+
+    # Locale independent (winget prints "Name" / "Název" ... in the system language, SYSTEM included):
+    # a table is the header above a line of dashes. Columns start where a header word starts and
+    # no row has text running across that position (so "K dispozici" stays one column).
+    $Lines = @($Lines | ForEach-Object { ("$_" -split "`r")[-1].TrimEnd() })
+    for ($i = 1; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -notmatch '^-{10,}$') {
+            continue
+        }
+        $header = $Lines[$i - 1]
+        $rows = @()
+        for ($j = $i + 1; $j -lt $Lines.Count -and $Lines[$j].Trim(); $j++) { $rows += $Lines[$j] }
+
+        $starts = @(0)
+        foreach ($match in [regex]::Matches($header, '(?<=\s)\S')) {
+            $position = $match.Index
+            $crossed = @($rows | Where-Object { $_.Length -gt $position -and $_[$position - 1] -ne ' ' -and $_[$position] -ne ' ' })
+            # Rows shorter than the header (a footer like "3 upgrades available.") do not count.
+            $crossed = @($crossed | Where-Object { $_.Length -ge $header.Length - 10 })
+            if (-not $crossed) { $starts += $position }
+        }
+        if ($starts.Count -lt 4) {
+            continue
+        }
+
+        foreach ($row in $rows) {
+            $values = for ($c = 0; $c -lt $starts.Count; $c++) {
+                $from = $starts[$c]
+                $to = if ($c + 1 -lt $starts.Count) { $starts[$c + 1] } else { [int]::MaxValue }
+                if ($row.Length -le $from) { '' } else { $row.Substring($from, [math]::Min($to, $row.Length) - $from).Trim() }
+            }
+            # Name, Id, Version, [Available,] Source; footers and notes have no id and version.
+            if ($values.Count -ge 4 -and $values[1] -and $values[2] -and $values[1] -notmatch '\s') {
+                ,$values
+            }
+        }
+        $i = $j
+    }
+}
+
 function Get-WingetSoftware {
     param (
         [switch]
         $Updatable
     )
-    begin {
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        $winget = Get-WingetPath
-        if (-not $winget) {
-            throw 'winget not found'
-        }
-        # Never prompt (the agent runs without a user): accept the source agreements up front.
-        $upgradeResult = & $winget list --accept-source-agreements --disable-interactivity | Out-String
-        if ($Updatable) {
-            $upgradeResult = & $winget update --accept-source-agreements --disable-interactivity | Out-String
-        }
 
-        $lines = $upgradeResult.Split([Environment]::NewLine)
-
-        $fl = 0
-        while ( -not $lines[$fl].StartsWith("Name")) {
-            $fl++
-        }
-
-        $idStart = $lines[$fl].IndexOf("Id")
-        $versionStart = $lines[$fl].IndexOf("Version")
-
-        if ($Updatable) {
-            $availableStart = $lines[$fl].IndexOf("Available")
-        }
-
-        $sourceStart = $lines[$fl].IndexOf("Source")
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $winget = Get-WingetPath
+    if (-not $winget) {
+        throw 'winget not found'
     }
+    # Never prompt (the agent runs without a user): accept the source agreements up front.
+    $command = if ($Updatable) { 'upgrade' } else { 'list' }
+    $output = @(& $winget $command --accept-source-agreements --disable-interactivity 2>$null)
 
-    process {
-        For ($i = $fl + 1; $i -le $lines.Length; $i++) {
-            $line = $lines[$i]
-            if ($lines[$fl].Length -ne $line.Length) {
-                continue
-            }
-            if (-not [string]::IsNullOrEmpty($line) -and -not $line.StartsWith('-')) {
-                $name = $line.Substring(0, $idStart).TrimEnd()
-                $id = $line.Substring($idStart, ($versionStart - $idStart)).TrimEnd()
-
-                if ($Updatable) {
-                    $version = $line.Substring($versionStart, ($availableStart - $versionStart)).TrimEnd()
-                    $available = $line.Substring($availableStart, ($sourceStart - $availableStart)).TrimEnd()
-                }
-                else {
-                    $version = $line.Substring($versionStart, ($sourceStart - $versionStart)).TrimEnd()
-                }
-                $source = $line.Substring($sourceStart, ($line.Length - $sourceStart)).TrimEnd()
-
-                $tempObjLine = [PSCustomObject]@{
-                    Name    = $name
-                    Id      = $id
-                    Version = $version
-                    Source  = $source
-                }
-
-                if ($Updatable) {
-                    $tempObjLine | Add-Member -Name 'Avaliable' -Value $available -MemberType NoteProperty
-                }
-
-                $tempObjLine
-            }
+    foreach ($values in @(ConvertFrom-WingetTable -Lines $output)) {
+        $hasAvailable = $values.Count -ge 5
+        $item = [PSCustomObject]@{
+            Name    = $values[0]
+            Id      = $values[1]
+            Version = $values[2]
+            Source  = $values[$values.Count - 1]
         }
+        if ($Updatable) {
+            $item | Add-Member -Name 'Avaliable' -Value $(if ($hasAvailable) { $values[3] } else { '' }) -MemberType NoteProperty
+        }
+        $item
     }
 }
 
@@ -221,19 +228,29 @@ function Get-WindowsUpdate {
 }
 
 function Install-WindowsUpdate {
+    # Returns log lines. ResultCode: 2 succeeded, 3 succeeded with errors, 4 failed, 5 aborted.
+    $results = @{ 0 = 'not started'; 1 = 'in progress'; 2 = 'succeeded'; 3 = 'succeeded with errors'; 4 = 'failed'; 5 = 'aborted' }
     $Session = New-Object -ComObject Microsoft.Update.Session
     $Updates = $Session.CreateUpdateSearcher().Search("IsInstalled=0 and Type='Software' and IsHidden=0").Updates
     if ($Updates.Count -eq 0) {
+        'Windows Update: nothing to install'
         return
     }
+    "Windows Update: $($Updates.Count) update(s): $(@($Updates | ForEach-Object { $_.Title }) -join '; ')"
 
     $Downloader = $Session.CreateUpdateDownloader()
     $Downloader.Updates = $Updates
-    $Downloader.Download() | Out-Null
+    $download = $Downloader.Download()
+    "Windows Update: download $($results[[int]$download.ResultCode])"
 
     $Installer = $Session.CreateUpdateInstaller()
     $Installer.Updates = $Updates
-    $Installer.Install() | Out-Null
+    $install = $Installer.Install()
+    "Windows Update: install $($results[[int]$install.ResultCode])$(if ($install.RebootRequired) { ', restart required' })"
+    for ($i = 0; $i -lt $Updates.Count; $i++) {
+        $code = [int]$install.GetUpdateResult($i).ResultCode
+        if ($code -ne 2) { "Windows Update: $($Updates.Item($i).Title): $($results[$code])" }
+    }
 }
 
 function Test-PendingReboot {
@@ -287,9 +304,25 @@ function Get-AgentServices {
     }
 }
 
+function Test-DockerInstalled {
+    # The CLI alone (docker-ce-cli, a Docker Desktop that is not running, a leftover) is not Docker:
+    # the engine must be reachable at its default endpoint or one set in DOCKER_HOST.
+    if (-not (Get-Command -Name docker -CommandType Application -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+    if ($env:DOCKER_HOST) {
+        return $true
+    }
+    if ($OnLinux) {
+        return (Test-Path -Path /var/run/docker.sock) -or (Test-Path -Path /run/docker.sock)
+    }
+
+    return Test-Path -Path '\\.\pipe\docker_engine'
+}
+
 function Get-DockerContainers {
     # Only when Docker is installed; one call to the local daemon, no per-container requests.
-    if (-not (Get-Command -Name docker -CommandType Application -ErrorAction SilentlyContinue)) {
+    if (-not (Test-DockerInstalled)) {
         return $null
     }
 
@@ -462,14 +495,33 @@ $canCheck = (Get-Command -Name Get-InstalledModule -ErrorAction SilentlyContinue
 if ($canCheck -and $PSVersionTable.PSEdition -ne 'Core' -and -not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) { $canCheck = $false }
 if ($canCheck) {
     $installed = @(Get-InstalledModule -ErrorAction SilentlyContinue | Where-Object { $_.Repository -eq 'PSGallery' } |
-        Group-Object -Property Name | ForEach-Object { $_.Group | Sort-Object -Property { ConvertTo-ModuleVersion $_.Version } -Descending | Select-Object -First 1 })
+        ForEach-Object { [pscustomobject]@{ Name = $_.Name; Version = "$($_.Version)"; User = $null } })
+    # Modules users installed for themselves (Install-Module -Scope CurrentUser) are not visible to
+    # SYSTEM / root: read their PowerShellGet metadata. They are listed, not updated (only the
+    # user can update their own profile).
+    $userModules = if ($IsLinux) {
+        @(Get-ChildItem -Path '/home/*/.local/share/powershell/Modules/*/*/PSGetModuleInfo.xml' -ErrorAction SilentlyContinue)
+    } else {
+        $folder = if ($PSVersionTable.PSEdition -eq 'Core') { 'PowerShell' } else { 'WindowsPowerShell' }
+        @(Get-ChildItem -Path "$env:SystemDrive\Users\*\Documents\$folder\Modules\*\*\PSGetModuleInfo.xml", "$env:SystemDrive\Users\*\OneDrive*\Documents\$folder\Modules\*\*\PSGetModuleInfo.xml" -ErrorAction SilentlyContinue)
+    }
+    foreach ($file in $userModules) {
+        try {
+            $info = Import-Clixml -Path $file.FullName
+            $user = ($file.FullName -replace '\\', '/' -split '/')[2]
+            if ($info.Repository -eq 'PSGallery') { $installed += [pscustomobject]@{ Name = $info.Name; Version = "$($info.Version)"; User = $user } }
+        }
+        catch { }
+    }
+    # The newest version per module and owner (side-by-side versions).
+    $installed = @($installed | Group-Object -Property Name, User | ForEach-Object { $_.Group | Sort-Object -Property { ConvertTo-ModuleVersion $_.Version } -Descending | Select-Object -First 1 })
     if ($installed) {
         $latest = @{}
-        foreach ($module in @(Find-Module -Name $installed.Name -Repository PSGallery -ErrorAction SilentlyContinue)) { $latest[$module.Name] = "$($module.Version)" }
+        foreach ($module in @(Find-Module -Name @($installed.Name | Select-Object -Unique) -Repository PSGallery -ErrorAction SilentlyContinue)) { $latest[$module.Name] = "$($module.Version)" }
         foreach ($module in $installed) {
             $available = $latest[$module.Name]
             if ($available -and (ConvertTo-ModuleVersion $available) -gt (ConvertTo-ModuleVersion $module.Version)) {
-                $outdated += [pscustomobject]@{ Name = $module.Name; Version = "$($module.Version)"; Available = $available }
+                $outdated += [pscustomobject]@{ Name = $module.Name; Version = $module.Version; Available = $available; User = $module.User }
             }
         }
     }
@@ -477,6 +529,7 @@ if ($canCheck) {
 if ($Update) {
     # Installed next to the current version, like Update-Module always does; failed ones stay listed.
     $outdated = @($outdated | Where-Object {
+        if ($_.User) { return $true }
         try { Update-Module -Name $_.Name -RequiredVersion $_.Available -Force -Confirm:$false -ErrorAction Stop; $false } catch { $true }
     })
 }
@@ -498,7 +551,7 @@ ConvertTo-Json -InputObject @($outdated) -Compress
             $json = (Get-Content -Path $output -Raw) -as [string]
             if ($json) {
                 foreach ($module in @($json.Trim() | ConvertFrom-Json)) {
-                    if ($module) { $result += [PSCustomObject]@{ Name = $module.Name; Version = $module.Version; Available = $module.Available; Edition = $powershell.Edition } }
+                    if ($module) { $result += [PSCustomObject]@{ Name = $module.Name; Version = $module.Version; Available = $module.Available; Edition = $powershell.Edition; User = $module.User } }
                 }
             }
         }
@@ -512,7 +565,62 @@ ConvertTo-Json -InputObject @($outdated) -Compress
     return $result
 }
 
+function Get-Virtualization {
+    param (
+        # System manufacturer and model (SMBIOS), e.g. "QEMU" / "Standard PC (Q35 + ICH9, 2009)".
+        [string]
+        $Vendor,
+        [string]
+        $Product
+    )
+
+    # Names follow systemd-detect-virt. HypervisorPresent is not used: it is also set on physical
+    # machines running Hyper-V or virtualization-based security.
+    $identity = "$Vendor $Product"
+    $name = switch -Regex ($identity) {
+        'VMware' { 'vmware'; break }
+        'VirtualBox|innotek' { 'oracle'; break }
+        'Parallels' { 'parallels'; break }
+        'Xen|HVM domU' { 'xen'; break }
+        'QEMU|KVM|Standard PC \(|Proxmox' { 'kvm'; break }
+        'Amazon EC2' { 'amazon'; break }
+        'Google Compute Engine' { 'google'; break }
+        'bhyve' { 'bhyve'; break }
+        '^Microsoft Corporation Virtual Machine' { 'microsoft'; break }
+    }
+    if ($name) {
+        return @{ Type = 'vm'; Name = $name }
+    }
+
+    return $null
+}
+
 #region Linux
+
+function Get-LinuxVirtualization {
+    # systemd-detect-virt knows most hypervisors and containers; a VM wins over a container in it.
+    if (Get-Command -Name systemd-detect-virt -CommandType Application -ErrorAction SilentlyContinue) {
+        foreach ($kind in @('vm', 'container')) {
+            $name = "$(systemd-detect-virt --$kind 2>$null)".Trim()
+            if ($LASTEXITCODE -eq 0 -and $name -and $name -ne 'none') {
+                return @{ Type = $kind; Name = $name }
+            }
+        }
+        return $null
+    }
+
+    $vendor = Get-Content -Path /sys/class/dmi/id/sys_vendor -ErrorAction SilentlyContinue
+    $product = Get-Content -Path /sys/class/dmi/id/product_name -ErrorAction SilentlyContinue
+    $vm = Get-Virtualization -Vendor $vendor -Product $product
+    if ($vm) {
+        return $vm
+    }
+    if ((Test-Path -Path /.dockerenv) -or (Test-Path -Path /run/.containerenv)) {
+        return @{ Type = 'container'; Name = if (Test-Path -Path /run/.containerenv) { 'podman' } else { 'docker' } }
+    }
+
+    return $null
+}
 
 function Get-LinuxMachineInfo {
     $osRelease = @{}
@@ -527,6 +635,7 @@ function Get-LinuxMachineInfo {
         AgentVersion    = $AgentVersion
         Platform        = 'linux'
         Type            = Get-LinuxDeviceType -HasBattery ([bool]$battery)
+        Virtualization  = Get-LinuxVirtualization
         Hostname        = [System.Net.Dns]::GetHostName()
         User            = [Environment]::UserName
         os              = $osRelease['PRETTY_NAME']
@@ -535,6 +644,7 @@ function Get-LinuxMachineInfo {
         Processor       = if ($cpu) { $cpu.Matches[0].Groups[1].Value.Trim() } else { $null }
         Cores           = [Environment]::ProcessorCount
         Battery         = if ($battery) { [int](Get-Content -Path "$($battery.FullName)/capacity") } else { $null }
+        PluggedIn       = (Get-PowerStatus).plugged
         RestartRequired = Test-Path -Path /var/run/reboot-required
         Drives          = @(Get-LinuxDrives)
         Networks        = @(Get-LinuxNetworks)
@@ -595,11 +705,112 @@ function Get-LinuxNetworks {
     }
 }
 
+function Get-FlatpakUpdates {
+    # System installation plus every user's own (~/.local/share/flatpak), checked as that user.
+    if (-not (Get-Command -Name flatpak -CommandType Application -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    $installations = @(@{ User = $null; Arguments = @('--system') })
+    foreach ($userHome in @(Get-ChildItem -Path /home -Directory -ErrorAction SilentlyContinue)) {
+        if (Test-Path -Path "$($userHome.FullName)/.local/share/flatpak") {
+            $installations += @{ User = $userHome.Name; Arguments = @('--user') }
+        }
+    }
+
+    foreach ($installation in $installations) {
+        $run = {
+            param ([string[]]$FlatpakArguments)
+            if ($installation.User) { runuser -u $installation.User -- flatpak @FlatpakArguments 2>$null } else { flatpak @FlatpakArguments 2>$null }
+        }
+        $installed = @{}
+        foreach ($line in @(& $run (@('list', '--app') + $installation.Arguments + '--columns=application,version'))) {
+            $parts = "$line" -split "`t"
+            if ($parts[0]) { $installed[$parts[0]] = $parts[1] }
+        }
+        foreach ($line in @(& $run (@('remote-ls', '--updates', '--app') + $installation.Arguments + '--columns=application,version'))) {
+            $parts = "$line" -split "`t"
+            if (-not $parts[0] -or $parts[0] -eq 'Application ID') { continue }
+            [PSCustomObject]@{
+                Id        = $parts[0]
+                Version   = $installed[$parts[0]]
+                Avaliable = $parts[1]
+                Source    = if ($installation.User) { "flatpak ($($installation.User))" } else { 'flatpak' }
+            }
+        }
+    }
+}
+
+function Get-SnapUpdates {
+    if (-not (Get-Command -Name snap -CommandType Application -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    $installed = @{}
+    foreach ($line in @(snap list 2>$null | Select-Object -Skip 1)) {
+        $parts = "$line".Trim() -split '\s+'
+        if ($parts.Count -ge 2) { $installed[$parts[0]] = $parts[1] }
+    }
+    # Name  Version  Rev  Size  Publisher  Notes
+    foreach ($line in @(snap refresh --list 2>$null | Select-Object -Skip 1)) {
+        $parts = "$line".Trim() -split '\s+'
+        if ($parts.Count -ge 2) {
+            [PSCustomObject]@{ Id = $parts[0]; Version = $installed[$parts[0]]; Avaliable = $parts[1]; Source = 'snap' }
+        }
+    }
+}
+
+function Get-PowerShellReleaseUpdate {
+    param (
+        [bool]
+        $OnLinux,
+        # Updates already listed by a package manager, PowerShell is not reported twice.
+        $Known
+    )
+
+    $pwsh = @(Get-PowerShellHosts -OnLinux $OnLinux | Where-Object { $_.Edition -eq 'PowerShell 7' }) | Select-Object -First 1
+    if (-not $pwsh -or @($Known | Where-Object { "$($_.Id) $($_.Title)" -match '(^|\s)(powershell|Microsoft\.PowerShell)(\s|$)' })) {
+        return
+    }
+
+    # The release pwsh itself checks for its update notification.
+    $installed = (& $pwsh.Path -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()' 2>$null | Select-Object -First 1)
+    $latest = (Invoke-RestMethod -Uri 'https://aka.ms/pwsh-buildinfo-stable' -TimeoutSec 30).ReleaseTag -replace '^v', ''
+    try {
+        if ($installed -and $latest -and [version]($latest -split '-')[0] -gt [version](("$installed" -split '-')[0])) {
+            [PSCustomObject]@{ Id = 'PowerShell'; Version = "$installed"; Avaliable = $latest; Source = 'github.com/PowerShell' }
+        }
+    }
+    catch { }
+}
+
 function Get-AptUpdates {
-    # Reads the local apt cache only, no network access.
+    # Reads the local apt cache only, no network access. "apt list --upgradable" also lists
+    # packages apt will not install now, so a simulated upgrade (as Install updates runs it)
+    # tells which ones are installable, deferred by phasing or held back.
+    $simulation = @(apt-get -s -q -o Debug::NoLocking=1 --with-new-pkgs upgrade 2>$null)
+    $installable = @{}
+    $phased = @{}
+    $section = $null
+    foreach ($line in $simulation) {
+        if ($line -match '^Inst (\S+)') {
+            $installable[$Matches[1]] = $true
+        } elseif ($line -match '^\S.*:\s*$') {
+            # A list header, e.g. "The following upgrades have been deferred due to phasing:" (apt 2)
+            # or "Not upgrading yet due to phasing:" (apt 3).
+            $section = if ($line -match 'phasing') { 'phased' } else { 'other' }
+        } elseif ($section -eq 'phased' -and $line -match '^\s+\S') {
+            foreach ($name in ($line.Trim() -split '\s+')) { $phased[$name] = $true }
+        } elseif ($line -notmatch '^\s') {
+            $section = $null
+        }
+    }
+
     apt list --upgradable 2>$null | Where-Object { $_ -match '^(\S+?)/\S+\s+(\S+)' } | ForEach-Object {
+        $name = $Matches[1]
         [PSCustomObject]@{
-            Title          = "$($Matches[1]) $($Matches[2])"
+            Title          = "$name $($Matches[2])"
+            Status         = if ($installable[$name]) { 'installable' } elseif ($phased[$name]) { 'phased' } else { 'held' }
             IsDownloaded   = $false
             RebootRequired = $false
         }
@@ -768,6 +979,10 @@ function Start-InventoryCollection {
     function Get-WingetSoftware {${function:Get-WingetSoftware}}
     function Get-WindowsUpdate {${function:Get-WindowsUpdate}}
     function Get-AptUpdates {${function:Get-AptUpdates}}
+    function Get-FlatpakUpdates {${function:Get-FlatpakUpdates}}
+    function Get-SnapUpdates {${function:Get-SnapUpdates}}
+    function Get-PowerShellReleaseUpdate {${function:Get-PowerShellReleaseUpdate}}
+    function ConvertFrom-WingetTable {${function:ConvertFrom-WingetTable}}
     function Get-WingetPath {${function:Get-WingetPath}}
     function Get-PowerShellHosts {${function:Get-PowerShellHosts}}
     function Invoke-PowerShellModules {${function:Invoke-PowerShellModules}}
@@ -778,12 +993,17 @@ function Start-InventoryCollection {
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
         $data = @{}
         try { $data['module_updates'] = @(Invoke-PowerShellModules -OnLinux $OnLinux) } catch { }
+        $packages = @()
         if ($OnLinux) {
             try { $data['os_updates'] = @(Get-AptUpdates) } catch { }
-            return $data
+            try { $packages += @(Get-FlatpakUpdates) } catch { }
+            try { $packages += @(Get-SnapUpdates) } catch { }
+        } else {
+            try { $data['os_updates'] = @(Get-WindowsUpdate) } catch { }
+            try { $packages += @(Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source) } catch { }
         }
-        try { $data['os_updates'] = @(Get-WindowsUpdate) } catch { }
-        try { $data['packages_updates'] = @(Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source) } catch { }
+        try { $packages += @(Get-PowerShellReleaseUpdate -OnLinux $OnLinux -Known (@($data['os_updates']) + $packages)) } catch { }
+        $data['packages_updates'] = $packages
         return $data
     }
 }
@@ -824,6 +1044,10 @@ function Get-CachedInventory {
 
     try {
         $cache = Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        # Collected by another agent version (update): it may lack what this one reports, collect again.
+        if ($cache.agent_version -ne $AgentVersion) {
+            return $null
+        }
         return @{ CollectedAt = [DateTime]$cache.collected_at; Data = $cache.data }
     }
     catch {
@@ -839,7 +1063,7 @@ function Save-CachedInventory {
         $Name = 'inventory'
     )
 
-    @{ collected_at = (Get-Date).ToString('o'); data = $Data } | ConvertTo-Json -Depth 6 -Compress | Set-Content -Path "$AgentDir/$Name.json" -Encoding UTF8
+    @{ collected_at = (Get-Date).ToString('o'); agent_version = $AgentVersion; data = $Data } | ConvertTo-Json -Depth 6 -Compress | Set-Content -Path "$AgentDir/$Name.json" -Encoding UTF8
 }
 
 function Get-Report {
@@ -931,6 +1155,115 @@ function Update-Agent {
     exit 0
 }
 
+function Start-UpdateJob {
+    # Installs OS, package and module updates in the background. Every step is logged to
+    # agent.log when the job ends (see Complete-UpdateJob), the full tool output to updates.log.
+    if ($script:UpdateJob -and $script:UpdateJob.State -eq 'Running') {
+        Write-AgentLog 'Updates are already being installed, command ignored'
+        return
+    }
+
+    $init = [scriptblock]::Create(@"
+    function Install-WindowsUpdate {${function:Install-WindowsUpdate}}
+    function Get-WingetPath {${function:Get-WingetPath}}
+    function Get-PowerShellHosts {${function:Get-PowerShellHosts}}
+    function Invoke-PowerShellModules {${function:Invoke-PowerShellModules}}
+"@)
+
+    $script:UpdateJobStarted = Get-Date
+    $script:UpdateJob = Start-Job -Name 'updates' -InitializationScript $init -ArgumentList $OnLinux, "$AgentDir/updates.log" -ScriptBlock {
+        param ($OnLinux, $OutputLog)
+
+        if ((Test-Path -Path $OutputLog) -and (Get-Item -Path $OutputLog).Length -gt 2MB) {
+            Move-Item -Path $OutputLog -Destination "$OutputLog.1" -Force
+        }
+        function Invoke-Logged ([string]$Title, [scriptblock]$Command) {
+            # Runs a native command, keeps its whole output in updates.log and returns it.
+            "===== {0:yyyy-MM-dd HH:mm:ss} $Title" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
+            $output = @(& $Command 2>&1 | ForEach-Object { "$_" })
+            $output | Add-Content -Path $OutputLog -Encoding UTF8
+            "exit code $LASTEXITCODE" | Add-Content -Path $OutputLog -Encoding UTF8
+            return , $output
+        }
+        function Get-Tail ($Lines) { (@($Lines | Where-Object { $_.Trim() }) | Select-Object -Last 3) -join ' | ' }
+
+        if ($OnLinux) {
+            $env:DEBIAN_FRONTEND = 'noninteractive'
+            # Wait for a running apt / unattended-upgrades instead of failing on its lock.
+            $lock = '-o', 'DPkg::Lock::Timeout=600'
+            $output = Invoke-Logged 'apt-get update' { apt-get @lock -q update }
+            "apt-get update: exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+
+            # --with-new-pkgs installs new dependencies (plain upgrade keeps such packages back),
+            # nothing is removed; existing configuration files are kept.
+            $output = Invoke-Logged 'apt-get upgrade' { apt-get @lock -y -q --with-new-pkgs -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade }
+            $code = $LASTEXITCODE
+            $summary = $output | Where-Object { $_ -match '\d+ upgraded, \d+ newly installed' } | Select-Object -Last 1
+            "apt-get upgrade: exit $code$(if ($summary) { ', ' + $summary.Trim() })$(if ($code) { ': ' + (Get-Tail $output) })"
+            $keptBack = $false
+            $held = foreach ($line in $output) {
+                # apt 2: "... kept back:" / "... deferred due to phasing:", apt 3: "Not upgrading ...:"
+                if ($line -match '(kept back|phasing|Not upgrading).*:\s*$') { $keptBack = $true; continue }
+                if ($keptBack -and $line -match '^\s+\S') { $line.Trim() } elseif ($keptBack) { $keptBack = $false }
+            }
+            if ($held) { "apt-get upgrade: kept back (phased or held): $($held -join ' ')" }
+            if (Get-Command -Name flatpak -CommandType Application -ErrorAction SilentlyContinue) {
+                $output = Invoke-Logged 'flatpak update' { flatpak update --system -y --noninteractive }
+                "flatpak update (system): exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+                foreach ($userHome in @(Get-ChildItem -Path /home -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -Path "$($_.FullName)/.local/share/flatpak" })) {
+                    $user = $userHome.Name
+                    $output = Invoke-Logged "flatpak update ($user)" { runuser -u $user -- flatpak update --user -y --noninteractive }
+                    "flatpak update ($user): exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+                }
+            }
+            if (Get-Command -Name snap -CommandType Application -ErrorAction SilentlyContinue) {
+                $output = Invoke-Logged 'snap refresh' { snap refresh }
+                "snap refresh: exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+            }
+            if (Test-Path -Path /var/run/reboot-required) { 'Restart required' }
+        } else {
+            $winget = Get-WingetPath
+            if ($winget) {
+                # winget also updates PowerShell 7 (Microsoft.PowerShell).
+                $output = Invoke-Logged 'winget upgrade --all' { & $winget upgrade --all --silent --accept-source-agreements --accept-package-agreements --disable-interactivity }
+                "winget upgrade: exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+            } else {
+                'winget: not found, application updates skipped'
+            }
+            try { Install-WindowsUpdate } catch { "Windows Update failed: $($_.Exception.Message)" }
+        }
+
+        try {
+            $failed = @(Invoke-PowerShellModules -OnLinux $OnLinux -Update)
+            if ($failed) { "PowerShell modules not updated: $(@($failed | ForEach-Object { "$($_.Name) ($($_.Edition))" }) -join ', ')" } else { 'PowerShell modules: up to date' }
+        }
+        catch {
+            "PowerShell modules failed: $($_.Exception.Message)"
+        }
+    }
+    Write-AgentLog 'Installing updates started (details in updates.log)'
+}
+
+function Complete-UpdateJob {
+    # Logs the finished update job; returns $true when it finished, so the inventory is refreshed.
+    $job = $script:UpdateJob
+    if (-not $job -or $job.State -eq 'Running') {
+        return $false
+    }
+
+    foreach ($line in @(Receive-Job -Job $job -ErrorAction SilentlyContinue 2>&1)) {
+        Write-AgentLog "Updates: $line"
+    }
+    if ($job.State -ne 'Completed') {
+        Write-AgentLog "Updates: job $($job.State): $($job.ChildJobs[0].JobStateInfo.Reason)"
+    }
+    Write-AgentLog ('Installing updates finished after {0:n0} min' -f ((Get-Date) - $script:UpdateJobStarted).TotalMinutes)
+    Remove-Job -Job $job -Force
+    $script:UpdateJob = $null
+
+    return $true
+}
+
 function Invoke-DeviceCommand {
     param (
         [Parameter(Mandatory = $true)]
@@ -953,16 +1286,7 @@ function Invoke-DeviceCommand {
         switch ($Command) {
             'turnOff' { systemctl poweroff }
             'restart' { systemctl reboot }
-            'doUpdates' {
-                $init = [scriptblock]::Create("function Get-PowerShellHosts {${function:Get-PowerShellHosts}}`nfunction Invoke-PowerShellModules {${function:Invoke-PowerShellModules}}")
-                Start-Job -Name 'updates' -InitializationScript $init -ScriptBlock {
-                    $env:DEBIAN_FRONTEND = 'noninteractive'
-                    # PowerShell 7 itself comes from the Microsoft apt repository.
-                    apt-get update -q | Out-Null
-                    apt-get upgrade -y -q -o Dpkg::Options::=--force-confold | Out-Null
-                    try { Invoke-PowerShellModules -OnLinux $true -Update | Out-Null } catch { }
-                } | Out-Null
-            }
+            'doUpdates' { Start-UpdateJob }
         }
         return
     }
@@ -970,19 +1294,7 @@ function Invoke-DeviceCommand {
     switch ($Command) {
         'turnOff' { Stop-Computer -Force }
         'restart' { Restart-Computer -Force }
-        'doUpdates' {
-            $init = [scriptblock]::Create("function Install-WindowsUpdate {${function:Install-WindowsUpdate}}`nfunction Get-WingetPath {${function:Get-WingetPath}}`nfunction Get-PowerShellHosts {${function:Get-PowerShellHosts}}`nfunction Invoke-PowerShellModules {${function:Invoke-PowerShellModules}}")
-            Start-Job -Name 'updates' -InitializationScript $init -ScriptBlock {
-                # winget also updates PowerShell 7 (Microsoft.PowerShell).
-                try {
-                    $winget = Get-WingetPath
-                    if ($winget) { & $winget upgrade --all --silent --accept-source-agreements --accept-package-agreements --disable-interactivity | Out-Null }
-                }
-                catch { }
-                try { Invoke-PowerShellModules -OnLinux $false -Update | Out-Null } catch { }
-                Install-WindowsUpdate
-            } | Out-Null
-        }
+        'doUpdates' { Start-UpdateJob }
     }
 }
 
@@ -1138,6 +1450,19 @@ function Initialize-SystemMetrics {
 public static extern bool GetSystemTimes(out long idleTime, out long kernelTime, out long userTime);
 
 [StructLayout(LayoutKind.Sequential)]
+public struct SystemPowerStatus {
+    public byte ACLineStatus;
+    public byte BatteryFlag;
+    public byte BatteryLifePercent;
+    public byte SystemStatusFlag;
+    public int BatteryLifeTime;
+    public int BatteryFullLifeTime;
+}
+
+[DllImport("kernel32.dll")]
+public static extern bool GetSystemPowerStatus(out SystemPowerStatus status);
+
+[StructLayout(LayoutKind.Sequential)]
 public class MemoryStatusEx {
     public uint dwLength = (uint)Marshal.SizeOf(typeof(MemoryStatusEx));
     public uint dwMemoryLoad;
@@ -1216,6 +1541,43 @@ function Get-SystemMetrics {
     }
 }
 
+function Get-PowerStatus {
+    param (
+        [string]
+        $PowerSupplyPath = '/sys/class/power_supply'
+    )
+
+    # Battery level and whether the device runs on mains power; null without a battery.
+    if ($OnLinux) {
+        $battery = Get-ChildItem -Path $PowerSupplyPath -Filter 'BAT*' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $battery) {
+            return $null
+        }
+        $mains = @(Get-ChildItem -Path $PowerSupplyPath -ErrorAction SilentlyContinue | Where-Object {
+                (Get-Content -Path "$($_.FullName)/type" -ErrorAction SilentlyContinue) -eq 'Mains'
+            })
+        $plugged = if ($mains) {
+            [bool]($mains | Where-Object { (Get-Content -Path "$($_.FullName)/online" -ErrorAction SilentlyContinue) -eq '1' })
+        } else {
+            (Get-Content -Path "$($battery.FullName)/status" -ErrorAction SilentlyContinue) -ne 'Discharging'
+        }
+        $capacity = Get-Content -Path "$($battery.FullName)/capacity" -ErrorAction SilentlyContinue
+        return [ordered]@{ battery = if ($capacity -match '^\d+$') { [int]$capacity } else { $null }; plugged = $plugged }
+    }
+
+    Initialize-SystemMetrics
+    $status = New-Object MdmAgent.SystemMetrics+SystemPowerStatus
+    # BatteryFlag 128 = no system battery, 255 = unknown.
+    if (-not [MdmAgent.SystemMetrics]::GetSystemPowerStatus([ref]$status) -or $status.BatteryFlag -eq 128 -or $status.BatteryFlag -eq 255) {
+        return $null
+    }
+
+    return [ordered]@{
+        battery = if ($status.BatteryLifePercent -le 100) { [int]$status.BatteryLifePercent } else { $null }
+        plugged = $status.ACLineStatus -eq 1
+    }
+}
+
 function Get-LiveState {
     # Small, fast-changing state sent with the heartbeat (the full details go with the report):
     # restart pending, service and container states. Kept cheap, it runs every heartbeat.
@@ -1246,8 +1608,12 @@ function Get-LiveState {
         restart_required = if ($OnLinux) { Test-Path -Path /var/run/reboot-required } else { [bool](Test-PendingReboot) }
         services         = $services
     }
+    $power = Get-PowerStatus
+    if ($power) {
+        $state['power'] = $power
+    }
 
-    if (Get-Command -Name docker -CommandType Application -ErrorAction SilentlyContinue) {
+    if (Test-DockerInstalled) {
         $lines = @(docker ps --all --no-trunc --format '{{.Names}}|{{.State}}|{{.Status}}' 2>$null)
         if ($LASTEXITCODE -eq 0) {
             $containers = [ordered]@{}
@@ -1315,6 +1681,7 @@ function Start-Agent {
     try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
 
     $Token = Get-AgentToken
+    Write-AgentLog ('Agent {0} started (PowerShell {1}, {2}, server {3})' -f $AgentVersion, $PSVersionTable.PSVersion, $(if ($OnLinux) { 'Linux' } else { 'Windows' }), $ServerUrl)
     $inventory = Get-CachedInventory
     # First inventory a few minutes after start, so it does not add to the load during boot.
     $nextInventory = if ($inventory) { $inventory.CollectedAt.AddSeconds($InventoryInterval) } else { (Get-Date).AddMinutes(5) }
@@ -1327,6 +1694,7 @@ function Start-Agent {
     $nextConnect = Get-Date
     $lastActivity = Get-Date
     $lastHeartbeat = [DateTime]::MinValue
+    $lastPackageCheck = [DateTime]::MinValue
 
     while ($true) {
         try {
@@ -1339,6 +1707,7 @@ function Start-Agent {
             if ($inventoryJob -and $inventoryJob.State -ne 'Running') {
                 if ($inventoryJob.State -eq 'Completed') {
                     $data = Receive-Job -Job $inventoryJob
+                    Write-AgentLog ('Inventory collected: {0} OS, {1} application, {2} module update(s)' -f @($data.os_updates).Count, @($data.packages_updates).Count, @($data.module_updates).Count)
                     Save-CachedInventory -Data $data
                     $inventory = @{ CollectedAt = Get-Date; Data = $data }
                     $lastReport = [DateTime]::MinValue
@@ -1348,7 +1717,22 @@ function Start-Agent {
                 Remove-Job -Job $inventoryJob -Force
                 $inventoryJob = $null
             }
+            if (Complete-UpdateJob) {
+                # Show what is left right away instead of the pre-update list for 6 hours.
+                $nextInventory = Get-Date
+            }
+            if ($OnLinux -and $inventory -and -not $inventoryJob -and ((Get-Date) - $lastPackageCheck).TotalSeconds -ge 60) {
+                # Packages installed outside the agent (apt, unattended-upgrades): collect again once
+                # dpkg has been quiet for 2 minutes, so the portal does not list installed updates.
+                $lastPackageCheck = Get-Date
+                $dpkgChanged = (Get-Item -Path /var/lib/dpkg/status -ErrorAction SilentlyContinue).LastWriteTime
+                if ($dpkgChanged -gt $inventory.CollectedAt -and $dpkgChanged -lt (Get-Date).AddMinutes(-2) -and $nextInventory -gt (Get-Date)) {
+                    Write-AgentLog 'Packages changed, collecting the inventory again'
+                    $nextInventory = Get-Date
+                }
+            }
             if (-not $inventoryJob -and (Get-Date) -ge $nextInventory) {
+                Write-AgentLog 'Inventory collection started'
                 $inventoryJob = Start-InventoryCollection
                 $nextInventory = (Get-Date).AddSeconds($InventoryInterval)
             }

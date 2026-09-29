@@ -2,12 +2,15 @@
     @php
         $moduleUpdates = $selectedDevice->moduleUpdates;
         $hasUpdates = count($selectedDevice->updates) > 0 || count($selectedDevice->apps_packages_updates) > 0 || count($moduleUpdates) > 0;
-        $power = $selectedDevice->data->machine->Battery ?? null;
+        // Phased and held back updates cannot be installed now, they do not raise a warning.
+        $pendingUpdates = count($selectedDevice->installableUpdates) + count($selectedDevice->apps_packages_updates) + count($moduleUpdates);
+        $power = $selectedDevice->batteryLevel;
+        $pluggedIn = $selectedDevice->pluggedIn;
         $services = $selectedDevice->services;
         $failedServices = collect($services)->where('State', '!=', 'running')->count();
         $docker = $selectedDevice->docker;
         $stoppedContainers = collect($docker['containers'] ?? [])->where('State', '!=', 'running')->count();
-        $diskHealth = $selectedDevice->diskHealth;
+        $diskHealth = $selectedDevice->showDiskHealth ? $selectedDevice->diskHealth : null;
     @endphp
 
     <div class="card">
@@ -21,9 +24,9 @@
                         </div>
                     @else
                         <h2 class="mb-1">
-                            @if (count($selectedDevice->updates) > 1)
+                            @if (count($selectedDevice->installableUpdates) > 1)
                                 <i class="fas fa-exclamation-triangle text-danger me-2" title="{{ __('Updates available') }}"></i>
-                            @elseif ($hasUpdates)
+                            @elseif ($pendingUpdates > 0)
                                 <i class="fas fa-exclamation-triangle text-warning me-2" title="{{ __('Updates available') }}"></i>
                             @endif
                             <i class="{{ $selectedDevice->typeIcon }} text-body-secondary me-2" title="{{ __(ucfirst($selectedDevice->type)) }}"></i>
@@ -54,15 +57,20 @@
 
                 @if (!$selectedDevice->offline)
                     <div class="fs-5 text-nowrap">
-                        @if ($power !== null && $power !== [])
-                            @if ($power < 20)
-                                <i class="fas fa-battery-quarter text-danger"></i>
-                            @elseif ($power < 85)
-                                <i class="fas fa-battery-half"></i>
-                            @else
-                                <i class="fas fa-battery-full"></i>
-                            @endif
-                            {{ $power }} %
+                        @if ($power !== null)
+                            <span title="{{ $pluggedIn ? __('Charging') : ($pluggedIn === false ? __('On battery') : '') }}">
+                                @if ($pluggedIn)
+                                    <i class="fas fa-bolt text-warning"></i>
+                                @endif
+                                @if ($power < 20)
+                                    <i class="fas fa-battery-quarter {{ $pluggedIn ? '' : 'text-danger' }}"></i>
+                                @elseif ($power < 85)
+                                    <i class="fas fa-battery-half"></i>
+                                @else
+                                    <i class="fas fa-battery-full"></i>
+                                @endif
+                                {{ $power }} %
+                            </span>
                         @else
                             <i class="fas fa-plug" title="{{ __('Plugged in') }}"></i>
                         @endif
@@ -166,7 +174,24 @@
                         <h5>{{ __('Operating system') }}</h5>
                         <ul class="list-group mb-3">
                             @foreach ($selectedDevice->updates as $update)
-                                <li class="list-group-item">{{ $update['Title'] }}</li>
+                                @php
+                                    $deferred = match ($update['Status']) {
+                                        'phased' => ['icon' => 'fas fa-hourglass-half', 'label' => __('Phased'), 'title' => __('Rolled out gradually by the distribution, apt installs it later on its own.')],
+                                        'held' => ['icon' => 'fas fa-pause-circle', 'label' => __('Held back'), 'title' => __('apt does not install it now (held, pinned, or it needs other packages to change).')],
+                                        default => null,
+                                    };
+                                @endphp
+                                <li class="list-group-item d-flex justify-content-between align-items-center gap-2 {{ $deferred ? 'text-body-secondary' : '' }}" wire:key="os-update-{{ $loop->index }}">
+                                    <span>
+                                        @if ($deferred)
+                                            <i class="{{ $deferred['icon'] }} me-2" title="{{ $deferred['title'] }}"></i>
+                                        @endif
+                                        {{ $update['Title'] }}
+                                    </span>
+                                    @if ($deferred)
+                                        <x-badge color="secondary" title="{{ $deferred['title'] }}" variant="subtle">{{ $deferred['label'] }}</x-badge>
+                                    @endif
+                                </li>
                             @endforeach
                         </ul>
                     @endif
@@ -174,9 +199,14 @@
                         <h5>{{ __('Applications') }}</h5>
                         <ul class="list-group">
                             @foreach ($selectedDevice->apps_packages_updates as $appUpdate)
-                                <li class="list-group-item d-flex justify-content-between">
-                                    <span>{{ $appUpdate['Id'] }}</span>
-                                    <x-badge color="primary" variant="subtle">{{ $appUpdate['Version'] }}</x-badge>
+                                <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2" wire:key="app-update-{{ $loop->index }}">
+                                    <span>
+                                        <span class="fw-semibold">{{ $appUpdate['Id'] ?? '' }}</span>
+                                        @if (! empty($appUpdate['Source']))
+                                            <span class="small text-muted ms-1">{{ $appUpdate['Source'] }}</span>
+                                        @endif
+                                    </span>
+                                    <x-badge color="primary" variant="subtle">{{ collect([($appUpdate['Version'] ?? '') ?: '?', $appUpdate['Avaliable'] ?? null])->filter()->implode(' → ') }}</x-badge>
                                 </li>
                             @endforeach
                         </ul>
@@ -189,6 +219,9 @@
                                     <span>
                                         <span class="fw-semibold">{{ $module['Name'] ?? '' }}</span>
                                         <span class="small text-muted ms-1">{{ $module['Edition'] ?? '' }}</span>
+                                        @if (! empty($module['User']))
+                                            <span class="small text-muted" title="{{ __('Installed in the user profile, the user updates it (Update-Module).') }}"><i class="fas fa-user ms-1 me-1"></i>{{ $module['User'] }}</span>
+                                        @endif
                                     </span>
                                     <x-badge color="primary" variant="subtle">{{ $module['Version'] ?? '?' }} → {{ $module['Available'] ?? '?' }}</x-badge>
                                 </li>
