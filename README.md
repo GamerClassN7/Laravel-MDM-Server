@@ -180,6 +180,19 @@ to change) are shown with an icon and do not count as available updates. The lis
 collected again a few minutes after packages are installed outside the agent (apt,
 unattended-upgrades).
 
+### Dashboard
+
+`/dashboard` (menu **Dashboard**) is a configurable dashboard from
+[steelants/laravel-boilerplate.dashboard](https://packistry.sa-dev.cz/public): every user can create
+their own dashboards, share them, and add, resize and move widgets in the editor. A shared
+**Overview** dashboard is created by a migration with the **Devices** widget (online and offline
+devices right now, the offline ones listed, refreshed every 30 seconds). System admins
+(`APP_SYSTEM_ADMINS`) can edit every dashboard.
+
+New widgets are Blade components in `app/View/Components/Widgets` and show up in the editor
+automatically. The package comes from the `packistry` Composer repository configured in
+`composer.json`.
+
 ### Installation
 
 Click **Add device** in the portal. It shows the enrolment code and ready-made install commands with

@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "1cafa38eff1086634371d0386a1b83f8",
+    "content-hash": "a96cd5a6605efdfec8e2b2edbcd33c28",
     "packages": [
         {
             "name": "bacon/bacon-qr-code",
@@ -4707,6 +4707,54 @@
                 "source": "https://github.com/steelants/Laravel-Boilerplate/tree/2.6.3"
             },
             "time": "2026-08-21T19:25:52+00:00"
+        },
+        {
+            "name": "steelants/laravel-boilerplate.dashboard",
+            "version": "1.2.5",
+            "source": {
+                "type": "git",
+                "url": "https://git.steelants.cz/SteelAnts/Laravel-Boilerplate.Dashboard.git",
+                "reference": "9b13a6232cd1fd29dbfb69eb2dc0f625eb0cc8e6"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/laravel-boilerplate.dashboard/9b13a6232cd1fd29dbfb69eb2dc0f625eb0cc8e6.zip",
+                "reference": "9b13a6232cd1fd29dbfb69eb2dc0f625eb0cc8e6",
+                "mirrors": [
+                    {
+                        "url": "https://packistry.sa-dev.cz/public/zipball/%package%/%reference%.%type%",
+                        "preferred": true
+                    }
+                ]
+            },
+            "require": {
+                "steelants/laravel-boilerplate": "dev-dev|^2.0",
+                "steelants/livewire-datatable": "dev-dev|^2.0"
+            },
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "providers": [
+                        "SteelAnts\\LaravelBoilerplate\\Dashboard\\BoilerplateDashboardServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "SteelAnts\\LaravelBoilerplate\\Dashboard\\": "src/"
+                }
+            },
+            "notification-url": "https://packistry.sa-dev.cz/public/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "SteelAnts"
+                }
+            ],
+            "description": "Livewire dashboard",
+            "time": "2026-06-19T09:13:49+00:00"
         },
         {
             "name": "steelants/laravel-general",
