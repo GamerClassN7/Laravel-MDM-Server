@@ -69,10 +69,11 @@ cp src/laravel/.env.example src/laravel/.env   # set DB_* and REVERB_HOST/PORT/S
 docker compose --env-file src/laravel/.env up -d
 ```
 
-Only port 8000 is exposed: nginx serves the web and proxies `/app` (agent WebSockets) and `/apps`
-(Reverb API used by the application) to Reverb inside the container. Set `REVERB_HOST`, `REVERB_PORT`
-and `REVERB_SCHEME` to the public address of the web, e.g. `mdm.example.com`, `443`, `https` behind
-a TLS proxy, or `localhost`, `8000`, `http` locally.
+Only port 8000 is exposed: nginx serves the web and proxies `/app` (agent WebSockets) to Reverb
+inside the container. No Reverb settings are needed: the app publishes to Reverb directly inside the
+container, and agents connect to the address they reach the server on (e.g. `wss://mdm.example.com`
+behind a TLS proxy such as Nginx Proxy Manager with WebSocket support enabled). Set `REVERB_HOST`,
+`REVERB_PORT` and `REVERB_SCHEME` only when the WebSocket is on a different public address.
 
 On start the container waits for the database and runs the migrations. `APP_KEY`, `REVERB_APP_KEY`
 and `REVERB_APP_SECRET` are generated on the first start when they are not set, and kept in

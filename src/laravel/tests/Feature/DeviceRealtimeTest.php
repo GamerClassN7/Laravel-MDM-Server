@@ -60,6 +60,25 @@ class DeviceRealtimeTest extends TestCase
             ]);
     }
 
+    public function test_agents_connect_to_the_server_address_when_reverb_is_local(): void
+    {
+        // The Docker image publishes to Reverb inside the container (127.0.0.1:8080), agents come
+        // in through the reverse proxy.
+        config(['broadcasting.connections.reverb.options' => ['host' => '127.0.0.1', 'port' => 8080, 'scheme' => 'http']]);
+        $this->createDevice('secret-token');
+
+        $this->withToken('secret-token')->getJson('https://mdm.example.com/api/device/realtime')
+            ->assertOk()
+            ->assertJson(['host' => 'mdm.example.com', 'port' => 443, 'scheme' => 'https']);
+
+        $this->withToken('secret-token')->getJson('http://mdm.local:3838/api/device/realtime')
+            ->assertJson(['host' => 'mdm.local', 'port' => 3838, 'scheme' => 'http']);
+
+        // TLS terminated by a proxy: the app sees plain HTTP, the agent (https -ServerUrl) uses 443.
+        $this->withToken('secret-token')->withHeaders(['Host' => 'mdm.example.com'])->getJson('http://mdm.example.com/api/device/realtime')
+            ->assertJson(['host' => 'mdm.example.com', 'port' => 80, 'scheme' => 'http']);
+    }
+
     public function test_realtime_is_reported_disabled_without_reverb(): void
     {
         config(['broadcasting.default' => 'null']);
