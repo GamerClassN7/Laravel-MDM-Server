@@ -154,7 +154,7 @@ The agent is designed to stay out of the way:
 |---|---|---|
 | Report | OS, uptime, user, CPU, battery, drives, networks, pending reboot | the same, from `/etc/os-release`, `/proc`, `df`, `ip` and `/var/run/reboot-required` |
 | Updates | Windows Update, winget (any system language) | `apt list --upgradable` (phased / held back marked), flatpak (system and users), snap |
-| PowerShell | outdated PowerShell Gallery modules in Windows PowerShell and PowerShell 7 (also users' own, listed only), a newer PowerShell 7 release | the same in PowerShell 7 |
+| PowerShell | outdated PowerShell Gallery modules in Windows PowerShell and PowerShell 7 (users' own ones are listed, not updated: SYSTEM cannot act as the user), a newer PowerShell 7 release | the same in PowerShell 7; users' own modules are updated as that user |
 | Services | running and stopped automatic services (`Get-Service`) | running and failed units (`systemctl`) |
 | Docker (when installed) | containers and their state (`docker ps --all`) | the same |
 | Virtualization | manufacturer and model (Hyper-V, VMware, KVM / QEMU, VirtualBox, Xen …) | `systemd-detect-virt`, DMI (VMs and containers) |

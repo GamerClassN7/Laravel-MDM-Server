@@ -71,7 +71,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.6.2'
+$AgentVersion = '1.6.3'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent')
 # $IsLinux only exists in PowerShell 6+, Windows PowerShell 5.1 is always Windows.
 $OnLinux = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
@@ -527,38 +527,79 @@ if ($canCheck) {
     }
 }
 if ($Update) {
-    # Installed next to the current version, like Update-Module always does; failed ones stay listed.
-    $outdated = @($outdated | Where-Object {
-        if ($_.User) { return $true }
-        try { Update-Module -Name $_.Name -RequiredVersion $_.Available -Force -Confirm:$false -ErrorAction Stop; $false } catch { $true }
-    })
+    # Installed next to the current version, like Update-Module always does; failed ones stay listed
+    # with the reason. Users' own modules are left to the caller (updated as that user).
+    $remaining = @()
+    foreach ($module in $outdated) {
+        if ($module.User) { $remaining += $module; continue }
+        try {
+            Update-Module -Name $module.Name -RequiredVersion $module.Available -Force -Confirm:$false -ErrorAction Stop
+        }
+        catch {
+            $module | Add-Member -NotePropertyName Error -NotePropertyValue $_.Exception.Message
+            $remaining += $module
+        }
+    }
+    $outdated = $remaining
 }
 ConvertTo-Json -InputObject @($outdated) -Compress
 '@
 
-    $result = @()
-    foreach ($powershell in @(Get-PowerShellHosts -OnLinux $OnLinux)) {
-        $prefix = if ($Update) { '$Update = $true' } else { '$Update = $false' }
-        $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes("$prefix`n$moduleScript"))
+    # Runs a script in a separate process (inherits the idle priority, stopped when the gallery
+    # hangs) and returns the objects of its JSON output.
+    $invoke = {
+        param ([string]$FilePath, [string[]]$Prefix, [string]$Script)
+        $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Script))
         $output = [System.IO.Path]::GetTempFileName()
         try {
-            # A separate process per edition (inherits the idle priority), stopped when the gallery hangs.
-            $process = Start-Process -FilePath $powershell.Path -ArgumentList '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded -RedirectStandardOutput $output -NoNewWindow -PassThru
+            $process = Start-Process -FilePath $FilePath -ArgumentList (@($Prefix) + @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)) -RedirectStandardOutput $output -NoNewWindow -PassThru
             if (-not $process.WaitForExit(900000)) {
                 try { $process.Kill() } catch { }
-                continue
+                return
             }
             $json = (Get-Content -Path $output -Raw) -as [string]
-            if ($json) {
-                foreach ($module in @($json.Trim() | ConvertFrom-Json)) {
-                    if ($module) { $result += [PSCustomObject]@{ Name = $module.Name; Version = $module.Version; Available = $module.Available; Edition = $powershell.Edition; User = $module.User } }
-                }
-            }
+            if ($json) { @($json.Trim() | ConvertFrom-Json) | Where-Object { $_ } }
         }
         catch {
         }
         finally {
             Remove-Item -Path $output -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $result = @()
+    foreach ($powershell in @(Get-PowerShellHosts -OnLinux $OnLinux)) {
+        $prefix = if ($Update) { '$Update = $true' } else { '$Update = $false' }
+        foreach ($module in @(& $invoke $powershell.Path @() "$prefix`n$moduleScript")) {
+            $result += [PSCustomObject]@{ Name = $module.Name; Version = $module.Version; Available = $module.Available; Edition = $powershell.Edition; User = $module.User; Error = $module.Error }
+        }
+    }
+
+    if ($Update -and $OnLinux) {
+        # Users' own modules (Install-Module defaults to CurrentUser in PowerShell 7) are updated as
+        # that user, so they stay in the user's profile and owned by the user. Not possible on
+        # Windows: SYSTEM cannot run as a user without the password, they stay listed.
+        foreach ($group in @($result | Where-Object { $_.User } | Group-Object -Property User, Edition)) {
+            $first = $group.Group[0]
+            $powershell = @(Get-PowerShellHosts -OnLinux $true | Where-Object { $_.Edition -eq $first.Edition }) | Select-Object -First 1
+            if (-not $powershell -or $first.User -notmatch '^[a-z_][a-z0-9_.-]*$') { continue }
+            $modules = ConvertTo-Json -InputObject @($group.Group | Select-Object -Property Name, Available) -Compress
+            $userScript = @"
+`$ProgressPreference = 'SilentlyContinue'
+`$failed = @()
+foreach (`$module in @(ConvertFrom-Json '$($modules -replace "'", "''")')) {
+    try { Update-Module -Name `$module.Name -RequiredVersion `$module.Available -Force -Confirm:`$false -ErrorAction Stop }
+    catch { `$failed += [pscustomobject]@{ Name = `$module.Name; Error = `$_.Exception.Message } }
+}
+ConvertTo-Json -InputObject @(`$failed) -Compress
+"@
+            $asUser = Get-UserCommand -User $first.User
+            if (-not $asUser) { continue }
+            $failed = @{}
+            foreach ($item in @(& $invoke $asUser[0] (@($asUser[1..($asUser.Count - 1)]) + $powershell.Path) $userScript)) { $failed[$item.Name] = $item.Error }
+            foreach ($module in $group.Group) {
+                if ($failed.ContainsKey($module.Name)) { $module.Error = $failed[$module.Name] } else { $result = @($result | Where-Object { $_ -ne $module }) }
+            }
         }
     }
 
@@ -705,6 +746,22 @@ function Get-LinuxNetworks {
     }
 }
 
+function Get-UserCommand {
+    param (
+        [string]
+        $User
+    )
+
+    # runuser keeps root's environment (HOME=/root, PSModulePath ...): tools would work on root's
+    # profile. The command runs with the user's own minimal environment instead.
+    $entry = "$(getent passwd $User 2>$null)" -split ':'
+    if ($entry.Count -lt 6 -or -not $entry[5]) {
+        return $null
+    }
+
+    return @('runuser', '-u', $User, '--', 'env', '-i', "HOME=$($entry[5])", "USER=$User", "LOGNAME=$User", 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'LANG=C.UTF-8')
+}
+
 function Get-FlatpakUpdates {
     # System installation plus every user's own (~/.local/share/flatpak), checked as that user.
     if (-not (Get-Command -Name flatpak -CommandType Application -ErrorAction SilentlyContinue)) {
@@ -719,9 +776,11 @@ function Get-FlatpakUpdates {
     }
 
     foreach ($installation in $installations) {
+        $asUser = if ($installation.User) { Get-UserCommand -User $installation.User }
+        if ($installation.User -and -not $asUser) { continue }
         $run = {
             param ([string[]]$FlatpakArguments)
-            if ($installation.User) { runuser -u $installation.User -- flatpak @FlatpakArguments 2>$null } else { flatpak @FlatpakArguments 2>$null }
+            if ($asUser) { & $asUser[0] @($asUser[1..($asUser.Count - 1)]) flatpak @FlatpakArguments 2>$null } else { flatpak @FlatpakArguments 2>$null }
         }
         $installed = @{}
         foreach ($line in @(& $run (@('list', '--app') + $installation.Arguments + '--columns=application,version'))) {
@@ -979,6 +1038,7 @@ function Start-InventoryCollection {
     function Get-WingetSoftware {${function:Get-WingetSoftware}}
     function Get-WindowsUpdate {${function:Get-WindowsUpdate}}
     function Get-AptUpdates {${function:Get-AptUpdates}}
+    function Get-UserCommand {${function:Get-UserCommand}}
     function Get-FlatpakUpdates {${function:Get-FlatpakUpdates}}
     function Get-SnapUpdates {${function:Get-SnapUpdates}}
     function Get-PowerShellReleaseUpdate {${function:Get-PowerShellReleaseUpdate}}
@@ -1166,6 +1226,7 @@ function Start-UpdateJob {
     function Get-WingetPath {${function:Get-WingetPath}}
     function Get-PowerShellHosts {${function:Get-PowerShellHosts}}
     function Invoke-PowerShellModules {${function:Invoke-PowerShellModules}}
+    function Get-UserCommand {${function:Get-UserCommand}}
 "@)
 
     $script:UpdateJobStarted = Get-Date
@@ -1210,7 +1271,9 @@ function Start-UpdateJob {
                 "flatpak update (system): exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
                 foreach ($userHome in @(Get-ChildItem -Path /home -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -Path "$($_.FullName)/.local/share/flatpak" })) {
                     $user = $userHome.Name
-                    $output = Invoke-Logged "flatpak update ($user)" { runuser -u $user -- flatpak update --user -y --noninteractive }
+                    $asUser = Get-UserCommand -User $user
+                    if (-not $asUser) { continue }
+                    $output = Invoke-Logged "flatpak update ($user)" { & $asUser[0] @($asUser[1..($asUser.Count - 1)]) flatpak update --user -y --noninteractive }
                     "flatpak update ($user): exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
                 }
             }
@@ -1233,7 +1296,12 @@ function Start-UpdateJob {
 
         try {
             $failed = @(Invoke-PowerShellModules -OnLinux $OnLinux -Update)
-            if ($failed) { "PowerShell modules not updated: $(@($failed | ForEach-Object { "$($_.Name) ($($_.Edition))" }) -join ', ')" } else { 'PowerShell modules: up to date' }
+            if (-not $failed) { 'PowerShell modules: up to date' }
+            foreach ($module in $failed) {
+                $owner = if ($module.User) { ", user $($module.User)" } else { '' }
+                $reason = if ($module.Error) { $module.Error } elseif ($module.User) { 'in the user profile, only the user can update it' } else { 'not updated' }
+                "PowerShell module $($module.Name) $($module.Version) -> $($module.Available) ($($module.Edition)$owner): $reason"
+            }
         }
         catch {
             "PowerShell modules failed: $($_.Exception.Message)"
