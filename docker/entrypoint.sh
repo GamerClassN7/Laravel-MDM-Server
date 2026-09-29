@@ -63,16 +63,17 @@ ensure_secret REVERB_APP_SECRET "$(random 32)"
 # Reverb runs in this container: broadcast to it directly unless configured otherwise. Agents are
 # told to connect to the address they reach the server on (see /api/device/realtime), so no
 # REVERB_* settings are needed behind a reverse proxy.
+# BROADCAST_CONNECTION defaults to reverb (config/broadcasting.php).
 if [ "${REVERB_ENABLED:-true}" = "true" ]; then
-    : "${BROADCAST_CONNECTION:=reverb}"
     if [ -z "${REVERB_HOST:-}" ]; then
         REVERB_HOST=127.0.0.1 REVERB_PORT=8080 REVERB_SCHEME=http
     fi
     export REVERB_HOST REVERB_PORT REVERB_SCHEME
 else
+    # Without Reverb agents must not be told to use the WebSocket.
     : "${BROADCAST_CONNECTION:=null}"
+    export BROADCAST_CONNECTION
 fi
-export BROADCAST_CONNECTION
 
 # Errors always reach the container output (docker logs), also when .env logs to a file
 # (LOG_CHANNEL=daily from .env.example): that channel is kept and stderr is added next to it.
