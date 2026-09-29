@@ -98,6 +98,10 @@ fi
 
 php artisan optimize
 
+# The key agents pin: created once in the storage volume (storage/mdm-signing.key), never in the
+# database. Losing it means reinstalling the agents, keep it in the backup of the volume.
+php artisan mdm:signing-key
+
 if [ "${RUN_MIGRATIONS:-true}" = "true" ]; then
     # The database container may still be starting.
     attempt=1

@@ -221,6 +221,85 @@ to change) are shown with an icon and do not count as available updates. The lis
 collected again a few minutes after packages are installed outside the agent (apt,
 unattended-upgrades).
 
+### Signed communication
+
+Agents 1.7.0 and newer sign everything they send and accept only what the server signed. The
+signatures are RSA-3072 (PKCS#1 v1.5, SHA-256) and are checked with plain .NET, which works in
+Windows PowerShell 5.1 and PowerShell 7 without extra modules. HTTPS still keeps the content
+private; the signatures make sure nothing was forged or changed on the way, in the database or on
+the device's disk.
+
+- **Server key:** `storage/mdm-signing.key`, created on the first start (`php artisan mdm:signing-key`
+  shows its fingerprint) and never stored in the database. Keep it in the backup of the storage
+  volume: without it agents accept no more updates or commands and have to be reinstalled.
+  `/agent/app.ps1` is served with the public key filled in, so a new or updated agent pins it on
+  its first start. The install commands also pass `-ServerKeyFingerprint`, and **Add device** shows
+  the fingerprint.
+- **Device key:** created on the device and never sent anywhere; the server stores only the public
+  key. On Windows it is a non-exportable CNG machine key (with a DPAPI-protected file as a fallback),
+  on Linux a root-only file.
+- **Requests:** every request of the agent is signed with the device key over the method, path,
+  time, a one-time nonce and the body hash. The server rejects unsigned, changed, replayed and stale
+  requests (more than 5 minutes off; the agent corrects its clock from signed server responses).
+- **Responses:** every response is signed with the server key for exactly that request (its nonce),
+  error responses included. The agent ignores anything else.
+- **WebSocket:** a command event is only a trigger signed by the server. The agent then takes the
+  commands over the signed API, so nothing can be injected or replayed over the WebSocket.
+  Heartbeats sent over the WebSocket are signed with the device key.
+- **Agent updates:** the agent downloads the new version into memory, checks its signature
+  (`/agent/app.ps1.sig`) and only then writes it to disk.
+
+The agent keeps the pinned key and its settings in `config.json`, which only `SYSTEM` / root and
+administrators can read. The server has no way to change this file. Agents older than 1.7.0 keep
+working, but they only get **Update agent**. After updating, the agent pins the key embedded in
+the new version and registers its device key once. The device detail shows **Signed** or
+**Unsigned agent**. System admins can reset a device key, for example after the agent was
+reinstalled with a new key. `MDM_REQUIRE_SIGNED_AGENTS=true` rejects unsigned agents entirely;
+they then have to be reinstalled.
+
+### Remediation scripts
+
+**Scripts** in the main menu (system admins only) lists the scripts in a data table (search, sorting, **Add** in a modal). Each script has a detail page with its code, fingerprint and all runs. The scripts are PowerShell, in the style of Intune remediations:
+
+- **Detection script** (required): exit 0 means compliant, exit 1 means the remediation should run.
+- **Remediation script** (optional): runs after a detection that exited with 1, then the detection
+  runs again. Without a remediation, exit 1 means failed.
+- Each script targets **All**, **Windows** or **Linux** and has a timeout (up to 1 hour).
+
+The code is entered as text and stored byte for byte. Its **fingerprint** (SHA-256 over the
+platform, the timeout and the hashes of both scripts) changes with every code change, and a new
+version is created. **Run** opens a list of the devices with checkboxes. Devices on another
+platform, agents that do not sign and devices with scripts disabled cannot be selected. Opened
+again, the list has the devices of the last run selected. Offline devices run the script when they
+come back within 24 hours. The results are shown under the script and in the **Scripts** tab of
+the device: status, exit codes and up to 16 kB of output.
+
+Security:
+
+- **Only a trigger:** `runScripts` carries no data. The agent takes its runs over the signed API.
+- **Signed manifest per run:** every run has a manifest signed with the server key, for this
+  device and this run, valid for 24 hours. The agent checks the signature, the device, the expiry,
+  that the run id was not executed before, the platform and the SHA-256 of both scripts, and only
+  then runs anything. A rejected run is reported back with the reason.
+- **Memory only:** the code is never written to disk and never on a command line. A separate
+  low-priority process reads it from stdin and checks its hash again. Scripts run one at a time,
+  are killed at the timeout, and run as `SYSTEM` / root.
+- **No network access:**
+  - On Linux the script runs in an empty network namespace (`unshare --net`, also for every
+    process it starts). Without `unshare` it does not run.
+  - On Windows it runs from a copy of `powershell.exe` (`%ProgramData%\Laravel-MDM\sandbox`)
+    that Windows Firewall rules block in both directions. It does not run when the rules are
+    missing or changed, or the firewall is off for a profile.
+  - This is defense in depth, not a hard boundary: a script running as `SYSTEM` / root that sets
+    out to reach the network can get around it. For example, on Linux it can enter the network
+    namespace of PID 1; on Windows it can start another program from System32. DNS lookups on
+    Windows go through the DNS Client service. The signature is what keeps foreign code out.
+    The isolation keeps scripts from downloading or sending anything.
+- **Local switch:** `-DisableScripts` (`-EnableScripts` to allow them again, or `scripts_enabled`
+  in `config.json`) turns scripts off on the device. The server cannot change it.
+- **Audit:** creating, changing, removing and running a script (with its fingerprint and devices)
+  is written to the audit log.
+
 ### Dashboard
 
 `/dashboard` (menu **Dashboard**) is a configurable dashboard from
@@ -305,6 +384,11 @@ Windows (PowerShell as Administrator):
 Stop-ScheduledTask -TaskName 'Laravel-MDM-Agent'
 Unregister-ScheduledTask -TaskName 'Laravel-MDM-Agent' -Confirm:$false
 Remove-Item -Recurse -Force "$env:ProgramData\Laravel-MDM"
+# The device key (agents 1.7.0+) is a CNG machine key outside that folder.
+$provider = [Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider
+if ([Security.Cryptography.CngKey]::Exists('Laravel-MDM-Agent', $provider, 'MachineKey')) {
+    [Security.Cryptography.CngKey]::Open('Laravel-MDM-Agent', $provider, 'MachineKey').Delete()
+}
 ```
 
 Linux:

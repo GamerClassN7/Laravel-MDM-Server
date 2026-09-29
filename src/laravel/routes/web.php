@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\System\JobsController;
 use App\Support\AgentScript;
+use App\Support\Signing;
 use App\Livewire\ShowDevices;
 use Illuminate\Support\Facades\Route;
 
@@ -66,17 +67,35 @@ Route::prefix('system')->name('system.')->middleware(['auth', 'is-system-admin']
 
 /* BOILERPLATE routes */
 
-// Agent script for the install commands (public, the device has no token yet).
+// Agent script for the install commands (public, the device has no token yet), with the server's
+// public key filled in, its signature and the key itself.
 Route::get('/agent/app.ps1', function () {
-    $path = AgentScript::path();
-    abort_if($path === null, 404);
+    $content = AgentScript::content();
+    abort_if($content === null, 404);
 
-    return response()->file($path, ['Content-Type' => 'text/plain; charset=utf-8']);
+    return response($content, 200, ['Content-Type' => 'text/plain; charset=utf-8']);
 })->name('agent.script');
+
+Route::get('/agent/app.ps1.sig', function () {
+    $content = AgentScript::content();
+    abort_if($content === null, 404);
+
+    return response(AgentScript::signature($content), 200, ['Content-Type' => 'text/plain; charset=utf-8']);
+})->name('agent.signature');
+
+Route::get('/agent/signing-key', function () {
+    return response()->json(Signing::publicKey() + ['fingerprint' => Signing::fingerprint()]);
+})->name('agent.signing-key');
 
 Route::middleware('auth')->group(function () {
     Route::redirect('/', '/devices');
     Route::get('/devices', ShowDevices::class)->name('devices');
+});
+
+// Remediation scripts: system admins only (they run as SYSTEM / root on the devices).
+Route::middleware(['auth', 'is-system-admin'])->group(function () {
+    Route::get('/scripts', [App\Http\Controllers\ScriptController::class, 'index'])->name('script.index');
+    Route::get('/scripts/{script}', App\Livewire\Script\Detail::class)->name('script.show');
 });
 
 // Configurable dashboards (steelants/laravel-boilerplate.dashboard): /dashboard and its editor.

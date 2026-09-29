@@ -4,11 +4,12 @@ namespace Tests\Feature;
 
 use App\Models\Device;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Concerns\SignsDeviceRequests;
 use Tests\TestCase;
 
 class DeviceLiveStateTest extends TestCase
 {
-    use RefreshDatabase;
+    use RefreshDatabase, SignsDeviceRequests;
 
     private function report(Device $device, array $extra = []): void
     {
@@ -126,7 +127,7 @@ class DeviceLiveStateTest extends TestCase
 
     public function test_commands_queued_from_stale_models_are_not_lost(): void
     {
-        $device = $this->createDevice();
+        $device = $this->registerDeviceKey($this->createDevice());
         Device::recordHeartbeat($device->id);
         // Two requests holding the same device: without compare-and-swap the second save would
         // drop the first command.
@@ -143,13 +144,13 @@ class DeviceLiveStateTest extends TestCase
 
     public function test_report_returns_queued_commands_once(): void
     {
-        $device = $this->createDevice();
+        $device = $this->registerDeviceKey($this->createDevice());
         Device::recordHeartbeat($device->id);
         $device->fresh()->queueCommand('restart');
 
-        $this->withToken('secret-token')->postJson('/api/device', ['machine' => ['Hostname' => 'srv1', 'Drives' => []]])
+        $this->signedJson('POST', '/api/device', ['machine' => ['Hostname' => 'srv1', 'Drives' => []]], 'secret-token')
             ->assertJson(['commands' => ['restart']]);
-        $this->withToken('secret-token')->postJson('/api/device', ['machine' => ['Hostname' => 'srv1', 'Drives' => []]])
+        $this->signedJson('POST', '/api/device', ['machine' => ['Hostname' => 'srv1', 'Drives' => []]], 'secret-token')
             ->assertJson(['commands' => []]);
     }
 

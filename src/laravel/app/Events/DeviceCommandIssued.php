@@ -3,6 +3,7 @@
 namespace App\Events;
 
 use App\Models\Device;
+use App\Support\Signing;
 use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
@@ -26,8 +27,14 @@ class DeviceCommandIssued implements ShouldBroadcastNow
         return 'command';
     }
 
+    /**
+     * "command" for agents before 1.7.0. Signing agents only trust "p" signed with the server key
+     * ({device_id, ts, command}) and then take their commands over the signed API.
+     */
     public function broadcastWith(): array
     {
-        return ['command' => $this->command];
+        $payload = json_encode(['device_id' => $this->device->id, 'ts' => time(), 'command' => $this->command]);
+
+        return ['command' => $this->command, 'p' => $payload, 'sig' => Signing::sign('MDM1-WS', $payload)];
     }
 }

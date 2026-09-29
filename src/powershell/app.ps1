@@ -25,6 +25,18 @@
 .PARAMETER NoRealtime
     Do not use the WebSocket, rely on HTTP only.
 
+.PARAMETER ServerKeyFingerprint
+    With -Install: the fingerprint of the server key (shown in Add device). The agent pins the key
+    only when it matches.
+
+.PARAMETER ResetServerKey
+    With -Install: forget the pinned server key and pin the current one (after the server key was
+    replaced on purpose).
+
+.PARAMETER DisableScripts
+    With -Install: never run remediation scripts on this device (stored in config.json, the server
+    cannot change it). -EnableScripts allows them again.
+
 .EXAMPLE
     # Enrol the device and register the agent as a scheduled task running as SYSTEM
     .\app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -Install
@@ -66,13 +78,24 @@ param (
     [switch]
     $NoRealtime,
     [string]
-    $InstallPath
+    $InstallPath,
+    [string]
+    $ServerKeyFingerprint,
+    [switch]
+    $ResetServerKey,
+    [switch]
+    $DisableScripts,
+    [switch]
+    $EnableScripts
 )
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.6.3'
-$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent')
+$AgentVersion = '1.7.0'
+$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent', 'runScripts')
+# The server's public key ("n:e", base64), filled in by the server when it serves this script.
+# The agent pins it on the first start and then trusts only what is signed with it.
+$EmbeddedServerKey = ''
 # $IsLinux only exists in PowerShell 6+, Windows PowerShell 5.1 is always Windows.
 $OnLinux = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
 # Token, logs and cache live next to the script; -Install moves the agent to its install directory first.
@@ -878,6 +901,599 @@ function Get-AptUpdates {
 
 #endregion
 
+#region Security
+
+# Everything the server sends is signed with its RSA key, which the agent pins on the first start
+# (from $EmbeddedServerKey, filled in when the server serves this script). Everything the agent
+# sends is signed with the device key, generated on the device and never sent anywhere. Each
+# signature covers a context prefix (MDM1-REQ, MDM1-RESP, ...), so it is valid for one purpose only.
+$script:ClockOffset = 0
+$script:ServerKey = $null
+$script:ServerRsa = $null
+$script:DeviceKey = $null
+$script:DeviceId = $null
+$script:HttpClient = $null
+
+function Get-UnixTime {
+    # Server time: the offset comes from the timestamps of verified server responses.
+    return [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + $script:ClockOffset
+}
+
+function New-Nonce {
+    $bytes = New-Object byte[] 16
+    $random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $random.GetBytes($bytes) } finally { $random.Dispose() }
+    return -join ($bytes | ForEach-Object { $_.ToString('x2') })
+}
+
+function Get-Sha256Hex {
+    param (
+        [byte[]]
+        $Bytes
+    )
+
+    if ($null -eq $Bytes) { $Bytes = [byte[]]@() }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return -join ($sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') })
+    }
+    finally {
+        $sha.Dispose()
+    }
+}
+
+function Get-KeyFingerprint {
+    param (
+        [Parameter(Mandatory = $true)]
+        $Key
+    )
+
+    return Get-Sha256Hex -Bytes ([System.Text.Encoding]::UTF8.GetBytes("rsa:$($Key.n):$($Key.e)"))
+}
+
+function Protect-AgentPath {
+    # Only SYSTEM / root and administrators may read or change the agent's files.
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Path,
+        [switch]
+        $Directory
+    )
+
+    if ($OnLinux) {
+        chmod $(if ($Directory) { '700' } else { '600' }) $Path
+        return
+    }
+
+    # SIDs instead of names: independent of the system language.
+    $grant = if ($Directory) { '(OI)(CI)F' } else { 'F' }
+    icacls $Path /inheritance:r /grant:r "*S-1-5-18:$grant" "*S-1-5-32-544:$grant" | Out-Null
+}
+
+function ConvertTo-Hashtable {
+    # ConvertFrom-Json -AsHashtable does not exist in Windows PowerShell 5.1.
+    param (
+        $Object
+    )
+
+    if ($Object -is [System.Management.Automation.PSCustomObject]) {
+        $table = @{}
+        foreach ($property in $Object.PSObject.Properties) {
+            $table[$property.Name] = ConvertTo-Hashtable -Object $property.Value
+        }
+        return $table
+    }
+    return $Object
+}
+
+function Get-AgentConfig {
+    # Local settings the server cannot change: the pinned server key, the device id and whether
+    # remediation scripts may run.
+    $path = Join-Path $AgentDir 'config.json'
+    $config = @{}
+    if (Test-Path -Path $path) {
+        $config = ConvertTo-Hashtable -Object (Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json)
+    }
+    if ($null -eq $config['scripts_enabled']) {
+        $config['scripts_enabled'] = $true
+    }
+    return $config
+}
+
+function Save-AgentConfig {
+    param (
+        [Parameter(Mandatory = $true)]
+        [hashtable]
+        $Config
+    )
+
+    $path = Join-Path $AgentDir 'config.json'
+    $Config | ConvertTo-Json -Depth 4 | Set-Content -Path $path -Encoding UTF8
+    Protect-AgentPath -Path $path
+}
+
+function Set-ServerKey {
+    param (
+        [Parameter(Mandatory = $true)]
+        $Key
+    )
+
+    $parameters = New-Object System.Security.Cryptography.RSAParameters
+    $parameters.Modulus = [Convert]::FromBase64String($Key.n)
+    $parameters.Exponent = [Convert]::FromBase64String($Key.e)
+    $rsa = [System.Security.Cryptography.RSA]::Create()
+    $rsa.ImportParameters($parameters)
+    $script:ServerKey = $Key
+    $script:ServerRsa = $rsa
+}
+
+function Initialize-ServerKey {
+    # Pins the server key once: the one filled into this script, otherwise the one the server
+    # announces (trust on first use). -ServerKeyFingerprint must match when it is given.
+    $config = Get-AgentConfig
+    $embedded = $null
+    if ($EmbeddedServerKey -match '^([A-Za-z0-9+/=]+):([A-Za-z0-9+/=]+)$') {
+        $embedded = @{ n = $Matches[1]; e = $Matches[2] }
+    }
+
+    if ($ResetServerKey -and $config['server_key']) {
+        Write-AgentLog "Pinned server key $($config['server_key'].fingerprint) removed (-ResetServerKey)"
+        $config.Remove('server_key')
+    }
+
+    $key = $config['server_key']
+    if (-not $key) {
+        $key = $embedded
+        if (-not $key) {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri "$($ServerUrl.TrimEnd('/'))/agent/signing-key"
+            $announced = $response.Content | ConvertFrom-Json
+            $key = @{ n = $announced.n; e = $announced.e }
+        }
+        $key['fingerprint'] = Get-KeyFingerprint -Key $key
+        if ($ServerKeyFingerprint -and $key.fingerprint -ne $ServerKeyFingerprint.ToLowerInvariant()) {
+            throw "The server key $($key.fingerprint) does not match -ServerKeyFingerprint $ServerKeyFingerprint, it is not trusted."
+        }
+        $config['server_key'] = $key
+        Save-AgentConfig -Config $config
+        Write-AgentLog "Pinned the server key $($key.fingerprint)"
+    } elseif ($ServerKeyFingerprint -and $key.fingerprint -ne $ServerKeyFingerprint.ToLowerInvariant()) {
+        throw "The pinned server key $($key.fingerprint) does not match -ServerKeyFingerprint $ServerKeyFingerprint. Reinstall with -ResetServerKey if the server key was replaced on purpose."
+    } elseif ($embedded -and (Get-KeyFingerprint -Key $embedded) -ne $key.fingerprint) {
+        Write-AgentLog "Warning: this agent carries server key $(Get-KeyFingerprint -Key $embedded), the pinned key $($key.fingerprint) stays trusted"
+    }
+
+    Set-ServerKey -Key $key
+    $script:DeviceId = $config['device_id']
+    return $config
+}
+
+function Test-ServerSignature {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Context,
+        [AllowEmptyString()]
+        [string]
+        $Message,
+        [string]
+        $Signature
+    )
+
+    if (-not $script:ServerRsa -or -not $Signature) {
+        return $false
+    }
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes("$Context`n$Message")
+        return $script:ServerRsa.VerifyData($bytes, [Convert]::FromBase64String($Signature), [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-DeviceKey {
+    # The device's own RSA key. Windows: a non-exportable CNG machine key (not even SYSTEM can read
+    # the private key out), or a DPAPI-protected file where CNG is not available. Linux: a root-only file.
+    if ($script:DeviceKey) {
+        return $script:DeviceKey
+    }
+
+    if ($OnLinux) {
+        $path = Join-Path $AgentDir 'device.key'
+        $rsa = [System.Security.Cryptography.RSA]::Create()
+        if (Test-Path -Path $path) {
+            $read = 0
+            $rsa.ImportRSAPrivateKey([Convert]::FromBase64String((Get-Content -Path $path -Raw).Trim()), [ref]$read)
+        } else {
+            $rsa.KeySize = 3072
+            Set-Content -Path $path -Value ([Convert]::ToBase64String($rsa.ExportRSAPrivateKey())) -NoNewline
+            Protect-AgentPath -Path $path
+            Write-AgentLog 'Device key created'
+        }
+        return $script:DeviceKey = $rsa
+    }
+
+    try {
+        $name = 'Laravel-MDM-Agent'
+        $provider = [System.Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider
+        $machine = [System.Security.Cryptography.CngKeyOpenOptions]::MachineKey
+        if ([System.Security.Cryptography.CngKey]::Exists($name, $provider, $machine)) {
+            $cng = [System.Security.Cryptography.CngKey]::Open($name, $provider, $machine)
+        } else {
+            $parameters = New-Object System.Security.Cryptography.CngKeyCreationParameters
+            $parameters.Provider = $provider
+            $parameters.KeyCreationOptions = [System.Security.Cryptography.CngKeyCreationOptions]::MachineKey
+            $parameters.ExportPolicy = [System.Security.Cryptography.CngExportPolicies]::None
+            $parameters.Parameters.Add((New-Object System.Security.Cryptography.CngProperty('Length', [BitConverter]::GetBytes(3072), [System.Security.Cryptography.CngPropertyOptions]::None)))
+            $cng = [System.Security.Cryptography.CngKey]::Create([System.Security.Cryptography.CngAlgorithm]::Rsa, $name, $parameters)
+            Write-AgentLog 'Device key created (CNG machine key, not exportable)'
+        }
+        return $script:DeviceKey = New-Object System.Security.Cryptography.RSACng($cng)
+    }
+    catch {
+        Write-AgentLog "CNG key storage failed ($($_.Exception.Message)), using a DPAPI-protected key file"
+    }
+
+    $path = Join-Path $AgentDir 'DeviceKey.xml'
+    $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider(3072)
+    if (Test-Path -Path $path) {
+        $secure = (Import-Clixml -Path $path).key
+        $rsa.FromXmlString([System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)))
+    } else {
+        @{ key = ($rsa.ToXmlString($true) | ConvertTo-SecureString -AsPlainText -Force) } | Export-Clixml -Path $path
+        Protect-AgentPath -Path $path
+        Write-AgentLog 'Device key created (DPAPI-protected file)'
+    }
+    return $script:DeviceKey = $rsa
+}
+
+function Get-DevicePublicKey {
+    $parameters = (Get-DeviceKey).ExportParameters($false)
+    return @{ n = [Convert]::ToBase64String($parameters.Modulus); e = [Convert]::ToBase64String($parameters.Exponent) }
+}
+
+function New-DeviceSignature {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Context,
+        [AllowEmptyString()]
+        [string]
+        $Message
+    )
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes("$Context`n$Message")
+    return [Convert]::ToBase64String((Get-DeviceKey).SignData($bytes, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1))
+}
+
+function Get-HttpClient {
+    if (-not $script:HttpClient) {
+        if (-not ('System.Net.Http.HttpClient' -as [type])) {
+            Add-Type -AssemblyName System.Net.Http
+        }
+        $script:HttpClient = New-Object System.Net.Http.HttpClient
+        $script:HttpClient.Timeout = [TimeSpan]::FromSeconds(100)
+    }
+    return $script:HttpClient
+}
+
+function Get-ResponseHeader {
+    param (
+        [Parameter(Mandatory = $true)]
+        $Response,
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Name
+    )
+
+    $values = $null
+    if ($Response.Headers.TryGetValues($Name, [ref]$values)) {
+        return @($values)[0]
+    }
+    return $null
+}
+
+#endregion
+
+#region Remediation scripts
+
+# Runs are verified against the pinned server key (manifest signature, device, expiry, one-time
+# run id, platform, hashes of the script bytes), kept in memory only and run one at a time in a
+# separate low-priority process without network access, the code passed on stdin. Nothing of the
+# script is written to disk and it never appears on a command line.
+$script:ScriptQueue = New-Object System.Collections.Queue
+$script:CurrentScript = $null
+$script:ScriptsRequested = $false
+$script:ExecutedRuns = $null
+
+# Constant bootstrap of the script process: reads the script (base64) from stdin, checks its hash
+# again and runs it. Exit 97 = hash mismatch, 98 = the script threw.
+$ScriptBootstrap = @'
+$ErrorActionPreference = 'Stop'
+$bytes = [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())
+$sha = [Security.Cryptography.SHA256]::Create()
+$hash = -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+if ($hash -ne $env:MDM_SCRIPT_SHA256) { [Console]::Error.WriteLine('The script does not match its signed hash.'); exit 97 }
+$code = [Text.Encoding]::UTF8.GetString($bytes)
+Remove-Variable bytes, sha, hash
+$global:LASTEXITCODE = 0
+try { & ([scriptblock]::Create($code)); exit $LASTEXITCODE }
+catch { [Console]::Error.WriteLine($_.ToString()); exit 98 }
+'@
+
+function Get-ExecutedRuns {
+    if ($null -eq $script:ExecutedRuns) {
+        $script:ExecutedRuns = New-Object System.Collections.Generic.List[long]
+        $path = Join-Path $AgentDir 'state.json'
+        if (Test-Path -Path $path) {
+            try { foreach ($id in @((Get-Content -Path $path -Raw | ConvertFrom-Json).executed_runs)) { $script:ExecutedRuns.Add([long]$id) } } catch { }
+        }
+    }
+    # The comma keeps an empty list from being unrolled to $null.
+    return , $script:ExecutedRuns
+}
+
+function Add-ExecutedRun {
+    param (
+        [long]
+        $RunId
+    )
+
+    $runs = Get-ExecutedRuns
+    $runs.Add($RunId)
+    while ($runs.Count -gt 500) { $runs.RemoveAt(0) }
+    $path = Join-Path $AgentDir 'state.json'
+    @{ executed_runs = @($runs) } | ConvertTo-Json -Compress | Set-Content -Path $path -Encoding UTF8
+    Protect-AgentPath -Path $path
+}
+
+function Get-ScriptFingerprint {
+    # The same as the server: SHA-256 of {detection_sha256, platform, remediation_sha256, timeout}.
+    param (
+        $Manifest
+    )
+
+    $remediation = if ($Manifest.remediation_sha256) { '"' + $Manifest.remediation_sha256 + '"' } else { 'null' }
+    $json = '{"detection_sha256":"' + $Manifest.detection_sha256 + '","platform":"' + $Manifest.platform + '","remediation_sha256":' + $remediation + ',"timeout":' + [int]$Manifest.timeout + '}'
+    return Get-Sha256Hex -Bytes ([System.Text.Encoding]::UTF8.GetBytes($json))
+}
+
+function Test-ScriptRun {
+    # Returns the verified run, or throws why it is rejected.
+    param (
+        [Parameter(Mandatory = $true)]
+        $Payload
+    )
+
+    if (-not (Test-ServerSignature -Context 'MDM1-SCRIPT' -Message "$($Payload.manifest)" -Signature "$($Payload.signature)")) {
+        throw 'the manifest is not signed with the pinned server key'
+    }
+    $manifest = $Payload.manifest | ConvertFrom-Json
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + $script:ClockOffset
+    if ("$($manifest.device_id)" -ne "$($script:DeviceId)") { throw "the run is for device $($manifest.device_id)" }
+    if ($now -gt [long]$manifest.expires_at) { throw 'the run has expired' }
+    if ($now -lt [long]$manifest.issued_at - 300) { throw 'the run is issued in the future' }
+    if ((Get-ExecutedRuns).Contains([long]$manifest.run_id)) { throw 'the run was already executed' }
+    $platform = if ($OnLinux) { 'linux' } else { 'windows' }
+    if ($manifest.platform -ne 'all' -and $manifest.platform -ne $platform) { throw "the script is for $($manifest.platform)" }
+    if ([int]$manifest.timeout -lt 1 -or [int]$manifest.timeout -gt 3600) { throw 'invalid timeout' }
+
+    $detection = [Convert]::FromBase64String("$($Payload.detection)")
+    if ((Get-Sha256Hex -Bytes $detection) -ne $manifest.detection_sha256) { throw 'the detection script does not match its signed hash' }
+    $remediation = $null
+    if ($manifest.remediation_sha256) {
+        $remediation = [Convert]::FromBase64String("$($Payload.remediation)")
+        if ((Get-Sha256Hex -Bytes $remediation) -ne $manifest.remediation_sha256) { throw 'the remediation script does not match its signed hash' }
+    } elseif ($Payload.remediation) {
+        throw 'the remediation script is not in the signed manifest'
+    }
+    if ((Get-ScriptFingerprint -Manifest $manifest) -ne $manifest.fingerprint) { throw 'the fingerprint does not match the scripts' }
+
+    return @{ Manifest = $manifest; Detection = $detection; Remediation = $remediation }
+}
+
+function Initialize-ScriptSandbox {
+    # Windows: a copy of powershell.exe that the firewall blocks completely; the agent itself keeps
+    # its network. Returns the path, or throws why scripts cannot run isolated.
+    $source = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $dir = Join-Path $AgentDir 'sandbox'
+    $target = Join-Path $dir 'powershell.exe'
+    if (-not (Test-Path -Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+    # Copied again after a Windows update changed the original.
+    if (-not (Test-Path -Path $target) -or (Get-FileHash -Path $target).Hash -ne (Get-FileHash -Path $source).Hash) {
+        Copy-Item -Path $source -Destination $target -Force
+    }
+
+    foreach ($direction in 'Outbound', 'Inbound') {
+        $name = "LaravelMDM-Scripts-$direction"
+        $rule = Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue
+        if (-not $rule) {
+            New-NetFirewallRule -Name $name -DisplayName "Laravel-MDM remediation scripts ($direction, no network)" -Direction $direction -Action Block -Program $target -Profile Any -Enabled True | Out-Null
+            $rule = Get-NetFirewallRule -Name $name
+        }
+        $program = ($rule | Get-NetFirewallApplicationFilter).Program
+        if ("$($rule.Enabled)" -ne 'True' -or "$($rule.Action)" -ne 'Block' -or $program -ne $target) {
+            throw "the firewall rule $name is changed or disabled"
+        }
+    }
+    $disabled = @(Get-NetFirewallProfile | Where-Object { "$($_.Enabled)" -ne 'True' })
+    if ($disabled) {
+        throw "Windows Firewall is off for the $(($disabled.Name) -join ', ') profile, scripts cannot run without network access"
+    }
+    return $target
+}
+
+function Start-ScriptProcess {
+    param (
+        [Parameter(Mandatory = $true)]
+        [byte[]]
+        $Code
+    )
+
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($ScriptBootstrap))
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    if ($OnLinux) {
+        # An empty network namespace: no interfaces, no DNS, also for every child process.
+        foreach ($tool in 'unshare', 'nice', 'ionice') {
+            if (-not (Get-Command -Name $tool -CommandType Application -ErrorAction SilentlyContinue)) {
+                throw "network isolation unavailable ($tool not found)"
+            }
+        }
+        $info.FileName = (Get-Command -Name unshare -CommandType Application | Select-Object -First 1).Source
+        $info.Arguments = "--net -- nice -n 10 ionice -c 3 `"$((Get-Process -Id $PID).Path)`" -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
+    } else {
+        $info.FileName = Initialize-ScriptSandbox
+        $info.Arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded"
+    }
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.WorkingDirectory = [System.IO.Path]::GetTempPath()
+    $info.EnvironmentVariables['MDM_SCRIPT_SHA256'] = Get-Sha256Hex -Bytes $Code
+
+    $process = [System.Diagnostics.Process]::Start($info)
+    if (-not $OnLinux) {
+        try { $process.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
+    }
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $stderr = $process.StandardError.ReadToEndAsync()
+    $process.StandardInput.Write([Convert]::ToBase64String($Code))
+    $process.StandardInput.Close()
+
+    return @{ Process = $process; Stdout = $stdout; Stderr = $stderr; Started = Get-Date }
+}
+
+function Stop-ScriptProcess {
+    param (
+        $Process
+    )
+
+    try {
+        if ($OnLinux) { $Process.Kill($true) } else { taskkill /PID $Process.Id /T /F 2>&1 | Out-Null }
+    }
+    catch { }
+}
+
+function Request-ScriptRuns {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Token
+    )
+
+    $script:ScriptsRequested = $false
+    if (-not (Get-AgentConfig)['scripts_enabled']) {
+        Write-AgentLog 'Remediation scripts are disabled in config.json, not taking any'
+        return
+    }
+
+    $response = Invoke-MdmApi -Path 'device/scripts' -Token $Token
+    foreach ($payload in @($response.runs)) {
+        if (-not $payload) { continue }
+        $runId = $null
+        try {
+            $runId = ($payload.manifest | ConvertFrom-Json).run_id
+            $run = Test-ScriptRun -Payload $payload
+            $script:ScriptQueue.Enqueue($run)
+        }
+        catch {
+            Write-AgentLog "Script run $runId rejected: $($_.Exception.Message)"
+            if ($runId) {
+                try { Invoke-MdmApi -Method Post -Path "device/scripts/runs/$runId" -Token $Token -Body @{ status = 'rejected'; error = $_.Exception.Message } | Out-Null } catch { }
+            }
+        }
+    }
+}
+
+function Update-ScriptRun {
+    # Advances the current run (detection, remediation, detection again) without blocking the loop.
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Token
+    )
+
+    $current = $script:CurrentScript
+    if (-not $current) {
+        if ($script:ScriptQueue.Count -eq 0) { return }
+        $run = $script:ScriptQueue.Dequeue()
+        Add-ExecutedRun -RunId $run.Manifest.run_id
+        $current = $script:CurrentScript = @{ Run = $run; Step = 'detection'; Output = New-Object System.Text.StringBuilder; Exit = @{}; Error = $null; Proc = $null }
+        Write-AgentLog "Script '$($run.Manifest.name)' v$($run.Manifest.version) ($($run.Manifest.fingerprint)) started"
+    }
+
+    try {
+        if (-not $current.Proc) {
+            $code = if ($current.Step -eq 'remediation') { $current.Run.Remediation } else { $current.Run.Detection }
+            $current.Proc = Start-ScriptProcess -Code $code
+            return
+        }
+
+        $proc = $current.Proc
+        if (-not $proc.Process.HasExited) {
+            if (((Get-Date) - $proc.Started).TotalSeconds -lt [int]$current.Run.Manifest.timeout) { return }
+            Stop-ScriptProcess -Process $proc.Process
+            $proc.Process.WaitForExit(5000) | Out-Null
+            $current.Error = "$($current.Step) timed out after $($current.Run.Manifest.timeout) s"
+        }
+
+        $exit = if ($current.Error) { $null } else { $proc.Process.ExitCode }
+        [void]$current.Output.AppendLine("== $($current.Step) ($(if ($current.Error) { 'timed out' } else { "exit $exit" })) ==")
+        foreach ($stream in $proc.Stdout, $proc.Stderr) {
+            if ($stream.Wait(5000) -and $stream.Result) { [void]$current.Output.AppendLine($stream.Result.TrimEnd()) }
+        }
+        $proc.Process.Dispose()
+        $current.Proc = $null
+        $current.Exit[$current.Step] = $exit
+
+        $status = $null
+        if ($current.Error) {
+            $status = 'error'
+        } elseif ($current.Step -eq 'detection') {
+            if ($exit -eq 0) { $status = 'compliant' }
+            elseif ($exit -eq 1 -and $current.Run.Remediation) { $current.Step = 'remediation'; return }
+            elseif ($exit -eq 1) { $status = 'failed' }
+            else { $status = 'error'; $current.Error = "detection exited with $exit" }
+        } elseif ($current.Step -eq 'remediation') {
+            $current.Step = 'post'
+            return
+        } else {
+            $status = if ($exit -eq 0) { 'remediated' } elseif ($exit -eq 1) { 'failed' } else { 'error' }
+            if ($status -eq 'error') { $current.Error = "detection after the remediation exited with $exit" }
+        }
+    }
+    catch {
+        $status = 'error'
+        $current.Error = $_.Exception.Message
+        if ($current.Proc) { Stop-ScriptProcess -Process $current.Proc.Process }
+    }
+
+    $script:CurrentScript = $null
+    $manifest = $current.Run.Manifest
+    $output = $current.Output.ToString()
+    if ($output.Length -gt 16000) { $output = $output.Substring(0, 16000) }
+    Write-AgentLog "Script '$($manifest.name)' ($($manifest.fingerprint)): $status$(if ($current.Error) { ", $($current.Error)" })"
+    try {
+        Invoke-MdmApi -Method Post -Path "device/scripts/runs/$($manifest.run_id)" -Token $Token -Body @{
+        status              = $status
+        fingerprint         = $manifest.fingerprint
+        detection_exit      = $current.Exit['detection']
+        remediation_exit    = $current.Exit['remediation']
+        post_detection_exit = $current.Exit['post']
+        output              = $output
+        error               = $current.Error
+        } | Out-Null
+    }
+    catch {
+        Write-AgentLog "Script result not sent: $($_.Exception.Message)"
+    }
+}
+
+#endregion
+
 #region Agent
 
 function Write-AgentLog {
@@ -895,6 +1511,8 @@ function Write-AgentLog {
 }
 
 function Invoke-MdmApi {
+    # Signed request with the device key; the response must be signed with the pinned server key
+    # for this very request (its nonce), otherwise it is rejected before anything reads it.
     param (
         [Parameter(Mandatory = $true)]
         [string]
@@ -906,20 +1524,63 @@ function Invoke-MdmApi {
         $Token
     )
 
-    $params = @{
-        Method = $Method
-        Uri    = "$($ServerUrl.TrimEnd('/'))/api/$Path"
-        Headers = @{ 'Accept' = 'application/json' }
-    }
-    if ($Token) {
-        $params.Headers['Authorization'] = "Bearer $Token"
-    }
-    if ($null -ne $Body) {
-        $params.Body = [System.Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Depth 6 -Compress))
-        $params.ContentType = 'application/json; charset=utf-8'
-    }
+    $client = Get-HttpClient
+    $method = $Method.ToUpperInvariant()
+    $bytes = if ($null -ne $Body) { [System.Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Depth 6 -Compress)) } else { [byte[]]@() }
+    $bodyHash = Get-Sha256Hex -Bytes $bytes
 
-    return Invoke-RestMethod @params
+    for ($attempt = 1; ; $attempt++) {
+        $nonce = New-Nonce
+        $timestamp = Get-UnixTime
+        $request = New-Object System.Net.Http.HttpRequestMessage((New-Object System.Net.Http.HttpMethod($method)), "$($ServerUrl.TrimEnd('/'))/api/$Path")
+        $request.Headers.Add('Accept', 'application/json')
+        if ($Token) { $request.Headers.Add('Authorization', "Bearer $Token") }
+        $request.Headers.Add('X-MDM-Timestamp', "$timestamp")
+        $request.Headers.Add('X-MDM-Nonce', $nonce)
+        $request.Headers.Add('X-MDM-Signature', (New-DeviceSignature -Context 'MDM1-REQ' -Message "$method`n/api/$Path`n$timestamp`n$nonce`n$bodyHash"))
+        if ($bytes.Length -gt 0) {
+            $request.Content = New-Object System.Net.Http.ByteArrayContent(, $bytes)
+            $request.Content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse('application/json; charset=utf-8')
+        }
+
+        try {
+            $response = $client.SendAsync($request).GetAwaiter().GetResult()
+            $content = $response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+        }
+        finally {
+            $request.Dispose()
+        }
+
+        $device = Get-ResponseHeader -Response $response -Name 'X-MDM-Device'
+        $serverTime = Get-ResponseHeader -Response $response -Name 'X-MDM-Timestamp'
+        $signed = Test-ServerSignature -Context 'MDM1-RESP' -Message "$device`n$nonce`n$serverTime`n$(Get-Sha256Hex -Bytes $content)" -Signature (Get-ResponseHeader -Response $response -Name 'X-MDM-Signature')
+        if (-not $signed) {
+            throw "The response of $Path (HTTP $([int]$response.StatusCode)) is not signed with the pinned server key, it is ignored"
+        }
+        if ($script:DeviceId -and "$device" -ne "$($script:DeviceId)" -and $response.IsSuccessStatusCode) {
+            throw "The response of $Path is signed for device $device, not for this device ($($script:DeviceId))"
+        }
+        $script:ClockOffset = [long]$serverTime - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+
+        $text = [System.Text.Encoding]::UTF8.GetString($content)
+        $data = if ($text.Trim()) { $text | ConvertFrom-Json } else { $null }
+        if ($response.IsSuccessStatusCode) {
+            return $data
+        }
+
+        $code = if ($data -and $data.error) { "$($data.error)" } elseif ($data -and $data.message) { "$($data.message)" } else { "$($response.ReasonPhrase)" }
+        # The clock of the device is off: the signed server time corrected it, try once more.
+        if ($code -eq 'clock_skew' -and $attempt -eq 1) {
+            Write-AgentLog ('Clock differs from the server by {0} s, using the server time' -f $script:ClockOffset)
+            continue
+        }
+        if ($code -eq 'key_not_registered') {
+            $script:KeyRegistered = $false
+        }
+        $exception = New-Object System.Exception("$Path failed: HTTP $([int]$response.StatusCode) $code")
+        $exception.Data['MdmError'] = $code
+        throw $exception
+    }
 }
 
 function Register-MDMDevice {
@@ -929,12 +1590,49 @@ function Register-MDMDevice {
         $EnrolmentCode
     )
 
-    $response = Invoke-MdmApi -Method Post -Path 'device/register' -Body @{ 'enrolment_code' = $EnrolmentCode }
+    # The public key goes with the enrolment, the request is signed with it.
+    $response = Invoke-MdmApi -Method Post -Path 'device/register' -Body @{ 'enrolment_code' = $EnrolmentCode; 'public_key' = Get-DevicePublicKey }
     if (-not $response.token) {
         throw "Enrolment failed: $response"
     }
 
+    $config = Get-AgentConfig
+    $config['device_id'] = [int]$response.device_id
+    $config['key_registered'] = $true
+    Save-AgentConfig -Config $config
+    $script:DeviceId = $config['device_id']
+    $script:KeyRegistered = $true
+
     return $response.token
+}
+
+function Register-DeviceKey {
+    # Agents enrolled before 1.7.0 register their key once with the device token; afterwards the
+    # server accepts only requests signed with it.
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Token
+    )
+
+    $config = Get-AgentConfig
+    try {
+        $response = Invoke-MdmApi -Method Post -Path 'device/key' -Token $Token -Body @{ public_key = Get-DevicePublicKey }
+        $config['device_id'] = [int]$response.device_id
+        Write-AgentLog "Device key registered (device $($response.device_id))"
+    }
+    catch {
+        if ($_.Exception.Data['MdmError'] -ne 'key_already_registered') {
+            throw
+        }
+        # Registered before (the configuration was lost). If it is another key, requests fail
+        # with invalid_signature until an admin resets the device key in the portal.
+        Write-AgentLog 'The server already has a key for this device'
+    }
+    $config['key_registered'] = $true
+    Save-AgentConfig -Config $config
+    $script:DeviceId = $config['device_id']
+    $script:KeyRegistered = $true
 }
 
 function Get-AgentToken {
@@ -1131,6 +1829,9 @@ function Get-Report {
     )
 
     $data = @{ machine = if ($OnLinux) { Get-LinuxMachineInfo } else { Get-MachineInfo } }
+    $config = Get-AgentConfig
+    $data.machine | Add-Member -NotePropertyName ScriptsEnabled -NotePropertyValue ([bool]$config['scripts_enabled']) -Force
+    $data.machine | Add-Member -NotePropertyName ServerKeyFingerprint -NotePropertyValue $config['server_key'].fingerprint -Force
     if ($Inventory) {
         $data['os_updates'] = $Inventory.os_updates
         $data['packages_updates'] = $Inventory.packages_updates
@@ -1167,6 +1868,9 @@ function Send-Report {
             Invoke-DeviceCommand -Command $command
         }
     }
+    if ($response.scripts_pending) {
+        $script:ScriptsRequested = $true
+    }
 }
 
 function Update-Agent {
@@ -1178,30 +1882,34 @@ function Update-Agent {
         return
     }
 
-    $download = Join-Path ([System.IO.Path]::GetTempPath()) "mdm-agent-update-$(Get-Random).ps1"
+    # Downloaded into memory and checked there: the bytes that are verified are the ones written.
     try {
-        Invoke-WebRequest -UseBasicParsing -Uri "$($ServerUrl.TrimEnd('/'))/agent/app.ps1" -OutFile $download
+        $client = Get-HttpClient
+        $base = "$($ServerUrl.TrimEnd('/'))/agent/app.ps1"
+        $bytes = $client.GetByteArrayAsync($base).GetAwaiter().GetResult()
+        $signature = $client.GetStringAsync("$base.sig").GetAwaiter().GetResult().Trim()
+        if (-not (Test-ServerSignature -Context 'MDM1-AGENT' -Message (Get-Sha256Hex -Bytes $bytes) -Signature $signature)) {
+            throw 'the downloaded agent is not signed with the pinned server key'
+        }
 
+        $text = [System.Text.Encoding]::UTF8.GetString($bytes)
         $errors = $null
-        [System.Management.Automation.Language.Parser]::ParseFile($download, [ref]$null, [ref]$errors) | Out-Null
-        if ($errors -or -not (Select-String -Path $download -Pattern 'function Start-Agent' -Quiet)) {
+        [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$errors) | Out-Null
+        if ($errors -or $text -notmatch '(?m)^function Start-Agent') {
             throw 'the downloaded agent is not valid'
         }
 
         # Only move forward, an older agent is never installed this way.
-        $version = (Select-String -Path $download -Pattern "^\`$AgentVersion = '([^']+)'" | Select-Object -First 1).Matches.Groups[1].Value
+        $version = if ($text -match "(?m)^\`$AgentVersion = '([^']+)'") { $Matches[1] } else { $null }
         if (-not $version -or [version]$version -le [version]$AgentVersion) {
             throw "the server offers version '$version', not newer than $AgentVersion"
         }
 
-        Copy-Item -Path $download -Destination (Join-Path $AgentDir 'app.ps1') -Force
+        [System.IO.File]::WriteAllBytes((Join-Path $AgentDir 'app.ps1'), $bytes)
     }
     catch {
         Write-AgentLog "Agent update failed: $($_.Exception.Message)"
         return
-    }
-    finally {
-        Remove-Item -Path $download -Force -ErrorAction SilentlyContinue
     }
 
     Write-AgentLog 'Agent updated, restarting'
@@ -1345,6 +2053,11 @@ function Invoke-DeviceCommand {
     Write-AgentLog "Executing command '$Command'"
     if ($Command -eq 'updateAgent') {
         Update-Agent
+        return
+    }
+    if ($Command -eq 'runScripts') {
+        # Only a trigger: the runs are taken, verified and run by the main loop.
+        $script:ScriptsRequested = $true
         return
     }
 
@@ -1499,10 +2212,21 @@ function Invoke-RealtimeMessage {
             throw "WebSocket error: $($Message.data)"
         }
         'command' {
-            if ($Message.channel -eq $Realtime.Config.channel -and $data.command) {
-                # Acknowledge first, so the command is not delivered again with the next report.
-                Invoke-MdmApi -Method Post -Path 'device/commands/ack' -Token $Token -Body @{ command = $data.command } | Out-Null
-                Invoke-DeviceCommand -Command $data.command
+            if ($Message.channel -ne $Realtime.Config.channel) {
+                return
+            }
+            # Only a trigger signed by the server for this device and not older than 5 minutes;
+            # the commands themselves come from the signed API, so nothing can be injected or replayed.
+            $payload = if ($data.p -is [string]) { $data.p | ConvertFrom-Json } else { $null }
+            if (-not (Test-ServerSignature -Context 'MDM1-WS' -Message "$($data.p)" -Signature "$($data.sig)") -or "$($payload.device_id)" -ne "$($script:DeviceId)" -or [Math]::Abs((Get-UnixTime) - [long]$payload.ts) -gt 300) {
+                Write-AgentLog 'Ignoring a command event that is not signed by the server for this device'
+                return
+            }
+            $response = Invoke-MdmApi -Method Post -Path 'device/commands/take' -Token $Token -Body @{}
+            foreach ($command in @($response.commands)) {
+                if ($command) {
+                    Invoke-DeviceCommand -Command $command
+                }
             }
         }
     }
@@ -1715,12 +2439,13 @@ function Send-Heartbeat {
     catch {
         Write-AgentLog "Live state failed: $($_.Exception.Message)"
     }
-    # Reverb limits messages to 10 kB: a large state (many services) goes over HTTPS instead.
-    $stateOverWs = $state -and $stateJson.Length -le 8000
+    # Reverb limits messages to 10 kB (with the signature): a large state (many services) goes over HTTPS instead.
+    $stateOverWs = $state -and $stateJson.Length -le 7000
 
     if ($Realtime -and $Realtime.Subscribed) {
-        $data = if ($metrics) { $metrics } else { @{} }
-        if ($stateOverWs) { $data['state'] = $state }
+        # Signed with the device key, for this device, once (nonce).
+        $payload = [ordered]@{ device_id = $script:DeviceId; ts = Get-UnixTime; nonce = New-Nonce; metrics = $metrics; state = $(if ($stateOverWs) { $state } else { $null }) } | ConvertTo-Json -Depth 6 -Compress
+        $data = @{ p = $payload; sig = New-DeviceSignature -Context 'MDM1-HB' -Message $payload }
         # A failed send throws: the connection is reset and the state is sent again later.
         Send-WsMessage -Socket $Realtime.Socket -Message @{ event = 'client-heartbeat'; channel = $Realtime.Config.channel; data = $data }
         if ($stateOverWs) {
@@ -1746,7 +2471,11 @@ function Start-Agent {
     # Keep the agent in the background, user applications take precedence.
     try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
 
+    $config = Initialize-ServerKey
+    Protect-AgentPath -Path $AgentDir -Directory
     $Token = Get-AgentToken
+    # Read again: an enrolment just now registered the key.
+    $script:KeyRegistered = [bool](Get-AgentConfig)['key_registered']
     Write-AgentLog ('Agent {0} started (PowerShell {1}, {2}, server {3})' -f $AgentVersion, $PSVersionTable.PSVersion, $(if ($OnLinux) { 'Linux' } else { 'Windows' }), $ServerUrl)
     $inventory = Get-CachedInventory
     # First inventory a few minutes after start, so it does not add to the load during boot.
@@ -1769,6 +2498,11 @@ function Start-Agent {
 
     while ($true) {
         try {
+            if (-not $script:KeyRegistered) {
+                # Updated from an agent that did not sign, or the key was reset in the portal.
+                Register-DeviceKey -Token $Token
+            }
+
             if (-not $Once -and ((Get-Date) - $lastHeartbeat).TotalSeconds -ge $HeartbeatInterval) {
                 $lastHeartbeat = Get-Date
                 Send-Heartbeat -Realtime $realtime -Token $Token
@@ -1791,6 +2525,16 @@ function Start-Agent {
             if (Complete-UpdateJob) {
                 # Show what is left right away instead of the pre-update list for 6 hours.
                 $nextInventory = Get-Date
+            }
+            try {
+                if ($script:ScriptsRequested -and -not $script:CurrentScript -and $script:ScriptQueue.Count -eq 0) {
+                    Request-ScriptRuns -Token $Token
+                }
+                Update-ScriptRun -Token $Token
+            }
+            catch {
+                # Script problems must not tear down the WebSocket connection.
+                Write-AgentLog "Scripts: $($_.Exception.Message)"
             }
             if ($OnLinux -and $inventory -and -not $inventoryJob -and ((Get-Date) - $lastPackageCheck).TotalSeconds -ge 60) {
                 # Packages installed outside the agent (apt, unattended-upgrades): collect again once
@@ -1910,7 +2654,19 @@ if ($Install) {
         Copy-Item -Path $PSCommandPath -Destination $target -Force
     }
 
+    Protect-AgentPath -Path $AgentDir -Directory
+    $config = Initialize-ServerKey
+    if ($DisableScripts -or $EnableScripts) {
+        $config['scripts_enabled'] = [bool]$EnableScripts
+        Save-AgentConfig -Config $config
+    }
+    Write-Host "Server key: $($config['server_key'].fingerprint)" -ForegroundColor Yellow
+    Write-Host "Remediation scripts: $(if ($config['scripts_enabled']) { 'enabled' } else { 'disabled' }) (config.json)" -ForegroundColor Yellow
+
     Get-AgentToken | Out-Null
+    if ($existing -and -not $config['key_registered']) {
+        Register-DeviceKey -Token (Get-AgentToken)
+    }
     if ($OnLinux) { Register-AgentService } else { Register-AgentTask }
 
     Remove-TemporaryInstaller

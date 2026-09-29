@@ -13,7 +13,7 @@ class Device extends Model
 {
     use HasFactory;
 
-    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'updateAgent'];
+    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'updateAgent', 'runScripts'];
 
     public const TYPE_ICONS = [
         'server' => 'fas fa-server',
@@ -41,7 +41,12 @@ class Device extends Model
         'last_ws_at' => 'datetime',
         'last_http_at' => 'datetime',
         'live_state_at' => 'datetime',
+        'public_key' => 'array',
+        'key_registered_at' => 'datetime',
     ];
+
+    /** The only command agents that do not sign (before 1.7.0) get: updating to a signing agent. */
+    public const LEGACY_COMMANDS = ['updateAgent'];
 
     /** Live state values the agent may report (anything else is dropped). */
     private const SERVICE_STATES = ['running', 'stopped', 'failed'];
@@ -131,6 +136,12 @@ class Device extends Model
             return [];
         });
 
+        // Commands queued before the device lost its key (or before this server version) are
+        // dropped for agents that do not sign, only the update to a signing agent is delivered.
+        if (! static::query()->whereKey($id)->whereNotNull('public_key')->exists()) {
+            $taken = array_values(array_intersect($taken, self::LEGACY_COMMANDS));
+        }
+
         return $taken;
     }
 
@@ -165,6 +176,9 @@ class Device extends Model
     public function queueCommand(string $command): bool
     {
         if (! in_array($command, self::COMMANDS, true) || $this->offline) {
+            return false;
+        }
+        if (! $this->signsRequests && ! in_array($command, self::LEGACY_COMMANDS, true)) {
             return false;
         }
 
@@ -227,6 +241,23 @@ class Device extends Model
     public function getAgentUpdatableAttribute(): bool
     {
         return $this->agent_version !== null;
+    }
+
+    /** Whether the agent allows remediation scripts (config.json on the device, agents 1.7.0+). */
+    public function getScriptsEnabledAttribute(): bool
+    {
+        return ($this->data->machine->ScriptsEnabled ?? false) === true;
+    }
+
+    public function scriptRuns(): HasMany
+    {
+        return $this->hasMany(ScriptRun::class);
+    }
+
+    /** Agents 1.7.0+ register a key and sign every request; older ones only get the agent update. */
+    public function getSignsRequestsAttribute(): bool
+    {
+        return $this->public_key !== null;
     }
 
     public function getConnectedViaWebsocketAttribute(): bool
