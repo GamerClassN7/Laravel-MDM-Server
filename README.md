@@ -129,14 +129,23 @@ The agent is designed to stay out of the way:
   and from `/proc/stat` and `/proc/meminfo` on Linux; CPU usage is the average over the heartbeat
   interval, so nothing is sampled in between,
 - the expensive update checks (Windows Update and winget, or the local apt cache on Linux) run every
-  6 hours in an idle-priority process; the result is cached in `inventory.json` and reused in reports.
+  6 hours in an idle-priority process; the result is cached in `inventory.json` and reused in reports,
+- disk health (S.M.A.R.T.) is read once an hour in an idle-priority process and cached in `health.json`;
+  on Linux sleeping disks are skipped (`smartctl -n standby`), so the agent never spins them up.
 
 | | Windows | Debian / Ubuntu |
 |---|---|---|
 | Report | OS, uptime, user, CPU, battery, drives, networks, pending reboot | the same, from `/etc/os-release`, `/proc`, `df`, `ip` and `/var/run/reboot-required` |
 | Updates | Windows Update, winget | `apt list --upgradable` |
+| Services | running and stopped automatic services (`Get-Service`) | running and failed units (`systemctl`) |
+| Docker (when installed) | containers and their state (`docker ps --all`) | the same |
+| Disk health | `Get-PhysicalDisk`, `Get-StorageReliabilityCounter` | `smartctl` ([smartmontools](https://www.smartmontools.org/), `apt install smartmontools`) |
 | Turn off / Restart | `Stop-Computer` / `Restart-Computer` | `systemctl poweroff` / `systemctl reboot` |
 | Install updates | winget + Windows Update | `apt-get update && apt-get upgrade` |
+
+The device detail has tabs for drives, updates, networks, **services** (with search, failed ones
+first), **Docker** containers (only on devices with Docker) and **disk health** (temperature,
+power-on hours, SSD wear, reallocated / pending sectors and media errors).
 
 ### Installation
 
@@ -176,6 +185,7 @@ Optional parameters (stored in the scheduled task / service by `-Install`):
 | `-ReportInterval` | `300` | Seconds between device reports |
 | `-HeartbeatInterval` | `30` | Seconds between heartbeats (with CPU/RAM) |
 | `-InventoryInterval` | `21600` | Seconds between update checks |
+| `-HealthInterval` | `3600` | Seconds between disk health (S.M.A.R.T.) checks |
 | `-ReverbScheme` | scheme of `-ServerUrl` | `https` (wss) or `http` (ws) |
 | `-ReverbHost`, `-ReverbPort`, `-ReverbKey` | from server | Override the WebSocket address announced by the server |
 | `-NoRealtime` | | Use HTTPS only, without the WebSocket |
@@ -196,5 +206,28 @@ no command or data. The agent then:
 Agents older than 1.1.0 cannot update themselves and have to be reinstalled via **Add device**.
 
 The token is stored next to the script (`Token.xml` on Windows, `token` readable by root only on
-Linux) and logs are written to `agent.log`. The agent only executes the commands `turnOff`, `restart`
-and `doUpdates`.
+Linux) and logs are written to `agent.log`. The agent only executes the commands `turnOff`, `restart`,
+`doUpdates` and `updateAgent`.
+
+### Uninstalling
+
+Windows (PowerShell as Administrator):
+
+```powershell
+Stop-ScheduledTask -TaskName 'Laravel-MDM-Agent'
+Unregister-ScheduledTask -TaskName 'Laravel-MDM-Agent' -Confirm:$false
+Remove-Item -Recurse -Force "$env:ProgramData\Laravel-MDM"
+```
+
+Linux:
+
+```bash
+sudo systemctl disable --now laravel-mdm-agent
+sudo rm -f /etc/systemd/system/laravel-mdm-agent.service && sudo systemctl daemon-reload
+sudo rm -rf /opt/laravel-mdm
+```
+
+Agents older than 1.1.0 ran from the folder they were started in, not from the install directory.
+The scheduled task shows where: `(Get-ScheduledTask Laravel-MDM-Agent).Actions.Arguments`; delete
+that folder (`app.ps1`, `Token.xml`, `agent.log`, `inventory.json`) instead. Then delete the device
+in the portal.

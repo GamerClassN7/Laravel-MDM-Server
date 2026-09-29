@@ -1,1 +1,13 @@
 @import "./boilerplate/boilerplate.scss";
+
+// Keep badge icons and text on one line, vertically centred.
+.badge {
+    align-items: center;
+    line-height: 1;
+
+    .badge-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+}
