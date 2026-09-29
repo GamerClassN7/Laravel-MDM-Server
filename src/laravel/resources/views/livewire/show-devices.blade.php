@@ -32,9 +32,32 @@
                             <h5 class="card-title">{{ __('Enrol new device') }}</h5>
                             <p class="text-muted mb-2">{{ __('Enter this code in the agent to register the device.') }}</p>
                             <h2 class="display-5 fw-semibold">{{ $enrollmentCode }}</h2>
-                            <p class="mb-0 text-muted">
+                            <p class="text-muted">
                                 <i class="far fa-clock me-1"></i>{{ __('Expires') }} {{ $enrollmentCodeExpiration->diffForHumans() }} ({{ $enrollmentCodeExpiration }})
                             </p>
+
+                            <h6 class="mt-4">{{ __('Install the agent') }}</h6>
+                            <div x-data="{ tab: 'windows' }">
+                                <ul class="nav nav-tabs mb-2">
+                                    <li class="nav-item">
+                                        <button class="nav-link" type="button" x-bind:class="{ active: tab === 'windows' }" x-on:click="tab = 'windows'">
+                                            <i class="fab fa-windows me-2"></i>Windows PowerShell
+                                        </button>
+                                    </li>
+                                    <li class="nav-item">
+                                        <button class="nav-link" type="button" x-bind:class="{ active: tab === 'pwsh' }" x-on:click="tab = 'pwsh'">
+                                            <i class="fas fa-terminal me-2"></i>PowerShell 7 (Windows, Linux)
+                                        </button>
+                                    </li>
+                                </ul>
+
+                                @foreach (['windows' => __('Run in PowerShell as Administrator.'), 'pwsh' => __('Run in pwsh as Administrator on Windows, or with sudo pwsh on Debian / Ubuntu.')] as $variant => $hint)
+                                    <div x-show="tab === '{{ $variant }}'" @if ($variant !== 'windows') x-cloak style="display: none" @endif>
+                                        <x-copy-command :command="$installCommands[$variant]" />
+                                        <p class="small text-muted mt-2 mb-0">{{ $hint }}</p>
+                                    </div>
+                                @endforeach
+                            </div>
                         </div>
                     </div>
                 @elseif (isset($selectedDevice))

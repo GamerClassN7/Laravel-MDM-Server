@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Laravel-MDM agent for Windows.
+    Laravel-MDM agent for Windows and Linux (Debian / Ubuntu with PowerShell 7).
 
 .DESCRIPTION
     Runs continuously: keeps a WebSocket connection to the server (Laravel Reverb, Pusher protocol)
@@ -22,6 +22,10 @@
 .EXAMPLE
     # Enrol the device and register the agent as a scheduled task running as SYSTEM
     .\app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -Install
+
+.EXAMPLE
+    # Linux: enrol and register the agent as a systemd service
+    sudo pwsh ./app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -Install
 
 .EXAMPLE
     # Reverb reachable on a different address than the one configured on the server
@@ -57,6 +61,8 @@ param (
 
 $ErrorActionPreference = 'Stop'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates')
+# $IsLinux only exists in PowerShell 6+, Windows PowerShell 5.1 is always Windows.
+$OnLinux = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
 
 function Get-MachineInfo {
     $DnsInfo = [System.Net.Dns]::GetHostByName($env:computerName)
@@ -257,6 +263,75 @@ function Get-DockerContainers {
     }
 }
 
+#region Linux
+
+function Get-LinuxMachineInfo {
+    $osRelease = @{}
+    Get-Content -Path /etc/os-release | ForEach-Object {
+        if ($_ -match '^(\w+)=(.*)$') { $osRelease[$Matches[1]] = $Matches[2].Trim('"') }
+    }
+    $cpu = Select-String -Path /proc/cpuinfo -Pattern '^model name\s*:\s*(.+)$' | Select-Object -First 1
+    $battery = Get-ChildItem -Path /sys/class/power_supply -Filter 'BAT*' -ErrorAction SilentlyContinue | Select-Object -First 1
+    $loggedOn = @(who 2>$null) | Select-Object -First 1
+
+    [PSCustomObject]@{
+        Hostname        = [System.Net.Dns]::GetHostName()
+        User            = [Environment]::UserName
+        os              = $osRelease['PRETTY_NAME']
+        uptime          = [int][double]((Get-Content -Path /proc/uptime -Raw).Split(' ')[0])
+        last_logon_user = if ($loggedOn) { ($loggedOn -split '\s+')[0] } else { $null }
+        Processor       = if ($cpu) { $cpu.Matches[0].Groups[1].Value.Trim() } else { $null }
+        Cores           = [Environment]::ProcessorCount
+        Battery         = if ($battery) { [int](Get-Content -Path "$($battery.FullName)/capacity") } else { $null }
+        RestartRequired = Test-Path -Path /var/run/reboot-required
+        Drives          = @(Get-LinuxDrives)
+        Networks        = @(Get-LinuxNetworks)
+    }
+}
+
+function Get-LinuxDrives {
+    # Real block devices only (no tmpfs, overlays, snaps ...).
+    df -B1 --output=source,size,avail,target -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs 2>$null | Select-Object -Skip 1 | ForEach-Object {
+        $parts = $_.Trim() -split '\s+', 4
+        if ($parts.Count -eq 4 -and $parts[0].StartsWith('/dev/')) {
+            [PSCustomObject]@{
+                DriveLetter   = $parts[3]
+                FriendlyName  = $parts[0].Substring(5)
+                Size          = [long]$parts[1]
+                SizeRemaining = [long]$parts[2]
+                DriveType     = 3
+            }
+        }
+    }
+}
+
+function Get-LinuxNetworks {
+    $interfaces = ip -j addr show 2>$null | ConvertFrom-Json
+    foreach ($interface in $interfaces) {
+        if ($interface.ifname -eq 'lo' -or $interface.ifname -like 'veth*' -or $interface.operstate -eq 'DOWN') {
+            continue
+        }
+        [PSCustomObject]@{
+            Name        = $interface.ifname
+            Status      = if ($interface.operstate -eq 'UP') { 'Up' } else { $interface.operstate }
+            IPAddresses = @($interface.addr_info | ForEach-Object { $_.local })
+        }
+    }
+}
+
+function Get-AptUpdates {
+    # Reads the local apt cache only, no network access.
+    apt list --upgradable 2>$null | Where-Object { $_ -match '^(\S+?)/\S+\s+(\S+)' } | ForEach-Object {
+        [PSCustomObject]@{
+            Title          = "$($Matches[1]) $($Matches[2])"
+            IsDownloaded   = $false
+            RebootRequired = $false
+        }
+    }
+}
+
+#endregion
+
 #region Agent
 
 function Write-AgentLog {
@@ -266,7 +341,7 @@ function Write-AgentLog {
         $Message
     )
 
-    $LogPath = "$PSScriptRoot\agent.log"
+    $LogPath = "$PSScriptRoot/agent.log"
     if ((Test-Path -Path $LogPath) -and (Get-Item -Path $LogPath).Length -gt 1MB) {
         Move-Item -Path $LogPath -Destination "$LogPath.1" -Force
     }
@@ -317,7 +392,20 @@ function Register-MDMDevice {
 }
 
 function Get-AgentToken {
-    $AuthFilePath = "$PSScriptRoot\Token.xml"
+    if ($OnLinux) {
+        # SecureString export is Windows only (DPAPI); keep the token in a root-only file.
+        $tokenPath = "$PSScriptRoot/token"
+        if (-not (Test-Path -Path $tokenPath)) {
+            if (-not $EnrolmentCode) {
+                $script:EnrolmentCode = Read-Host -Prompt 'Enrolment code'
+            }
+            Set-Content -Path $tokenPath -Value (Register-MDMDevice -EnrolmentCode $EnrolmentCode) -NoNewline
+            chmod 600 $tokenPath
+        }
+        return (Get-Content -Path $tokenPath -Raw).Trim()
+    }
+
+    $AuthFilePath = "$PSScriptRoot/Token.xml"
     if (-not (Test-Path -Path $AuthFilePath)) {
         if (-not $EnrolmentCode) {
             $script:EnrolmentCode = Read-Host -Prompt 'Enrolment code'
@@ -331,17 +419,53 @@ function Get-AgentToken {
     return [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Auth.token))
 }
 
-function Register-AgentTask {
-    # Starts the agent at boot; the repetition acts as a watchdog, a running instance is not started twice.
-    $Trigger1 = New-ScheduledTaskTrigger -AtStartup
-    $Trigger2 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15)
-    $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-    $arguments = '-WindowStyle Hidden -ExecutionPolicy Bypass -NoLogo -File "{0}\app.ps1" -ServerUrl "{1}" -ReportInterval {2} -HeartbeatInterval {3} -InventoryInterval {4}' -f $PSScriptRoot, $ServerUrl, $ReportInterval, $HeartbeatInterval, $InventoryInterval
+function Get-AgentArguments {
+    # Agent options persisted by -Install.
+    $arguments = '-ServerUrl "{0}" -ReportInterval {1} -HeartbeatInterval {2} -InventoryInterval {3}' -f $ServerUrl, $ReportInterval, $HeartbeatInterval, $InventoryInterval
     if ($ReverbHost) { $arguments += ' -ReverbHost "{0}"' -f $ReverbHost }
     if ($ReverbPort) { $arguments += ' -ReverbPort {0}' -f $ReverbPort }
     if ($ReverbScheme) { $arguments += ' -ReverbScheme {0}' -f $ReverbScheme }
     if ($ReverbKey) { $arguments += ' -ReverbKey "{0}"' -f $ReverbKey }
     if ($NoRealtime) { $arguments += ' -NoRealtime' }
+    return $arguments
+}
+
+function Register-AgentService {
+    # Linux: systemd service running as root, restarted when it exits, low CPU and I/O priority.
+    if ((id -u) -ne '0') {
+        throw 'Run the installation as root, e.g. sudo pwsh ./app.ps1 ... -Install'
+    }
+
+    $pwsh = (Get-Process -Id $PID).Path
+    $unit = @"
+[Unit]
+Description=Laravel-MDM agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=$pwsh -NoLogo -NoProfile -NonInteractive -File "$PSScriptRoot/app.ps1" $(Get-AgentArguments)
+WorkingDirectory=$PSScriptRoot
+Restart=always
+RestartSec=10
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
+"@
+    Set-Content -Path /etc/systemd/system/laravel-mdm-agent.service -Value $unit
+    systemctl daemon-reload
+    systemctl enable --now laravel-mdm-agent.service
+    systemctl restart laravel-mdm-agent.service
+}
+
+function Register-AgentTask {
+    # Starts the agent at boot; the repetition acts as a watchdog, a running instance is not started twice.
+    $Trigger1 = New-ScheduledTaskTrigger -AtStartup
+    $Trigger2 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15)
+    $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+    $arguments = '-WindowStyle Hidden -ExecutionPolicy Bypass -NoLogo -File "{0}\app.ps1" {1}' -f $PSScriptRoot, (Get-AgentArguments)
     $Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument $arguments
 
     Register-ScheduledTask -TaskName "Laravel-MDM-Agent" -Trigger @($Trigger1, $Trigger2) -Settings $Settings -User "NT AUTHORITY\SYSTEM" -Action $Action -RunLevel Highest -Force | Out-Null
@@ -353,11 +477,17 @@ function Start-InventoryCollection {
     $init = [scriptblock]::Create(@"
     function Get-WingetSoftware {${function:Get-WingetSoftware}}
     function Get-WindowsUpdate {${function:Get-WindowsUpdate}}
+    function Get-AptUpdates {${function:Get-AptUpdates}}
 "@)
 
-    return Start-Job -Name 'inventory' -InitializationScript $init -ScriptBlock {
-        [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle
+    return Start-Job -Name 'inventory' -InitializationScript $init -ArgumentList $OnLinux -ScriptBlock {
+        param ($OnLinux)
+        try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
         $data = @{}
+        if ($OnLinux) {
+            try { $data['os_updates'] = @(Get-AptUpdates) } catch { }
+            return $data
+        }
         try { $data['os_updates'] = @(Get-WindowsUpdate) } catch { }
         try { $data['packages_updates'] = @(Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source) } catch { }
         return $data
@@ -365,7 +495,7 @@ function Start-InventoryCollection {
 }
 
 function Get-CachedInventory {
-    $path = "$PSScriptRoot\inventory.json"
+    $path = "$PSScriptRoot/inventory.json"
     if (-not (Test-Path -Path $path)) {
         return $null
     }
@@ -385,7 +515,7 @@ function Save-CachedInventory {
         $Data
     )
 
-    @{ collected_at = (Get-Date).ToString('o'); data = $Data } | ConvertTo-Json -Depth 6 -Compress | Set-Content -Path "$PSScriptRoot\inventory.json" -Encoding UTF8
+    @{ collected_at = (Get-Date).ToString('o'); data = $Data } | ConvertTo-Json -Depth 6 -Compress | Set-Content -Path "$PSScriptRoot/inventory.json" -Encoding UTF8
 }
 
 function Get-Report {
@@ -393,7 +523,7 @@ function Get-Report {
         $Inventory
     )
 
-    $data = @{ machine = Get-MachineInfo }
+    $data = @{ machine = if ($OnLinux) { Get-LinuxMachineInfo } else { Get-MachineInfo } }
     if ($Inventory) {
         $data['os_updates'] = $Inventory.os_updates
         $data['packages_updates'] = $Inventory.packages_updates
@@ -433,6 +563,21 @@ function Invoke-DeviceCommand {
     }
 
     Write-AgentLog "Executing command '$Command'"
+    if ($OnLinux) {
+        switch ($Command) {
+            'turnOff' { systemctl poweroff }
+            'restart' { systemctl reboot }
+            'doUpdates' {
+                Start-Job -Name 'updates' -ScriptBlock {
+                    $env:DEBIAN_FRONTEND = 'noninteractive'
+                    apt-get update -q | Out-Null
+                    apt-get upgrade -y -q -o Dpkg::Options::=--force-confold | Out-Null
+                } | Out-Null
+            }
+        }
+        return
+    }
+
     switch ($Command) {
         'turnOff' { Stop-Computer -Force }
         'restart' { Restart-Computer -Force }
@@ -616,29 +761,59 @@ public static extern bool GlobalMemoryStatusEx([In, Out] MemoryStatusEx buffer);
     }
 }
 
+function Get-CpuMemoryCounters {
+    # Cumulative CPU times and current memory, read with negligible cost.
+    if ($OnLinux) {
+        # Direct file reads, a pipeline would cost ~10x more.
+        $fields = [System.IO.File]::ReadLines('/proc/stat') | Select-Object -First 1
+        $cpu = [long[]]($fields.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)[1..8])
+        $memory = @{}
+        foreach ($line in [System.IO.File]::ReadAllLines('/proc/meminfo')[0..4]) {
+            $parts = $line.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
+            $memory[$parts[0].TrimEnd(':')] = [long]$parts[1] * 1024
+        }
+        # user nice system idle iowait irq softirq steal
+        return @{
+            Idle        = $cpu[3] + $cpu[4]
+            Total       = $cpu[0] + $cpu[1] + $cpu[2] + $cpu[3] + $cpu[4] + $cpu[5] + $cpu[6] + $cpu[7]
+            MemoryUsed  = $memory['MemTotal'] - $memory['MemAvailable']
+            MemoryTotal = $memory['MemTotal']
+        }
+    }
+
+    Initialize-SystemMetrics
+    $idle = $kernel = $user = [long]0
+    [MdmAgent.SystemMetrics]::GetSystemTimes([ref]$idle, [ref]$kernel, [ref]$user) | Out-Null
+    $memory = New-Object MdmAgent.SystemMetrics+MemoryStatusEx
+    [MdmAgent.SystemMetrics]::GlobalMemoryStatusEx($memory) | Out-Null
+
+    # Kernel time includes idle time.
+    return @{
+        Idle        = $idle
+        Total       = $kernel + $user
+        MemoryUsed  = $memory.ullTotalPhys - $memory.ullAvailPhys
+        MemoryTotal = $memory.ullTotalPhys
+    }
+}
+
 function Get-SystemMetrics {
     # CPU usage is the average since the previous call (i.e. over the whole heartbeat interval), so nothing is sampled in between.
     try {
-        Initialize-SystemMetrics
-
-        $idle = $kernel = $user = [long]0
-        [MdmAgent.SystemMetrics]::GetSystemTimes([ref]$idle, [ref]$kernel, [ref]$user) | Out-Null
-        $memory = New-Object MdmAgent.SystemMetrics+MemoryStatusEx
-        [MdmAgent.SystemMetrics]::GlobalMemoryStatusEx($memory) | Out-Null
+        $counters = Get-CpuMemoryCounters
 
         $previous = $script:CpuTimes
-        $script:CpuTimes = @{ Idle = $idle; Total = $kernel + $user }
+        $script:CpuTimes = @{ Idle = $counters.Idle; Total = $counters.Total }
         if (-not $previous) {
             return $null
         }
 
-        $total = $script:CpuTimes.Total - $previous.Total
-        $cpu = if ($total -gt 0) { [math]::Round((1 - ($idle - $previous.Idle) / $total) * 100, 1) } else { 0 }
+        $total = $counters.Total - $previous.Total
+        $cpu = if ($total -gt 0) { [math]::Round((1 - ($counters.Idle - $previous.Idle) / $total) * 100, 1) } else { 0 }
 
         return @{
             cpu          = [math]::Max(0, $cpu)
-            memory_used  = $memory.ullTotalPhys - $memory.ullAvailPhys
-            memory_total = $memory.ullTotalPhys
+            memory_used  = $counters.MemoryUsed
+            memory_total = $counters.MemoryTotal
         }
     }
     catch {
@@ -670,7 +845,7 @@ function Send-Heartbeat {
 
 function Start-Agent {
     # Keep the agent in the background, user applications take precedence.
-    [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal
+    try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
 
     $Token = Get-AgentToken
     $inventory = Get-CachedInventory
@@ -767,7 +942,7 @@ if ($env:MDM_AGENT_NO_START) {
 
 if ($Install) {
     Get-AgentToken | Out-Null
-    Register-AgentTask
+    if ($OnLinux) { Register-AgentService } else { Register-AgentTask }
     return
 }
 

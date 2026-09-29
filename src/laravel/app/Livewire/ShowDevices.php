@@ -4,6 +4,7 @@ namespace App\Livewire;
 
 use App\Models\Device;
 use App\Models\Enrolment;
+use App\Support\InstallCommands;
 use Carbon\CarbonImmutable;
 use Livewire\Attributes\On;
 use Livewire\Attributes\Url;
@@ -58,6 +59,7 @@ class ShowDevices extends Component
     {
         return view('livewire.show-devices', [
             'selectedDevice' => Device::find($this->selectedDeviceId),
+            'installCommands' => $this->addDevice && $this->enrollmentCode ? InstallCommands::for($this->enrollmentCode) : [],
         ]);
     }
 }
