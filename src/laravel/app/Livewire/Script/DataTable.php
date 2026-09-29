@@ -3,7 +3,6 @@
 namespace App\Livewire\Script;
 
 use App\Models\Script;
-use App\Models\ScriptRun;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Gate;
 use SteelAnts\DataTable\Livewire\DataTableComponent;
@@ -41,7 +40,6 @@ class DataTable extends DataTableComponent
             'platform' => __('Platform'),
             'version' => __('Version'),
             'fingerprint' => __('Fingerprint'),
-            'results' => __('Results'),
             'updated_at' => __('Changed'),
         ];
     }
@@ -51,9 +49,6 @@ class DataTable extends DataTableComponent
         $html = '<a class="fw-semibold" href="'.e(route('script.show', $row->id)).'">'.e($value).'</a>';
         if ($row->description) {
             $html .= '<div class="small text-muted">'.e($row->description).'</div>';
-        }
-        if ($row->remediation === null) {
-            $html .= ' <span class="badge text-bg-secondary ms-1">'.e(__('Detection only')).'</span>';
         }
 
         return $html;
@@ -72,24 +67,6 @@ class DataTable extends DataTableComponent
     public function renderColumnFingerprint($value): string
     {
         return '<code title="'.e($value).'">'.e(substr((string) $value, 0, 12)).'…</code>';
-    }
-
-    /** Result of the latest run on each device. */
-    public function renderColumnResults($value, $row): string
-    {
-        $counts = ScriptRun::query()
-            ->whereIn('id', ScriptRun::query()->selectRaw('max(id)')->where('script_id', $row->id)->groupBy('device_id'))
-            ->get()
-            ->countBy('status');
-
-        $html = '';
-        foreach (['compliant', 'remediated', 'failed', 'error', 'rejected', 'pending', 'sent'] as $status) {
-            if ($counts[$status] ?? 0) {
-                $html .= '<span class="badge text-bg-'.ScriptRun::colorFor($status).' me-1">'.e(__(ucfirst($status))).' '.$counts[$status].'</span>';
-            }
-        }
-
-        return $html;
     }
 
     public function renderColumnUpdatedAt($value): string

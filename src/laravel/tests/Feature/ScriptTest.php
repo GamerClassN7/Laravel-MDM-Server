@@ -218,7 +218,7 @@ class ScriptTest extends TestCase
         // Opened again, the devices of the last run are selected.
         Livewire::test(Run::class, ['scriptId' => $script->id])->assertSet('selected', [(string) $device->id]);
 
-        Livewire::test(DataTable::class)->assertSee('Disk space')->assertSee('Pending 1')->assertSee(route('script.show', $script));
+        Livewire::test(DataTable::class)->assertSee('Disk space')->assertSee(route('script.show', $script))->assertDontSee('Detection only');
         Livewire::test(Detail::class, ['script' => $script])->assertSee('Disk space')->assertSee('v1');
         Livewire::test(RunDataTable::class, ['scriptId' => $script->id])->assertSee('srv-secret-token')->assertSee('Pending');
         Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])->assertSee('Scripts')->assertSee('Disk space');

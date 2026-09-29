@@ -31,15 +31,7 @@
                             <dt class="col-5 fw-normal text-muted">{{ __('Changed') }}</dt>
                             <dd class="col-7" title="{{ $script->updated_at }}">{{ $script->updated_at->diffForHumans() }}</dd>
                             <dt class="col-12 fw-normal text-muted">{{ __('Fingerprint') }}</dt>
-                            <dd class="col-12"><code class="text-break">{{ $script->fingerprint }}</code></dd>
-                            <dt class="col-12 fw-normal text-muted">{{ __('Latest result per device') }}</dt>
-                            <dd class="col-12 mb-0">
-                                @forelse ($latest as $status => $count)
-                                    <x-badge class="me-1" :color="\App\Models\ScriptRun::colorFor($status)" size="sm" variant="subtle">{{ __(ucfirst($status)) }} {{ $count }}</x-badge>
-                                @empty
-                                    <span class="text-muted">{{ __('Not run yet.') }}</span>
-                                @endforelse
-                            </dd>
+                            <dd class="col-12 mb-0"><code class="text-break">{{ $script->fingerprint }}</code></dd>
                         </dl>
                     </div>
                 </div>
@@ -53,7 +45,7 @@
                         @if ($script->remediation !== null)
                             <pre class="small bg-body-tertiary p-2 rounded mb-0" style="max-height: 16rem; white-space: pre-wrap;">{{ $script->remediation }}</pre>
                         @else
-                            <p class="text-muted mb-0">{{ __('Detection only.') }}</p>
+                            <p class="text-muted mb-0">{{ __('No remediation script.') }}</p>
                         @endif
                     </div>
                 </div>
