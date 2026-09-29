@@ -11,6 +11,16 @@
         $docker = $selectedDevice->docker;
         $stoppedContainers = collect($docker['containers'] ?? [])->where('State', '!=', 'running')->count();
         $diskHealth = $selectedDevice->showDiskHealth ? $selectedDevice->diskHealth : null;
+        // The tab from the URL (?tab=), or the first one this device has.
+        $tabs = array_keys(array_filter([
+            'drives' => !empty($selectedDevice->drives),
+            'updates' => $hasUpdates,
+            'networks' => count($selectedDevice->networks) > 0,
+            'services' => count($services) > 0,
+            'docker' => $docker !== null,
+            'health' => $diskHealth !== null,
+        ]));
+        $activeTab = in_array($tab, $tabs, true) ? $tab : ($tabs[0] ?? null);
     @endphp
 
     <div class="card">
@@ -91,28 +101,28 @@
         <ul class="nav nav-tabs" role="tablist">
             @if (!empty($selectedDevice->drives))
                 <li class="nav-item" role="presentation">
-                    <button aria-controls="drives-tab-pane" aria-selected="true" class="nav-link active" data-bs-target="#drives-tab-pane" data-bs-toggle="tab" id="drives-tab" role="tab" type="button">
+                    <button aria-controls="drives-tab-pane" aria-selected="{{ $activeTab === 'drives' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'drives' ? 'active' : '' }}" x-on:click="$wire.tab = 'drives'" data-bs-target="#drives-tab-pane" data-bs-toggle="tab" id="drives-tab" role="tab" type="button">
                         <i class="fas fa-hdd me-2"></i>{{ __('Drives') }}
                     </button>
                 </li>
             @endif
             @if ($hasUpdates)
                 <li class="nav-item" role="presentation">
-                    <button aria-controls="updates-tab-pane" aria-selected="false" class="nav-link" data-bs-target="#updates-tab-pane" data-bs-toggle="tab" id="updates-tab" role="tab" type="button">
+                    <button aria-controls="updates-tab-pane" aria-selected="{{ $activeTab === 'updates' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'updates' ? 'active' : '' }}" x-on:click="$wire.tab = 'updates'" data-bs-target="#updates-tab-pane" data-bs-toggle="tab" id="updates-tab" role="tab" type="button">
                         <i class="fas fa-sync me-2"></i>{{ __('Updates') }}
                     </button>
                 </li>
             @endif
             @if (count($selectedDevice->networks) > 0)
                 <li class="nav-item" role="presentation">
-                    <button aria-controls="networks-tab-pane" aria-selected="false" class="nav-link" data-bs-target="#networks-tab-pane" data-bs-toggle="tab" id="networks-tab" role="tab" type="button">
+                    <button aria-controls="networks-tab-pane" aria-selected="{{ $activeTab === 'networks' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'networks' ? 'active' : '' }}" x-on:click="$wire.tab = 'networks'" data-bs-target="#networks-tab-pane" data-bs-toggle="tab" id="networks-tab" role="tab" type="button">
                         <i class="fas fa-network-wired me-2"></i>{{ __('Networks') }}
                     </button>
                 </li>
             @endif
             @if (count($services) > 0)
                 <li class="nav-item" role="presentation">
-                    <button aria-controls="services-tab-pane" aria-selected="false" class="nav-link" data-bs-target="#services-tab-pane" data-bs-toggle="tab" id="services-tab" role="tab" type="button">
+                    <button aria-controls="services-tab-pane" aria-selected="{{ $activeTab === 'services' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'services' ? 'active' : '' }}" x-on:click="$wire.tab = 'services'" data-bs-target="#services-tab-pane" data-bs-toggle="tab" id="services-tab" role="tab" type="button">
                         <i class="fas fa-cogs me-2"></i>{{ __('Services') }}
                         @if ($failedServices > 0)
                             <x-badge class="ms-1" color="danger" size="sm" title="{{ __('Not running') }}">{{ $failedServices }}</x-badge>
@@ -122,7 +132,7 @@
             @endif
             @if ($docker !== null)
                 <li class="nav-item" role="presentation">
-                    <button aria-controls="docker-tab-pane" aria-selected="false" class="nav-link" data-bs-target="#docker-tab-pane" data-bs-toggle="tab" id="docker-tab" role="tab" type="button">
+                    <button aria-controls="docker-tab-pane" aria-selected="{{ $activeTab === 'docker' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'docker' ? 'active' : '' }}" x-on:click="$wire.tab = 'docker'" data-bs-target="#docker-tab-pane" data-bs-toggle="tab" id="docker-tab" role="tab" type="button">
                         <i class="fab fa-docker me-2"></i>{{ __('Docker') }}
                         @if ($stoppedContainers > 0)
                             <x-badge class="ms-1" color="secondary" size="sm" title="{{ __('Not running') }}">{{ $stoppedContainers }}</x-badge>
@@ -132,7 +142,7 @@
             @endif
             @if ($diskHealth !== null)
                 <li class="nav-item" role="presentation">
-                    <button aria-controls="health-tab-pane" aria-selected="false" class="nav-link" data-bs-target="#health-tab-pane" data-bs-toggle="tab" id="health-tab" role="tab" type="button">
+                    <button aria-controls="health-tab-pane" aria-selected="{{ $activeTab === 'health' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'health' ? 'active' : '' }}" x-on:click="$wire.tab = 'health'" data-bs-target="#health-tab-pane" data-bs-toggle="tab" id="health-tab" role="tab" type="button">
                         <i class="fas fa-heartbeat me-2"></i>{{ __('Disk health') }}
                         @if ($selectedDevice->diskHealthProblem)
                             <i class="fas fa-exclamation-triangle text-danger ms-1"></i>
@@ -144,7 +154,7 @@
 
         <div class="tab-content pt-3">
             @if (!empty($selectedDevice->drives))
-                <div aria-labelledby="drives-tab" class="tab-pane fade show active" id="drives-tab-pane" role="tabpanel" tabindex="0">
+                <div aria-labelledby="drives-tab" class="tab-pane fade {{ $activeTab === 'drives' ? 'show active' : '' }}" id="drives-tab-pane" role="tabpanel" tabindex="0">
                     <div class="row g-3">
                         @foreach ($selectedDevice->drives as $drive)
                             <div class="col-12 col-md-6">
@@ -175,7 +185,7 @@
                     $appSearch = array_map(fn ($update) => strtolower(($update['Id'] ?? '') . ' ' . ($update['Source'] ?? '')), $selectedDevice->apps_packages_updates);
                     $moduleSearch = array_map(fn ($module) => strtolower(($module['Name'] ?? '') . ' ' . ($module['Edition'] ?? '') . ' ' . ($module['User'] ?? '')), $moduleUpdates);
                 @endphp
-                <div aria-labelledby="updates-tab" class="tab-pane fade" id="updates-tab-pane" role="tabpanel" tabindex="0" x-data="{ search: '' }">
+                <div aria-labelledby="updates-tab" class="tab-pane fade {{ $activeTab === 'updates' ? 'show active' : '' }}" id="updates-tab-pane" role="tabpanel" tabindex="0" x-data="{ search: '' }">
                     <input class="form-control form-control-sm mb-3" placeholder="{{ __('Search') }}" style="max-width: 20rem;" type="search" x-model="search">
                     @if (count($selectedDevice->updates) > 0)
                         <div x-show="!search || @js($osSearch).some(text => text.includes(search.toLowerCase()))">
@@ -245,7 +255,7 @@
             @endif
 
             @if (count($selectedDevice->networks) > 0)
-                <div aria-labelledby="networks-tab" class="tab-pane fade" id="networks-tab-pane" role="tabpanel" tabindex="0">
+                <div aria-labelledby="networks-tab" class="tab-pane fade {{ $activeTab === 'networks' ? 'show active' : '' }}" id="networks-tab-pane" role="tabpanel" tabindex="0">
                     <ul class="list-group">
                         @foreach ($selectedDevice->networks as $network)
                             <li class="list-group-item">
@@ -263,7 +273,7 @@
             @endif
 
             @if (count($services) > 0)
-                <div aria-labelledby="services-tab" class="tab-pane fade" id="services-tab-pane" role="tabpanel" tabindex="0" x-data="{ search: '' }">
+                <div aria-labelledby="services-tab" class="tab-pane fade {{ $activeTab === 'services' ? 'show active' : '' }}" id="services-tab-pane" role="tabpanel" tabindex="0" x-data="{ search: '' }">
                     <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
                         <input class="form-control form-control-sm" placeholder="{{ __('Search') }}" style="max-width: 20rem;" type="search" x-model="search">
                         <span class="small text-muted ms-auto">{{ __(':running running, :other not running', ['running' => count($services) - $failedServices, 'other' => $failedServices]) }}</span>
@@ -303,7 +313,7 @@
             @endif
 
             @if ($docker !== null)
-                <div aria-labelledby="docker-tab" class="tab-pane fade" id="docker-tab-pane" role="tabpanel" tabindex="0" x-data="{ search: '' }">
+                <div aria-labelledby="docker-tab" class="tab-pane fade {{ $activeTab === 'docker' ? 'show active' : '' }}" id="docker-tab-pane" role="tabpanel" tabindex="0" x-data="{ search: '' }">
                     @if ($docker['error'])
                         <div class="alert alert-warning mb-3" role="alert">
                             <i class="fab fa-docker me-2"></i>{{ __('Docker is installed but the agent cannot read the containers: :error', ['error' => $docker['error']]) }}
@@ -356,7 +366,7 @@
             @endif
 
             @if ($diskHealth !== null)
-                <div aria-labelledby="health-tab" class="tab-pane fade" id="health-tab-pane" role="tabpanel" tabindex="0">
+                <div aria-labelledby="health-tab" class="tab-pane fade {{ $activeTab === 'health' ? 'show active' : '' }}" id="health-tab-pane" role="tabpanel" tabindex="0">
                     @if ($diskHealth['error'])
                         <div class="alert alert-warning mb-3" role="alert">
                             <i class="fas fa-heartbeat me-2"></i>{{ $diskHealth['error'] }}

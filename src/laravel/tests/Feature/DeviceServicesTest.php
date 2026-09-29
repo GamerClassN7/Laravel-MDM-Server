@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Livewire\DeviceDetail;
+use App\Livewire\DeviceMetrics;
 use App\Models\Device;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -198,5 +199,29 @@ class DeviceServicesTest extends TestCase
             ->assertSee('130.0 → 131.0.2')
             ->assertSee('snap')
             ->assertSee('jonatanrek');
+    }
+
+    public function test_tab_and_chart_range_come_from_the_url(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $device = $this->report([
+            'services' => [['Name' => 'ssh', 'State' => 'running']],
+            'os_updates' => [['Title' => 'curl 8.18.0']],
+        ]);
+
+        Livewire::withQueryParams(['tab' => 'services'])->test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSet('tab', 'services')
+            ->assertSeeHtml('class="nav-link active" x-on:click="$wire.tab = \'services\'"')
+            ->assertSeeHtml('class="tab-pane fade show active" id="services-tab-pane"');
+
+        // A tab this device does not have (no Docker, no drives) falls back to the first one it has.
+        Livewire::withQueryParams(['tab' => 'docker'])->test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSeeHtml('class="tab-pane fade show active" id="updates-tab-pane"')
+            ->assertDontSeeHtml('class="tab-pane fade show active" id="services-tab-pane"');
+
+        Livewire::withQueryParams(['range' => '24h'])->test(DeviceMetrics::class, ['selectedDeviceId' => $device->id])
+            ->assertSet('range', '24h');
+        Livewire::withQueryParams(['range' => 'forever'])->test(DeviceMetrics::class, ['selectedDeviceId' => $device->id])
+            ->assertSet('range', '1h');
     }
 }

@@ -4,6 +4,7 @@ namespace App\Livewire;
 
 use App\Models\DeviceMetric;
 use Carbon\CarbonImmutable;
+use Livewire\Attributes\Url;
 use Livewire\Component;
 
 class DeviceMetrics extends Component
@@ -17,7 +18,17 @@ class DeviceMetrics extends Component
 
     public $selectedDeviceId;
 
+    /** Chart range, kept in the URL. */
+    #[Url(except: '1h')]
     public string $range = '1h';
+
+    public function mount(): void
+    {
+        // A value from the URL that is not a known range.
+        if (! array_key_exists($this->range, self::RANGES)) {
+            $this->range = '1h';
+        }
+    }
 
     public function setRange(string $range): void
     {
