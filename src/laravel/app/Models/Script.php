@@ -29,7 +29,11 @@ class Script extends Model
         // A change of what runs is a new version with a new fingerprint; runs keep theirs.
         static::saving(function (Script $script) {
             $script->remediation = ($script->remediation === null || trim($script->remediation) === '') ? null : $script->remediation;
-            if ($script->exists && $script->isDirty(['detection', 'remediation', 'platform', 'timeout'])) {
+            $script->platform ??= 'all';
+            $script->timeout ??= 60;
+            if (! $script->exists) {
+                $script->version = 1;
+            } elseif ($script->isDirty(['detection', 'remediation', 'platform', 'timeout'])) {
                 $script->version = $script->getOriginal('version') + 1;
             }
             $script->fingerprint = self::fingerprintOf($script->platform, (int) $script->timeout, $script->detection, $script->remediation);

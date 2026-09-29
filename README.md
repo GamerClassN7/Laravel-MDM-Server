@@ -216,6 +216,49 @@ the new version and registers its device key once. The device detail shows **Sig
 reinstalled with a new key. `MDM_REQUIRE_SIGNED_AGENTS=true` rejects unsigned agents entirely;
 they then have to be reinstalled.
 
+### Remediation scripts
+
+**Scripts** (system admins only) holds PowerShell scripts in the style of Intune remediations:
+
+- **Detection script** (required): exit 0 means compliant, exit 1 means the remediation should run.
+- **Remediation script** (optional): runs after a detection that exited with 1, then the detection
+  runs again. Without a remediation, exit 1 means failed.
+- Each script targets **All**, **Windows** or **Linux** and has a timeout (up to 1 hour).
+
+The code is entered as text and stored byte for byte. Its **fingerprint** (SHA-256 over the
+platform, the timeout and the hashes of both scripts) changes with every code change, and a new
+version is created. **Run** opens a list of the devices with checkboxes. Devices on another
+platform, agents that do not sign and devices with scripts disabled cannot be selected. Opened
+again, the list has the devices of the last run selected. Offline devices run the script when they
+come back within 24 hours. The results are shown under the script and in the **Scripts** tab of
+the device: status, exit codes and up to 16 kB of output.
+
+Security:
+
+- **Only a trigger:** `runScripts` carries no data. The agent takes its runs over the signed API.
+- **Signed manifest per run:** every run has a manifest signed with the server key, for this
+  device and this run, valid for 24 hours. The agent checks the signature, the device, the expiry,
+  that the run id was not executed before, the platform and the SHA-256 of both scripts, and only
+  then runs anything. A rejected run is reported back with the reason.
+- **Memory only:** the code is never written to disk and never on a command line. A separate
+  low-priority process reads it from stdin and checks its hash again. Scripts run one at a time,
+  are killed at the timeout, and run as `SYSTEM` / root.
+- **No network access:**
+  - On Linux the script runs in an empty network namespace (`unshare --net`, also for every
+    process it starts). Without `unshare` it does not run.
+  - On Windows it runs from a copy of `powershell.exe` (`%ProgramData%\Laravel-MDM\sandbox`)
+    that Windows Firewall rules block in both directions. It does not run when the rules are
+    missing or changed, or the firewall is off for a profile.
+  - This is defense in depth, not a hard boundary: a script running as `SYSTEM` / root that sets
+    out to reach the network can get around it. For example, on Linux it can enter the network
+    namespace of PID 1; on Windows it can start another program from System32. DNS lookups on
+    Windows go through the DNS Client service. The signature is what keeps foreign code out.
+    The isolation keeps scripts from downloading or sending anything.
+- **Local switch:** `-DisableScripts` (`-EnableScripts` to allow them again, or `scripts_enabled`
+  in `config.json`) turns scripts off on the device. The server cannot change it.
+- **Audit:** creating, changing, removing and running a script (with its fingerprint and devices)
+  is written to the audit log.
+
 ### Dashboard
 
 `/dashboard` (menu **Dashboard**) is a configurable dashboard from

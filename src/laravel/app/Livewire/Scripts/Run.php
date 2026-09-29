@@ -44,17 +44,21 @@ class Run extends Component
     public function render()
     {
         $script = Script::findOrFail($this->scriptId);
-        $devices = Device::query()->get()->sortBy(fn (Device $device) => mb_strtolower($device->displayName))->values();
-
-        return view('livewire.scripts.run', [
-            'script' => $script,
-            'devices' => $devices->map(fn (Device $device) => [
+        // Devices the script can run on first, then by name.
+        $devices = Device::query()->get()
+            ->map(fn (Device $device) => [
                 'id' => $device->id,
                 'name' => $device->displayName,
                 'platform' => $device->platform,
                 'offline' => $device->offline,
                 'reason' => $script->unavailableReason($device),
-            ]),
+            ])
+            ->sortBy(fn (array $device) => [$device['reason'] === null ? 0 : 1, mb_strtolower($device['name'])])
+            ->values();
+
+        return view('livewire.scripts.run', [
+            'script' => $script,
+            'devices' => $devices,
         ]);
     }
 }

@@ -92,7 +92,7 @@ param (
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
 $AgentVersion = '1.7.0'
-$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent')
+$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent', 'runScripts')
 # The server's public key ("n:e", base64), filled in by the server when it serves this script.
 # The agent pins it on the first start and then trusts only what is signed with it.
 $EmbeddedServerKey = ''
@@ -1196,6 +1196,304 @@ function Get-ResponseHeader {
 
 #endregion
 
+#region Remediation scripts
+
+# Runs are verified against the pinned server key (manifest signature, device, expiry, one-time
+# run id, platform, hashes of the script bytes), kept in memory only and run one at a time in a
+# separate low-priority process without network access, the code passed on stdin. Nothing of the
+# script is written to disk and it never appears on a command line.
+$script:ScriptQueue = New-Object System.Collections.Queue
+$script:CurrentScript = $null
+$script:ScriptsRequested = $false
+$script:ExecutedRuns = $null
+
+# Constant bootstrap of the script process: reads the script (base64) from stdin, checks its hash
+# again and runs it. Exit 97 = hash mismatch, 98 = the script threw.
+$ScriptBootstrap = @'
+$ErrorActionPreference = 'Stop'
+$bytes = [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())
+$sha = [Security.Cryptography.SHA256]::Create()
+$hash = -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+if ($hash -ne $env:MDM_SCRIPT_SHA256) { [Console]::Error.WriteLine('The script does not match its signed hash.'); exit 97 }
+$code = [Text.Encoding]::UTF8.GetString($bytes)
+Remove-Variable bytes, sha, hash
+$global:LASTEXITCODE = 0
+try { & ([scriptblock]::Create($code)); exit $LASTEXITCODE }
+catch { [Console]::Error.WriteLine($_.ToString()); exit 98 }
+'@
+
+function Get-ExecutedRuns {
+    if ($null -eq $script:ExecutedRuns) {
+        $script:ExecutedRuns = New-Object System.Collections.Generic.List[long]
+        $path = Join-Path $AgentDir 'state.json'
+        if (Test-Path -Path $path) {
+            try { foreach ($id in @((Get-Content -Path $path -Raw | ConvertFrom-Json).executed_runs)) { $script:ExecutedRuns.Add([long]$id) } } catch { }
+        }
+    }
+    # The comma keeps an empty list from being unrolled to $null.
+    return , $script:ExecutedRuns
+}
+
+function Add-ExecutedRun {
+    param (
+        [long]
+        $RunId
+    )
+
+    $runs = Get-ExecutedRuns
+    $runs.Add($RunId)
+    while ($runs.Count -gt 500) { $runs.RemoveAt(0) }
+    $path = Join-Path $AgentDir 'state.json'
+    @{ executed_runs = @($runs) } | ConvertTo-Json -Compress | Set-Content -Path $path -Encoding UTF8
+    Protect-AgentPath -Path $path
+}
+
+function Get-ScriptFingerprint {
+    # The same as the server: SHA-256 of {detection_sha256, platform, remediation_sha256, timeout}.
+    param (
+        $Manifest
+    )
+
+    $remediation = if ($Manifest.remediation_sha256) { '"' + $Manifest.remediation_sha256 + '"' } else { 'null' }
+    $json = '{"detection_sha256":"' + $Manifest.detection_sha256 + '","platform":"' + $Manifest.platform + '","remediation_sha256":' + $remediation + ',"timeout":' + [int]$Manifest.timeout + '}'
+    return Get-Sha256Hex -Bytes ([System.Text.Encoding]::UTF8.GetBytes($json))
+}
+
+function Test-ScriptRun {
+    # Returns the verified run, or throws why it is rejected.
+    param (
+        [Parameter(Mandatory = $true)]
+        $Payload
+    )
+
+    if (-not (Test-ServerSignature -Context 'MDM1-SCRIPT' -Message "$($Payload.manifest)" -Signature "$($Payload.signature)")) {
+        throw 'the manifest is not signed with the pinned server key'
+    }
+    $manifest = $Payload.manifest | ConvertFrom-Json
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + $script:ClockOffset
+    if ("$($manifest.device_id)" -ne "$($script:DeviceId)") { throw "the run is for device $($manifest.device_id)" }
+    if ($now -gt [long]$manifest.expires_at) { throw 'the run has expired' }
+    if ($now -lt [long]$manifest.issued_at - 300) { throw 'the run is issued in the future' }
+    if ((Get-ExecutedRuns).Contains([long]$manifest.run_id)) { throw 'the run was already executed' }
+    $platform = if ($OnLinux) { 'linux' } else { 'windows' }
+    if ($manifest.platform -ne 'all' -and $manifest.platform -ne $platform) { throw "the script is for $($manifest.platform)" }
+    if ([int]$manifest.timeout -lt 1 -or [int]$manifest.timeout -gt 3600) { throw 'invalid timeout' }
+
+    $detection = [Convert]::FromBase64String("$($Payload.detection)")
+    if ((Get-Sha256Hex -Bytes $detection) -ne $manifest.detection_sha256) { throw 'the detection script does not match its signed hash' }
+    $remediation = $null
+    if ($manifest.remediation_sha256) {
+        $remediation = [Convert]::FromBase64String("$($Payload.remediation)")
+        if ((Get-Sha256Hex -Bytes $remediation) -ne $manifest.remediation_sha256) { throw 'the remediation script does not match its signed hash' }
+    } elseif ($Payload.remediation) {
+        throw 'the remediation script is not in the signed manifest'
+    }
+    if ((Get-ScriptFingerprint -Manifest $manifest) -ne $manifest.fingerprint) { throw 'the fingerprint does not match the scripts' }
+
+    return @{ Manifest = $manifest; Detection = $detection; Remediation = $remediation }
+}
+
+function Initialize-ScriptSandbox {
+    # Windows: a copy of powershell.exe that the firewall blocks completely; the agent itself keeps
+    # its network. Returns the path, or throws why scripts cannot run isolated.
+    $source = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $dir = Join-Path $AgentDir 'sandbox'
+    $target = Join-Path $dir 'powershell.exe'
+    if (-not (Test-Path -Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+    # Copied again after a Windows update changed the original.
+    if (-not (Test-Path -Path $target) -or (Get-FileHash -Path $target).Hash -ne (Get-FileHash -Path $source).Hash) {
+        Copy-Item -Path $source -Destination $target -Force
+    }
+
+    foreach ($direction in 'Outbound', 'Inbound') {
+        $name = "LaravelMDM-Scripts-$direction"
+        $rule = Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue
+        if (-not $rule) {
+            New-NetFirewallRule -Name $name -DisplayName "Laravel-MDM remediation scripts ($direction, no network)" -Direction $direction -Action Block -Program $target -Profile Any -Enabled True | Out-Null
+            $rule = Get-NetFirewallRule -Name $name
+        }
+        $program = ($rule | Get-NetFirewallApplicationFilter).Program
+        if ("$($rule.Enabled)" -ne 'True' -or "$($rule.Action)" -ne 'Block' -or $program -ne $target) {
+            throw "the firewall rule $name is changed or disabled"
+        }
+    }
+    $disabled = @(Get-NetFirewallProfile | Where-Object { "$($_.Enabled)" -ne 'True' })
+    if ($disabled) {
+        throw "Windows Firewall is off for the $(($disabled.Name) -join ', ') profile, scripts cannot run without network access"
+    }
+    return $target
+}
+
+function Start-ScriptProcess {
+    param (
+        [Parameter(Mandatory = $true)]
+        [byte[]]
+        $Code
+    )
+
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($ScriptBootstrap))
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    if ($OnLinux) {
+        # An empty network namespace: no interfaces, no DNS, also for every child process.
+        foreach ($tool in 'unshare', 'nice', 'ionice') {
+            if (-not (Get-Command -Name $tool -CommandType Application -ErrorAction SilentlyContinue)) {
+                throw "network isolation unavailable ($tool not found)"
+            }
+        }
+        $info.FileName = (Get-Command -Name unshare -CommandType Application | Select-Object -First 1).Source
+        $info.Arguments = "--net -- nice -n 10 ionice -c 3 `"$((Get-Process -Id $PID).Path)`" -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
+    } else {
+        $info.FileName = Initialize-ScriptSandbox
+        $info.Arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded"
+    }
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.WorkingDirectory = [System.IO.Path]::GetTempPath()
+    $info.EnvironmentVariables['MDM_SCRIPT_SHA256'] = Get-Sha256Hex -Bytes $Code
+
+    $process = [System.Diagnostics.Process]::Start($info)
+    if (-not $OnLinux) {
+        try { $process.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
+    }
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $stderr = $process.StandardError.ReadToEndAsync()
+    $process.StandardInput.Write([Convert]::ToBase64String($Code))
+    $process.StandardInput.Close()
+
+    return @{ Process = $process; Stdout = $stdout; Stderr = $stderr; Started = Get-Date }
+}
+
+function Stop-ScriptProcess {
+    param (
+        $Process
+    )
+
+    try {
+        if ($OnLinux) { $Process.Kill($true) } else { taskkill /PID $Process.Id /T /F 2>&1 | Out-Null }
+    }
+    catch { }
+}
+
+function Request-ScriptRuns {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Token
+    )
+
+    $script:ScriptsRequested = $false
+    if (-not (Get-AgentConfig)['scripts_enabled']) {
+        Write-AgentLog 'Remediation scripts are disabled in config.json, not taking any'
+        return
+    }
+
+    $response = Invoke-MdmApi -Path 'device/scripts' -Token $Token
+    foreach ($payload in @($response.runs)) {
+        if (-not $payload) { continue }
+        $runId = $null
+        try {
+            $runId = ($payload.manifest | ConvertFrom-Json).run_id
+            $run = Test-ScriptRun -Payload $payload
+            $script:ScriptQueue.Enqueue($run)
+        }
+        catch {
+            Write-AgentLog "Script run $runId rejected: $($_.Exception.Message)"
+            if ($runId) {
+                try { Invoke-MdmApi -Method Post -Path "device/scripts/runs/$runId" -Token $Token -Body @{ status = 'rejected'; error = $_.Exception.Message } | Out-Null } catch { }
+            }
+        }
+    }
+}
+
+function Update-ScriptRun {
+    # Advances the current run (detection, remediation, detection again) without blocking the loop.
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Token
+    )
+
+    $current = $script:CurrentScript
+    if (-not $current) {
+        if ($script:ScriptQueue.Count -eq 0) { return }
+        $run = $script:ScriptQueue.Dequeue()
+        Add-ExecutedRun -RunId $run.Manifest.run_id
+        $current = $script:CurrentScript = @{ Run = $run; Step = 'detection'; Output = New-Object System.Text.StringBuilder; Exit = @{}; Error = $null; Proc = $null }
+        Write-AgentLog "Script '$($run.Manifest.name)' v$($run.Manifest.version) ($($run.Manifest.fingerprint)) started"
+    }
+
+    try {
+        if (-not $current.Proc) {
+            $code = if ($current.Step -eq 'remediation') { $current.Run.Remediation } else { $current.Run.Detection }
+            $current.Proc = Start-ScriptProcess -Code $code
+            return
+        }
+
+        $proc = $current.Proc
+        if (-not $proc.Process.HasExited) {
+            if (((Get-Date) - $proc.Started).TotalSeconds -lt [int]$current.Run.Manifest.timeout) { return }
+            Stop-ScriptProcess -Process $proc.Process
+            $proc.Process.WaitForExit(5000) | Out-Null
+            $current.Error = "$($current.Step) timed out after $($current.Run.Manifest.timeout) s"
+        }
+
+        $exit = if ($current.Error) { $null } else { $proc.Process.ExitCode }
+        [void]$current.Output.AppendLine("== $($current.Step) ($(if ($current.Error) { 'timed out' } else { "exit $exit" })) ==")
+        foreach ($stream in $proc.Stdout, $proc.Stderr) {
+            if ($stream.Wait(5000) -and $stream.Result) { [void]$current.Output.AppendLine($stream.Result.TrimEnd()) }
+        }
+        $proc.Process.Dispose()
+        $current.Proc = $null
+        $current.Exit[$current.Step] = $exit
+
+        $status = $null
+        if ($current.Error) {
+            $status = 'error'
+        } elseif ($current.Step -eq 'detection') {
+            if ($exit -eq 0) { $status = 'compliant' }
+            elseif ($exit -eq 1 -and $current.Run.Remediation) { $current.Step = 'remediation'; return }
+            elseif ($exit -eq 1) { $status = 'failed' }
+            else { $status = 'error'; $current.Error = "detection exited with $exit" }
+        } elseif ($current.Step -eq 'remediation') {
+            $current.Step = 'post'
+            return
+        } else {
+            $status = if ($exit -eq 0) { 'remediated' } elseif ($exit -eq 1) { 'failed' } else { 'error' }
+            if ($status -eq 'error') { $current.Error = "detection after the remediation exited with $exit" }
+        }
+    }
+    catch {
+        $status = 'error'
+        $current.Error = $_.Exception.Message
+        if ($current.Proc) { Stop-ScriptProcess -Process $current.Proc.Process }
+    }
+
+    $script:CurrentScript = $null
+    $manifest = $current.Run.Manifest
+    $output = $current.Output.ToString()
+    if ($output.Length -gt 16000) { $output = $output.Substring(0, 16000) }
+    Write-AgentLog "Script '$($manifest.name)' ($($manifest.fingerprint)): $status$(if ($current.Error) { ", $($current.Error)" })"
+    try {
+        Invoke-MdmApi -Method Post -Path "device/scripts/runs/$($manifest.run_id)" -Token $Token -Body @{
+        status              = $status
+        fingerprint         = $manifest.fingerprint
+        detection_exit      = $current.Exit['detection']
+        remediation_exit    = $current.Exit['remediation']
+        post_detection_exit = $current.Exit['post']
+        output              = $output
+        error               = $current.Error
+        } | Out-Null
+    }
+    catch {
+        Write-AgentLog "Script result not sent: $($_.Exception.Message)"
+    }
+}
+
+#endregion
+
 #region Agent
 
 function Write-AgentLog {
@@ -1570,6 +1868,9 @@ function Send-Report {
             Invoke-DeviceCommand -Command $command
         }
     }
+    if ($response.scripts_pending) {
+        $script:ScriptsRequested = $true
+    }
 }
 
 function Update-Agent {
@@ -1752,6 +2053,11 @@ function Invoke-DeviceCommand {
     Write-AgentLog "Executing command '$Command'"
     if ($Command -eq 'updateAgent') {
         Update-Agent
+        return
+    }
+    if ($Command -eq 'runScripts') {
+        # Only a trigger: the runs are taken, verified and run by the main loop.
+        $script:ScriptsRequested = $true
         return
     }
 
@@ -2219,6 +2525,16 @@ function Start-Agent {
             if (Complete-UpdateJob) {
                 # Show what is left right away instead of the pre-update list for 6 hours.
                 $nextInventory = Get-Date
+            }
+            try {
+                if ($script:ScriptsRequested -and -not $script:CurrentScript -and $script:ScriptQueue.Count -eq 0) {
+                    Request-ScriptRuns -Token $Token
+                }
+                Update-ScriptRun -Token $Token
+            }
+            catch {
+                # Script problems must not tear down the WebSocket connection.
+                Write-AgentLog "Scripts: $($_.Exception.Message)"
             }
             if ($OnLinux -and $inventory -and -not $inventoryJob -and ((Get-Date) - $lastPackageCheck).TotalSeconds -ge 60) {
                 # Packages installed outside the agent (apt, unattended-upgrades): collect again once

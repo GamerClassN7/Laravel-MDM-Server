@@ -11,6 +11,11 @@
         $docker = $selectedDevice->docker;
         $stoppedContainers = collect($docker['containers'] ?? [])->where('State', '!=', 'running')->count();
         $diskHealth = $selectedDevice->showDiskHealth ? $selectedDevice->diskHealth : null;
+        // Latest run of each script on this device.
+        $scriptRuns = $selectedDevice->scriptRuns()->with('script')
+            ->whereIn('id', \App\Models\ScriptRun::query()->selectRaw('max(id)')->where('device_id', $selectedDevice->id)->groupBy('script_id'))
+            ->latest('id')->get();
+        $failedScripts = $scriptRuns->whereIn('status', ['failed', 'error', 'rejected'])->count();
         // The tab from the URL (?tab=), or the first one this device has.
         $tabs = array_keys(array_filter([
             'drives' => !empty($selectedDevice->drives),
@@ -19,6 +24,7 @@
             'services' => count($services) > 0,
             'docker' => $docker !== null,
             'health' => $diskHealth !== null,
+            'scripts' => $scriptRuns->isNotEmpty(),
         ]));
         $activeTab = in_array($tab, $tabs, true) ? $tab : ($tabs[0] ?? null);
     @endphp
@@ -146,6 +152,16 @@
                         <i class="fas fa-heartbeat me-2"></i>{{ __('Disk health') }}
                         @if ($selectedDevice->diskHealthProblem)
                             <i class="fas fa-exclamation-triangle text-danger ms-1"></i>
+                        @endif
+                    </button>
+                </li>
+            @endif
+            @if ($scriptRuns->isNotEmpty())
+                <li class="nav-item" role="presentation">
+                    <button aria-controls="scripts-tab-pane" aria-selected="{{ $activeTab === 'scripts' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'scripts' ? 'active' : '' }}" x-on:click="$wire.tab = 'scripts'" data-bs-target="#scripts-tab-pane" data-bs-toggle="tab" id="scripts-tab" role="tab" type="button">
+                        <i class="fas fa-scroll me-2"></i>{{ __('Scripts') }}
+                        @if ($failedScripts > 0)
+                            <x-badge class="ms-1" color="danger" size="sm" title="{{ __('Failed') }}">{{ $failedScripts }}</x-badge>
                         @endif
                     </button>
                 </li>
@@ -423,6 +439,14 @@
                         <p class="text-muted mb-0">{{ __('No disks with S.M.A.R.T. support found.') }}</p>
                     @endif
                     <p class="small text-muted mt-3 mb-0">{{ __('Checked by the agent every hour; sleeping disks are not woken up.') }}</p>
+                </div>
+            @endif
+            @if ($scriptRuns->isNotEmpty())
+                <div aria-labelledby="scripts-tab" class="tab-pane fade {{ $activeTab === 'scripts' ? 'show active' : '' }}" id="scripts-tab-pane" role="tabpanel" tabindex="0">
+                    @include('livewire.scripts.runs', ['runs' => $scriptRuns, 'showDevice' => false])
+                    @unless ($selectedDevice->scriptsEnabled)
+                        <p class="small text-muted mt-3 mb-0">{{ __('Remediation scripts are disabled on this device.') }}</p>
+                    @endunless
                 </div>
             @endif
         </div>
