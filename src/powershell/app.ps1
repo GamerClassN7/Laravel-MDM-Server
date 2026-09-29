@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.7.0'
+$AgentVersion = '1.7.1'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent', 'runScripts')
 # The server's public key ("n:e", base64), filled in by the server when it serves this script.
 # The agent pins it on the first start and then trusts only what is signed with it.
@@ -1211,6 +1211,8 @@ $script:ExecutedRuns = $null
 # again and runs it. Exit 97 = hash mismatch, 98 = the script threw.
 $ScriptBootstrap = @'
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell writes progress ("Preparing modules for first use.") to a redirected stderr as CLIXML.
+$ProgressPreference = 'SilentlyContinue'
 $bytes = [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())
 $sha = [Security.Cryptography.SHA256]::Create()
 $hash = -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
@@ -1366,6 +1368,45 @@ function Start-ScriptProcess {
     return @{ Process = $process; Stdout = $stdout; Stderr = $stderr; Started = Get-Date }
 }
 
+function ConvertFrom-CliXmlStream {
+    # Windows PowerShell serializes errors, warnings and progress to a redirected stderr as
+    # "#< CLIXML" followed by <Objs>. Keeps the text of errors, warnings, verbose and debug records
+    # and drops progress; anything that is not CLIXML stays as it is.
+    param (
+        [AllowEmptyString()]
+        [string]
+        $Text
+    )
+
+    $marker = '#< CLIXML'
+    $start = $Text.IndexOf($marker)
+    if ($start -lt 0) {
+        return $Text
+    }
+
+    $before = $Text.Substring(0, $start)
+    $lines = New-Object System.Collections.Generic.List[string]
+    try {
+        $xml = New-Object System.Xml.XmlDocument
+        $xml.XmlResolver = $null
+        # Every write starts a new "#< CLIXML" block.
+        foreach ($block in ($Text.Substring($start) -split [regex]::Escape($marker))) {
+            if (-not $block.Trim()) { continue }
+            $xml.LoadXml($block.Trim())
+            foreach ($node in $xml.DocumentElement.ChildNodes) {
+                if ($node.LocalName -ne 'S') { continue }
+                $prefix = switch ($node.GetAttribute('S')) { 'warning' { 'WARNING: ' } 'verbose' { 'VERBOSE: ' } 'debug' { 'DEBUG: ' } default { '' } }
+                $lines.Add($prefix + [System.Xml.XmlConvert]::DecodeName($node.InnerText).TrimEnd("`r", "`n"))
+            }
+        }
+    }
+    catch {
+        return $Text
+    }
+
+    return ($before + ($lines -join [Environment]::NewLine)).TrimEnd()
+}
+
 function Stop-ScriptProcess {
     param (
         $Process
@@ -1443,7 +1484,10 @@ function Update-ScriptRun {
         $exit = if ($current.Error) { $null } else { $proc.Process.ExitCode }
         [void]$current.Output.AppendLine("== $($current.Step) ($(if ($current.Error) { 'timed out' } else { "exit $exit" })) ==")
         foreach ($stream in $proc.Stdout, $proc.Stderr) {
-            if ($stream.Wait(5000) -and $stream.Result) { [void]$current.Output.AppendLine($stream.Result.TrimEnd()) }
+            if ($stream.Wait(5000) -and $stream.Result) {
+                $text = ConvertFrom-CliXmlStream -Text $stream.Result
+                if ($text.Trim()) { [void]$current.Output.AppendLine($text.TrimEnd()) }
+            }
         }
         $proc.Process.Dispose()
         $current.Proc = $null
