@@ -5,6 +5,7 @@ namespace App\Listeners;
 use App\Models\Device;
 use Laravel\Reverb\Events\MessageReceived;
 use Laravel\Reverb\Protocols\Pusher\Contracts\ChannelManager;
+use Throwable;
 
 /**
  * Runs inside the Reverb server: records "client-heartbeat" events agents send on their channel.
@@ -33,6 +34,12 @@ class RecordDeviceHeartbeat
             return;
         }
 
-        Device::recordHeartbeat((int) $matches[1], $message['data'] ?? null, 'ws');
+        try {
+            Device::recordHeartbeat((int) $matches[1], $message['data'] ?? null, 'ws');
+        } catch (Throwable $e) {
+            // Reverb swallows listener exceptions (its logger is off without --debug), report them
+            // to the application log so they show up next to the web errors.
+            report($e);
+        }
     }
 }

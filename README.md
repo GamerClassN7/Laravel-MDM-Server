@@ -78,7 +78,15 @@ On start the container waits for the database and runs the migrations. `APP_KEY`
 and `REVERB_APP_SECRET` are generated on the first start when they are not set, and kept in
 `storage/secrets.env` in the `storage` volume, so they stay the same across restarts and updates.
 Values set in the environment always take precedence. Uploaded files and logs are stored in the
-`storage` volume. Database backups from the system pages are not supported in the image (no
+`storage` volume.
+
+With `DB_CONNECTION=sqlite` and no `DB_DATABASE`, the database is kept in the `storage` volume
+(`storage/database.sqlite`). A volume mounted over `/var/www/database` keeps working: its
+`database.sqlite` is used, and on every start the migrations in it are replaced with the ones
+from the image, so new migrations are applied after an update.
+
+Errors always show up in `docker logs`; when `.env` sets a file channel (e.g. `LOG_CHANNEL=daily`),
+the file log is kept in addition. Database backups from the system pages are not supported in the image (no
 `mysqldump`).
 
 ### Real-time commands (WebSocket)
