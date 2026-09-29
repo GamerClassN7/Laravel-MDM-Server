@@ -13,7 +13,7 @@ class DeviceServicesTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function report(array $extra): Device
+    private function report(array $extra, array $machine = []): Device
     {
         $device = new Device();
         $device->token = hash('sha256', 'secret-token');
@@ -26,7 +26,7 @@ class DeviceServicesTest extends TestCase
                 'os' => 'Debian GNU/Linux 12',
                 'RestartRequired' => false,
                 'Drives' => [],
-            ],
+            ] + $machine,
         ] + $extra)->assertOk();
 
         return $device->fresh();
@@ -119,11 +119,29 @@ class DeviceServicesTest extends TestCase
         $device = $this->report([
             'docker' => ['error' => 'Cannot connect to the Docker daemon'],
             'disk_health' => ['error' => 'smartctl not found, install smartmontools (apt install smartmontools).'],
-        ]);
+        ], ['AgentVersion' => '1.5.0']);
 
         Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
             ->assertSee('Cannot connect to the Docker daemon')
             ->assertSee('install smartmontools')
             ->assertDontSee('No containers.');
+    }
+
+    public function test_docker_tab_is_hidden_when_an_old_agent_found_only_the_cli(): void
+    {
+        $this->actingAs(User::factory()->create());
+        // Agents before 1.5.0 reported Docker whenever the docker command existed.
+        $device = $this->report(['docker' => ['error' => 'Cannot connect to the Docker daemon']], ['AgentVersion' => '1.4.0']);
+
+        $this->assertNull($device->docker);
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertDontSee('Cannot connect to the Docker daemon');
+
+        // Containers from an old agent are still shown.
+        $this->withToken('secret-token')->postJson('/api/device', [
+            'machine' => ['Hostname' => 'srv1', 'AgentVersion' => '1.4.0', 'Drives' => []],
+            'docker' => ['containers' => [['Name' => 'web', 'State' => 'running']]],
+        ])->assertOk();
+        $this->assertCount(1, $device->fresh()->docker['containers']);
     }
 }

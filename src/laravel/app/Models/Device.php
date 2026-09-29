@@ -21,6 +21,15 @@ class Device extends Model
         'desktop' => 'fas fa-desktop',
     ];
 
+    /** Hypervisor and container names as reported by the agent (systemd-detect-virt naming). */
+    public const VIRTUALIZATION_NAMES = [
+        'kvm' => 'KVM', 'qemu' => 'QEMU', 'vmware' => 'VMware', 'microsoft' => 'Hyper-V', 'oracle' => 'VirtualBox',
+        'xen' => 'Xen', 'parallels' => 'Parallels', 'bhyve' => 'bhyve', 'amazon' => 'Amazon EC2', 'google' => 'Google Cloud',
+        'zvm' => 'z/VM', 'powervm' => 'PowerVM', 'acrn' => 'ACRN', 'apple' => 'Apple', 'sre' => 'SRE',
+        'docker' => 'Docker', 'podman' => 'Podman', 'lxc' => 'LXC', 'lxc-libvirt' => 'LXC', 'openvz' => 'OpenVZ',
+        'systemd-nspawn' => 'systemd-nspawn', 'wsl' => 'WSL', 'rkt' => 'rkt', 'proot' => 'proot', 'pouch' => 'Pouch',
+    ];
+
     /** Seconds without a report after which the REST API connection is shown as inactive (reports come every 5 min). */
     public const REPORT_TIMEOUT = 660;
 
@@ -75,6 +84,13 @@ class Device extends Model
         $clean = [];
         if (array_key_exists('restart_required', $state)) {
             $clean['restart_required'] = filter_var($state['restart_required'], FILTER_VALIDATE_BOOLEAN);
+        }
+        if (isset($state['power']) && is_array($state['power'])) {
+            $battery = $state['power']['battery'] ?? null;
+            $clean['power'] = [
+                'battery' => is_numeric($battery) ? max(0, min(100, (int) $battery)) : null,
+                'plugged' => filter_var($state['power']['plugged'] ?? false, FILTER_VALIDATE_BOOLEAN),
+            ];
         }
         foreach (['services' => self::SERVICE_STATES, 'containers' => self::CONTAINER_STATES] as $key => $allowed) {
             if (! isset($state[$key]) || ! is_array($state[$key])) {
@@ -325,6 +341,65 @@ class Device extends Model
         return [];
     }
 
+    /**
+     * Virtual machine or container the device runs in, null on physical hardware (or agents
+     * before 1.5.0): ['type' => 'vm'|'container', 'name' => 'kvm', 'label' => 'KVM'].
+     */
+    public function getVirtualizationAttribute(): ?array
+    {
+        $virtualization = $this->data->machine->Virtualization ?? null;
+        $type = $virtualization->Type ?? null;
+        $name = (string) ($virtualization->Name ?? '');
+        if (! in_array($type, ['vm', 'container'], true)) {
+            return null;
+        }
+
+        return ['type' => $type, 'name' => $name, 'label' => self::VIRTUALIZATION_NAMES[$name] ?? ($name !== '' ? $name : __('unknown'))];
+    }
+
+    /**
+     * Disk health is shown unless the device is virtual and no disk reports real S.M.A.R.T.
+     * values (virtual disks have none; disks passed through to a VM do).
+     */
+    public function getShowDiskHealthAttribute(): bool
+    {
+        if ($this->diskHealth === null) {
+            return false;
+        }
+        if ($this->virtualization === null) {
+            return true;
+        }
+
+        foreach ($this->diskHealth['disks'] as $disk) {
+            foreach (['Temperature', 'PowerOnHours', 'WearPercent', 'Reallocated', 'Pending', 'MediaErrors'] as $value) {
+                if (isset($disk[$value])) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /** Battery level in percent, null without a battery (live state first, then the report). */
+    public function getBatteryLevelAttribute(): ?int
+    {
+        $battery = $this->liveState['power']['battery'] ?? ($this->data->machine->Battery ?? null);
+
+        return is_numeric($battery) ? (int) $battery : null;
+    }
+
+    /** Whether the device runs on mains power (charging or full); null when unknown (older agents). */
+    public function getPluggedInAttribute(): ?bool
+    {
+        if (isset($this->liveState['power'])) {
+            return $this->liveState['power']['plugged'];
+        }
+        $plugged = $this->data->machine->PluggedIn ?? null;
+
+        return $plugged === null ? null : filter_var($plugged, FILTER_VALIDATE_BOOLEAN);
+    }
+
     /** Outdated PowerShell Gallery modules per edition (Windows PowerShell, PowerShell 7). */
     public function getModuleUpdatesAttribute(): array
     {
@@ -369,6 +444,14 @@ class Device extends Model
 
         $docker = json_decode(json_encode($this->data->docker), true);
         $live = $this->liveState['containers'] ?? null;
+
+        // Agents before 1.5.0 report Docker as soon as the CLI exists, even without an engine: an
+        // error with no containers means Docker is not installed there. Newer agents only report
+        // a reachable engine, so their errors are shown.
+        if ($live === null && ! empty($docker['error']) && empty($docker['containers'])
+            && version_compare($this->agentVersion ?? '0', '1.5.0', '<')) {
+            return null;
+        }
 
         $containers = array_map(function (array $container) {
             // "unhealthy" is a running container whose health check fails.

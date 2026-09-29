@@ -2,12 +2,13 @@
     @php
         $moduleUpdates = $selectedDevice->moduleUpdates;
         $hasUpdates = count($selectedDevice->updates) > 0 || count($selectedDevice->apps_packages_updates) > 0 || count($moduleUpdates) > 0;
-        $power = $selectedDevice->data->machine->Battery ?? null;
+        $power = $selectedDevice->batteryLevel;
+        $pluggedIn = $selectedDevice->pluggedIn;
         $services = $selectedDevice->services;
         $failedServices = collect($services)->where('State', '!=', 'running')->count();
         $docker = $selectedDevice->docker;
         $stoppedContainers = collect($docker['containers'] ?? [])->where('State', '!=', 'running')->count();
-        $diskHealth = $selectedDevice->diskHealth;
+        $diskHealth = $selectedDevice->showDiskHealth ? $selectedDevice->diskHealth : null;
     @endphp
 
     <div class="card">
@@ -54,15 +55,20 @@
 
                 @if (!$selectedDevice->offline)
                     <div class="fs-5 text-nowrap">
-                        @if ($power !== null && $power !== [])
-                            @if ($power < 20)
-                                <i class="fas fa-battery-quarter text-danger"></i>
-                            @elseif ($power < 85)
-                                <i class="fas fa-battery-half"></i>
-                            @else
-                                <i class="fas fa-battery-full"></i>
-                            @endif
-                            {{ $power }} %
+                        @if ($power !== null)
+                            <span title="{{ $pluggedIn ? __('Charging') : ($pluggedIn === false ? __('On battery') : '') }}">
+                                @if ($pluggedIn)
+                                    <i class="fas fa-bolt text-warning"></i>
+                                @endif
+                                @if ($power < 20)
+                                    <i class="fas fa-battery-quarter {{ $pluggedIn ? '' : 'text-danger' }}"></i>
+                                @elseif ($power < 85)
+                                    <i class="fas fa-battery-half"></i>
+                                @else
+                                    <i class="fas fa-battery-full"></i>
+                                @endif
+                                {{ $power }} %
+                            </span>
                         @else
                             <i class="fas fa-plug" title="{{ __('Plugged in') }}"></i>
                         @endif

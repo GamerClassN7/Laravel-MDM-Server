@@ -6,9 +6,14 @@
         <x-badge :color="$selectedDevice->connectedViaApi ? 'success' : 'secondary'" icon="fas fa-exchange-alt" title="{{ __('Last report :time', ['time' => ($selectedDevice->last_http_at ?? $selectedDevice->updated_at)->diffForHumans()]) }}" variant="subtle">
             REST API
         </x-badge>
-        <x-badge :color="$selectedDevice->agentOutdated ? 'warning' : 'secondary'" icon="fas fa-robot" variant="subtle">
+        <x-badge :color="$selectedDevice->agentVersion === null ? 'secondary' : ($selectedDevice->agentOutdated ? 'warning' : 'success')" icon="fas fa-robot" title="{{ $selectedDevice->agentOutdated ? __('A newer agent is available') : __('The agent is up to date') }}" variant="subtle">
             {{ __('Agent') }} {{ $selectedDevice->agentVersion ?? __('unknown') }}
         </x-badge>
+        @if ($virtualization = $selectedDevice->virtualization)
+            <x-badge color="info" :icon="$virtualization['type'] === 'container' ? 'fas fa-box' : 'fas fa-clone'" title="{{ $virtualization['type'] === 'container' ? __('Runs in a container') : __('Runs in a virtual machine') }}" variant="subtle">
+                {{ $virtualization['type'] === 'container' ? __('Container') : __('Virtual machine') }} · {{ $virtualization['label'] }}
+            </x-badge>
+        @endif
     </div>
 
     @if ($selectedDevice->offline)

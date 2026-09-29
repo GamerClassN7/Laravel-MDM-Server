@@ -157,13 +157,23 @@ The agent is designed to stay out of the way:
 | PowerShell modules | outdated PowerShell Gallery modules in Windows PowerShell and PowerShell 7 | the same in PowerShell 7 |
 | Services | running and stopped automatic services (`Get-Service`) | running and failed units (`systemctl`) |
 | Docker (when installed) | containers and their state (`docker ps --all`) | the same |
+| Virtualization | manufacturer and model (Hyper-V, VMware, KVM / QEMU, VirtualBox, Xen …) | `systemd-detect-virt`, DMI (VMs and containers) |
+| Power | battery level and mains power (`GetSystemPowerStatus`) | `/sys/class/power_supply` |
 | Disk health | `Get-PhysicalDisk`, `Get-StorageReliabilityCounter` | `smartctl` ([smartmontools](https://www.smartmontools.org/), `apt install smartmontools`) |
 | Turn off / Restart | `Stop-Computer` / `Restart-Computer` | `systemctl poweroff` / `systemctl reboot` |
 | Install updates | winget (also PowerShell 7 itself), PowerShell modules, Windows Update | `apt-get update && apt-get upgrade` (also PowerShell 7), PowerShell modules |
 
 The device detail has tabs for drives, updates, networks, **services** (with search, failed ones
-first), **Docker** containers (only on devices with Docker) and **disk health** (temperature,
-power-on hours, SSD wear, reallocated / pending sectors and media errors).
+first), **Docker** containers (only where the Docker engine is installed, not just the CLI) and
+**disk health** (temperature, power-on hours, SSD wear, reallocated / pending sectors and media
+errors). Virtual machines and containers get a badge with the hypervisor; their disk health tab is
+hidden unless a disk passed through to the VM reports real S.M.A.R.T. values. The battery shows a
+charging indicator while the device is on mains power.
+
+**Install updates** runs in the background: on Linux `apt-get upgrade --with-new-pkgs` (waits for a
+running apt, installs new dependencies, removes nothing), on Windows winget, Windows Update, and on
+both PowerShell module updates. Every step with its result is written to `agent.log`, the full
+output of apt / winget to `updates.log`, and the update list is collected again right after.
 
 ### Installation
 
