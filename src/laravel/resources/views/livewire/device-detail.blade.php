@@ -199,9 +199,14 @@
                         <h5>{{ __('Applications') }}</h5>
                         <ul class="list-group">
                             @foreach ($selectedDevice->apps_packages_updates as $appUpdate)
-                                <li class="list-group-item d-flex justify-content-between">
-                                    <span>{{ $appUpdate['Id'] }}</span>
-                                    <x-badge color="primary" variant="subtle">{{ $appUpdate['Version'] }}</x-badge>
+                                <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2" wire:key="app-update-{{ $loop->index }}">
+                                    <span>
+                                        <span class="fw-semibold">{{ $appUpdate['Id'] ?? '' }}</span>
+                                        @if (! empty($appUpdate['Source']))
+                                            <span class="small text-muted ms-1">{{ $appUpdate['Source'] }}</span>
+                                        @endif
+                                    </span>
+                                    <x-badge color="primary" variant="subtle">{{ collect([($appUpdate['Version'] ?? '') ?: '?', $appUpdate['Avaliable'] ?? null])->filter()->implode(' → ') }}</x-badge>
                                 </li>
                             @endforeach
                         </ul>
@@ -214,6 +219,9 @@
                                     <span>
                                         <span class="fw-semibold">{{ $module['Name'] ?? '' }}</span>
                                         <span class="small text-muted ms-1">{{ $module['Edition'] ?? '' }}</span>
+                                        @if (! empty($module['User']))
+                                            <span class="small text-muted" title="{{ __('Installed in the user profile, the user updates it (Update-Module).') }}"><i class="fas fa-user ms-1 me-1"></i>{{ $module['User'] }}</span>
+                                        @endif
                                     </span>
                                     <x-badge color="primary" variant="subtle">{{ $module['Version'] ?? '?' }} → {{ $module['Available'] ?? '?' }}</x-badge>
                                 </li>

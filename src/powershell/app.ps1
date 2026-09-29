@@ -137,73 +137,78 @@ function Get-WingetPath {
     return $null
 }
 
+function ConvertFrom-WingetTable {
+    param (
+        [string[]]
+        $Lines
+    )
+
+    # Locale independent (winget prints "Name" / "Název" ... in the system language, SYSTEM included):
+    # a table is the header above a line of dashes. Columns start where a header word starts and
+    # no row has text running across that position (so "K dispozici" stays one column).
+    $Lines = @($Lines | ForEach-Object { ("$_" -split "`r")[-1].TrimEnd() })
+    for ($i = 1; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -notmatch '^-{10,}$') {
+            continue
+        }
+        $header = $Lines[$i - 1]
+        $rows = @()
+        for ($j = $i + 1; $j -lt $Lines.Count -and $Lines[$j].Trim(); $j++) { $rows += $Lines[$j] }
+
+        $starts = @(0)
+        foreach ($match in [regex]::Matches($header, '(?<=\s)\S')) {
+            $position = $match.Index
+            $crossed = @($rows | Where-Object { $_.Length -gt $position -and $_[$position - 1] -ne ' ' -and $_[$position] -ne ' ' })
+            # Rows shorter than the header (a footer like "3 upgrades available.") do not count.
+            $crossed = @($crossed | Where-Object { $_.Length -ge $header.Length - 10 })
+            if (-not $crossed) { $starts += $position }
+        }
+        if ($starts.Count -lt 4) {
+            continue
+        }
+
+        foreach ($row in $rows) {
+            $values = for ($c = 0; $c -lt $starts.Count; $c++) {
+                $from = $starts[$c]
+                $to = if ($c + 1 -lt $starts.Count) { $starts[$c + 1] } else { [int]::MaxValue }
+                if ($row.Length -le $from) { '' } else { $row.Substring($from, [math]::Min($to, $row.Length) - $from).Trim() }
+            }
+            # Name, Id, Version, [Available,] Source; footers and notes have no id and version.
+            if ($values.Count -ge 4 -and $values[1] -and $values[2] -and $values[1] -notmatch '\s') {
+                ,$values
+            }
+        }
+        $i = $j
+    }
+}
+
 function Get-WingetSoftware {
     param (
         [switch]
         $Updatable
     )
-    begin {
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        $winget = Get-WingetPath
-        if (-not $winget) {
-            throw 'winget not found'
-        }
-        # Never prompt (the agent runs without a user): accept the source agreements up front.
-        $upgradeResult = & $winget list --accept-source-agreements --disable-interactivity | Out-String
-        if ($Updatable) {
-            $upgradeResult = & $winget update --accept-source-agreements --disable-interactivity | Out-String
-        }
 
-        $lines = $upgradeResult.Split([Environment]::NewLine)
-
-        $fl = 0
-        while ( -not $lines[$fl].StartsWith("Name")) {
-            $fl++
-        }
-
-        $idStart = $lines[$fl].IndexOf("Id")
-        $versionStart = $lines[$fl].IndexOf("Version")
-
-        if ($Updatable) {
-            $availableStart = $lines[$fl].IndexOf("Available")
-        }
-
-        $sourceStart = $lines[$fl].IndexOf("Source")
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $winget = Get-WingetPath
+    if (-not $winget) {
+        throw 'winget not found'
     }
+    # Never prompt (the agent runs without a user): accept the source agreements up front.
+    $command = if ($Updatable) { 'upgrade' } else { 'list' }
+    $output = @(& $winget $command --accept-source-agreements --disable-interactivity 2>$null)
 
-    process {
-        For ($i = $fl + 1; $i -le $lines.Length; $i++) {
-            $line = $lines[$i]
-            if ($lines[$fl].Length -ne $line.Length) {
-                continue
-            }
-            if (-not [string]::IsNullOrEmpty($line) -and -not $line.StartsWith('-')) {
-                $name = $line.Substring(0, $idStart).TrimEnd()
-                $id = $line.Substring($idStart, ($versionStart - $idStart)).TrimEnd()
-
-                if ($Updatable) {
-                    $version = $line.Substring($versionStart, ($availableStart - $versionStart)).TrimEnd()
-                    $available = $line.Substring($availableStart, ($sourceStart - $availableStart)).TrimEnd()
-                }
-                else {
-                    $version = $line.Substring($versionStart, ($sourceStart - $versionStart)).TrimEnd()
-                }
-                $source = $line.Substring($sourceStart, ($line.Length - $sourceStart)).TrimEnd()
-
-                $tempObjLine = [PSCustomObject]@{
-                    Name    = $name
-                    Id      = $id
-                    Version = $version
-                    Source  = $source
-                }
-
-                if ($Updatable) {
-                    $tempObjLine | Add-Member -Name 'Avaliable' -Value $available -MemberType NoteProperty
-                }
-
-                $tempObjLine
-            }
+    foreach ($values in @(ConvertFrom-WingetTable -Lines $output)) {
+        $hasAvailable = $values.Count -ge 5
+        $item = [PSCustomObject]@{
+            Name    = $values[0]
+            Id      = $values[1]
+            Version = $values[2]
+            Source  = $values[$values.Count - 1]
         }
+        if ($Updatable) {
+            $item | Add-Member -Name 'Avaliable' -Value $(if ($hasAvailable) { $values[3] } else { '' }) -MemberType NoteProperty
+        }
+        $item
     }
 }
 
@@ -490,14 +495,33 @@ $canCheck = (Get-Command -Name Get-InstalledModule -ErrorAction SilentlyContinue
 if ($canCheck -and $PSVersionTable.PSEdition -ne 'Core' -and -not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) { $canCheck = $false }
 if ($canCheck) {
     $installed = @(Get-InstalledModule -ErrorAction SilentlyContinue | Where-Object { $_.Repository -eq 'PSGallery' } |
-        Group-Object -Property Name | ForEach-Object { $_.Group | Sort-Object -Property { ConvertTo-ModuleVersion $_.Version } -Descending | Select-Object -First 1 })
+        ForEach-Object { [pscustomobject]@{ Name = $_.Name; Version = "$($_.Version)"; User = $null } })
+    # Modules users installed for themselves (Install-Module -Scope CurrentUser) are not visible to
+    # SYSTEM / root: read their PowerShellGet metadata. They are listed, not updated (only the
+    # user can update their own profile).
+    $userModules = if ($IsLinux) {
+        @(Get-ChildItem -Path '/home/*/.local/share/powershell/Modules/*/*/PSGetModuleInfo.xml' -ErrorAction SilentlyContinue)
+    } else {
+        $folder = if ($PSVersionTable.PSEdition -eq 'Core') { 'PowerShell' } else { 'WindowsPowerShell' }
+        @(Get-ChildItem -Path "$env:SystemDrive\Users\*\Documents\$folder\Modules\*\*\PSGetModuleInfo.xml", "$env:SystemDrive\Users\*\OneDrive*\Documents\$folder\Modules\*\*\PSGetModuleInfo.xml" -ErrorAction SilentlyContinue)
+    }
+    foreach ($file in $userModules) {
+        try {
+            $info = Import-Clixml -Path $file.FullName
+            $user = ($file.FullName -replace '\\', '/' -split '/')[2]
+            if ($info.Repository -eq 'PSGallery') { $installed += [pscustomobject]@{ Name = $info.Name; Version = "$($info.Version)"; User = $user } }
+        }
+        catch { }
+    }
+    # The newest version per module and owner (side-by-side versions).
+    $installed = @($installed | Group-Object -Property Name, User | ForEach-Object { $_.Group | Sort-Object -Property { ConvertTo-ModuleVersion $_.Version } -Descending | Select-Object -First 1 })
     if ($installed) {
         $latest = @{}
-        foreach ($module in @(Find-Module -Name $installed.Name -Repository PSGallery -ErrorAction SilentlyContinue)) { $latest[$module.Name] = "$($module.Version)" }
+        foreach ($module in @(Find-Module -Name @($installed.Name | Select-Object -Unique) -Repository PSGallery -ErrorAction SilentlyContinue)) { $latest[$module.Name] = "$($module.Version)" }
         foreach ($module in $installed) {
             $available = $latest[$module.Name]
             if ($available -and (ConvertTo-ModuleVersion $available) -gt (ConvertTo-ModuleVersion $module.Version)) {
-                $outdated += [pscustomobject]@{ Name = $module.Name; Version = "$($module.Version)"; Available = $available }
+                $outdated += [pscustomobject]@{ Name = $module.Name; Version = $module.Version; Available = $available; User = $module.User }
             }
         }
     }
@@ -505,6 +529,7 @@ if ($canCheck) {
 if ($Update) {
     # Installed next to the current version, like Update-Module always does; failed ones stay listed.
     $outdated = @($outdated | Where-Object {
+        if ($_.User) { return $true }
         try { Update-Module -Name $_.Name -RequiredVersion $_.Available -Force -Confirm:$false -ErrorAction Stop; $false } catch { $true }
     })
 }
@@ -526,7 +551,7 @@ ConvertTo-Json -InputObject @($outdated) -Compress
             $json = (Get-Content -Path $output -Raw) -as [string]
             if ($json) {
                 foreach ($module in @($json.Trim() | ConvertFrom-Json)) {
-                    if ($module) { $result += [PSCustomObject]@{ Name = $module.Name; Version = $module.Version; Available = $module.Available; Edition = $powershell.Edition } }
+                    if ($module) { $result += [PSCustomObject]@{ Name = $module.Name; Version = $module.Version; Available = $module.Available; Edition = $powershell.Edition; User = $module.User } }
                 }
             }
         }
@@ -678,6 +703,85 @@ function Get-LinuxNetworks {
             IPAddresses = @($interface.addr_info | ForEach-Object { $_.local })
         }
     }
+}
+
+function Get-FlatpakUpdates {
+    # System installation plus every user's own (~/.local/share/flatpak), checked as that user.
+    if (-not (Get-Command -Name flatpak -CommandType Application -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    $installations = @(@{ User = $null; Arguments = @('--system') })
+    foreach ($userHome in @(Get-ChildItem -Path /home -Directory -ErrorAction SilentlyContinue)) {
+        if (Test-Path -Path "$($userHome.FullName)/.local/share/flatpak") {
+            $installations += @{ User = $userHome.Name; Arguments = @('--user') }
+        }
+    }
+
+    foreach ($installation in $installations) {
+        $run = {
+            param ([string[]]$FlatpakArguments)
+            if ($installation.User) { runuser -u $installation.User -- flatpak @FlatpakArguments 2>$null } else { flatpak @FlatpakArguments 2>$null }
+        }
+        $installed = @{}
+        foreach ($line in @(& $run (@('list', '--app') + $installation.Arguments + '--columns=application,version'))) {
+            $parts = "$line" -split "`t"
+            if ($parts[0]) { $installed[$parts[0]] = $parts[1] }
+        }
+        foreach ($line in @(& $run (@('remote-ls', '--updates', '--app') + $installation.Arguments + '--columns=application,version'))) {
+            $parts = "$line" -split "`t"
+            if (-not $parts[0] -or $parts[0] -eq 'Application ID') { continue }
+            [PSCustomObject]@{
+                Id        = $parts[0]
+                Version   = $installed[$parts[0]]
+                Avaliable = $parts[1]
+                Source    = if ($installation.User) { "flatpak ($($installation.User))" } else { 'flatpak' }
+            }
+        }
+    }
+}
+
+function Get-SnapUpdates {
+    if (-not (Get-Command -Name snap -CommandType Application -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    $installed = @{}
+    foreach ($line in @(snap list 2>$null | Select-Object -Skip 1)) {
+        $parts = "$line".Trim() -split '\s+'
+        if ($parts.Count -ge 2) { $installed[$parts[0]] = $parts[1] }
+    }
+    # Name  Version  Rev  Size  Publisher  Notes
+    foreach ($line in @(snap refresh --list 2>$null | Select-Object -Skip 1)) {
+        $parts = "$line".Trim() -split '\s+'
+        if ($parts.Count -ge 2) {
+            [PSCustomObject]@{ Id = $parts[0]; Version = $installed[$parts[0]]; Avaliable = $parts[1]; Source = 'snap' }
+        }
+    }
+}
+
+function Get-PowerShellReleaseUpdate {
+    param (
+        [bool]
+        $OnLinux,
+        # Updates already listed by a package manager, PowerShell is not reported twice.
+        $Known
+    )
+
+    $pwsh = @(Get-PowerShellHosts -OnLinux $OnLinux | Where-Object { $_.Edition -eq 'PowerShell 7' }) | Select-Object -First 1
+    if (-not $pwsh -or @($Known | Where-Object { "$($_.Id) $($_.Title)" -match '(^|\s)(powershell|Microsoft\.PowerShell)(\s|$)' })) {
+        return
+    }
+
+    # The release pwsh itself checks for its update notification.
+    $installed = (& $pwsh.Path -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()' 2>$null | Select-Object -First 1)
+    $latest = (Invoke-RestMethod -Uri 'https://aka.ms/pwsh-buildinfo-stable' -TimeoutSec 30).ReleaseTag -replace '^v', ''
+    try {
+        if ($installed -and $latest -and [version]($latest -split '-')[0] -gt [version](("$installed" -split '-')[0])) {
+            [PSCustomObject]@{ Id = 'PowerShell'; Version = "$installed"; Avaliable = $latest; Source = 'github.com/PowerShell' }
+        }
+    }
+    catch { }
 }
 
 function Get-AptUpdates {
@@ -875,6 +979,10 @@ function Start-InventoryCollection {
     function Get-WingetSoftware {${function:Get-WingetSoftware}}
     function Get-WindowsUpdate {${function:Get-WindowsUpdate}}
     function Get-AptUpdates {${function:Get-AptUpdates}}
+    function Get-FlatpakUpdates {${function:Get-FlatpakUpdates}}
+    function Get-SnapUpdates {${function:Get-SnapUpdates}}
+    function Get-PowerShellReleaseUpdate {${function:Get-PowerShellReleaseUpdate}}
+    function ConvertFrom-WingetTable {${function:ConvertFrom-WingetTable}}
     function Get-WingetPath {${function:Get-WingetPath}}
     function Get-PowerShellHosts {${function:Get-PowerShellHosts}}
     function Invoke-PowerShellModules {${function:Invoke-PowerShellModules}}
@@ -885,12 +993,17 @@ function Start-InventoryCollection {
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
         $data = @{}
         try { $data['module_updates'] = @(Invoke-PowerShellModules -OnLinux $OnLinux) } catch { }
+        $packages = @()
         if ($OnLinux) {
             try { $data['os_updates'] = @(Get-AptUpdates) } catch { }
-            return $data
+            try { $packages += @(Get-FlatpakUpdates) } catch { }
+            try { $packages += @(Get-SnapUpdates) } catch { }
+        } else {
+            try { $data['os_updates'] = @(Get-WindowsUpdate) } catch { }
+            try { $packages += @(Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source) } catch { }
         }
-        try { $data['os_updates'] = @(Get-WindowsUpdate) } catch { }
-        try { $data['packages_updates'] = @(Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source) } catch { }
+        try { $packages += @(Get-PowerShellReleaseUpdate -OnLinux $OnLinux -Known (@($data['os_updates']) + $packages)) } catch { }
+        $data['packages_updates'] = $packages
         return $data
     }
 }
@@ -931,6 +1044,10 @@ function Get-CachedInventory {
 
     try {
         $cache = Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        # Collected by another agent version (update): it may lack what this one reports, collect again.
+        if ($cache.agent_version -ne $AgentVersion) {
+            return $null
+        }
         return @{ CollectedAt = [DateTime]$cache.collected_at; Data = $cache.data }
     }
     catch {
@@ -946,7 +1063,7 @@ function Save-CachedInventory {
         $Name = 'inventory'
     )
 
-    @{ collected_at = (Get-Date).ToString('o'); data = $Data } | ConvertTo-Json -Depth 6 -Compress | Set-Content -Path "$AgentDir/$Name.json" -Encoding UTF8
+    @{ collected_at = (Get-Date).ToString('o'); agent_version = $AgentVersion; data = $Data } | ConvertTo-Json -Depth 6 -Compress | Set-Content -Path "$AgentDir/$Name.json" -Encoding UTF8
 }
 
 function Get-Report {
@@ -1090,6 +1207,19 @@ function Start-UpdateJob {
                 if ($keptBack -and $line -match '^\s+\S') { $line.Trim() } elseif ($keptBack) { $keptBack = $false }
             }
             if ($held) { "apt-get upgrade: kept back (phased or held): $($held -join ' ')" }
+            if (Get-Command -Name flatpak -CommandType Application -ErrorAction SilentlyContinue) {
+                $output = Invoke-Logged 'flatpak update' { flatpak update --system -y --noninteractive }
+                "flatpak update (system): exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+                foreach ($userHome in @(Get-ChildItem -Path /home -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -Path "$($_.FullName)/.local/share/flatpak" })) {
+                    $user = $userHome.Name
+                    $output = Invoke-Logged "flatpak update ($user)" { runuser -u $user -- flatpak update --user -y --noninteractive }
+                    "flatpak update ($user): exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+                }
+            }
+            if (Get-Command -Name snap -CommandType Application -ErrorAction SilentlyContinue) {
+                $output = Invoke-Logged 'snap refresh' { snap refresh }
+                "snap refresh: exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+            }
             if (Test-Path -Path /var/run/reboot-required) { 'Restart required' }
         } else {
             $winget = Get-WingetPath

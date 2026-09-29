@@ -180,4 +180,23 @@ class DeviceServicesTest extends TestCase
         ])->assertOk();
         $this->assertCount(1, $device->fresh()->installableUpdates);
     }
+
+    public function test_application_updates_show_source_and_versions(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $device = $this->report([
+            'packages_updates' => [
+                ['Id' => 'org.mozilla.firefox', 'Version' => '130.0', 'Avaliable' => '131.0.2', 'Source' => 'flatpak'],
+                ['Id' => 'code', 'Version' => '1.93.0', 'Avaliable' => '1.94.2', 'Source' => 'snap'],
+            ],
+            'module_updates' => [['Name' => 'Pester', 'Version' => '5.5.0', 'Available' => '5.6.1', 'Edition' => 'PowerShell 7', 'User' => 'jonatanrek']],
+        ]);
+
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('org.mozilla.firefox')
+            ->assertSee('flatpak')
+            ->assertSee('130.0 → 131.0.2')
+            ->assertSee('snap')
+            ->assertSee('jonatanrek');
+    }
 }

@@ -153,15 +153,15 @@ The agent is designed to stay out of the way:
 | | Windows | Debian / Ubuntu |
 |---|---|---|
 | Report | OS, uptime, user, CPU, battery, drives, networks, pending reboot | the same, from `/etc/os-release`, `/proc`, `df`, `ip` and `/var/run/reboot-required` |
-| Updates | Windows Update, winget | `apt list --upgradable` |
-| PowerShell modules | outdated PowerShell Gallery modules in Windows PowerShell and PowerShell 7 | the same in PowerShell 7 |
+| Updates | Windows Update, winget (any system language) | `apt list --upgradable` (phased / held back marked), flatpak (system and users), snap |
+| PowerShell | outdated PowerShell Gallery modules in Windows PowerShell and PowerShell 7 (also users' own, listed only), a newer PowerShell 7 release | the same in PowerShell 7 |
 | Services | running and stopped automatic services (`Get-Service`) | running and failed units (`systemctl`) |
 | Docker (when installed) | containers and their state (`docker ps --all`) | the same |
 | Virtualization | manufacturer and model (Hyper-V, VMware, KVM / QEMU, VirtualBox, Xen …) | `systemd-detect-virt`, DMI (VMs and containers) |
 | Power | battery level and mains power (`GetSystemPowerStatus`) | `/sys/class/power_supply` |
 | Disk health | `Get-PhysicalDisk`, `Get-StorageReliabilityCounter` | `smartctl` ([smartmontools](https://www.smartmontools.org/), `apt install smartmontools`) |
 | Turn off / Restart | `Stop-Computer` / `Restart-Computer` | `systemctl poweroff` / `systemctl reboot` |
-| Install updates | winget (also PowerShell 7 itself), PowerShell modules, Windows Update | `apt-get update && apt-get upgrade` (also PowerShell 7), PowerShell modules |
+| Install updates | winget (also PowerShell 7 itself), PowerShell modules, Windows Update | `apt-get upgrade --with-new-pkgs`, flatpak, snap, PowerShell modules |
 
 The device detail has tabs for drives, updates, networks, **services** (with search, failed ones
 first), **Docker** containers (only where the Docker engine is installed, not just the CLI) and
