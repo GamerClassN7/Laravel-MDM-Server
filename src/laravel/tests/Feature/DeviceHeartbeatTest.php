@@ -16,6 +16,8 @@ use Laravel\Reverb\Protocols\Pusher\Channels\ChannelConnection;
 use Laravel\Reverb\Protocols\Pusher\Contracts\ChannelManager;
 use Livewire\Livewire;
 use Mockery;
+use Illuminate\Contracts\Debug\ExceptionHandler;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 class DeviceHeartbeatTest extends TestCase
@@ -95,6 +97,24 @@ class DeviceHeartbeatTest extends TestCase
         $this->heartbeat($device, subscribed: false);
 
         $this->assertNull($device->fresh()->last_seen_at);
+    }
+
+    public function test_websocket_heartbeat_errors_are_reported(): void
+    {
+        // Reverb would swallow the exception, it has to reach the application log.
+        $device = $this->createDevice();
+        Schema::table('devices', fn ($table) => $table->dropColumn('last_ws_at'));
+        $reported = [];
+        $this->app->make(ExceptionHandler::class)->reportable(function (\Throwable $e) use (&$reported) {
+            $reported[] = $e;
+
+            return false;
+        });
+
+        $this->heartbeat($device, subscribed: true);
+
+        $this->assertCount(1, $reported);
+        $this->assertStringContainsString('last_ws_at', $reported[0]->getMessage());
     }
 
     public function test_http_heartbeat_marks_device_as_seen(): void
