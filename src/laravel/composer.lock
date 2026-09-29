@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "a96cd5a6605efdfec8e2b2edbcd33c28",
+    "content-hash": "92b9ce3b368937ce45099743996d8d66",
     "packages": [
         {
             "name": "bacon/bacon-qr-code",
@@ -4710,16 +4710,16 @@
         },
         {
             "name": "steelants/laravel-boilerplate.dashboard",
-            "version": "1.2.5",
+            "version": "dev-main",
             "source": {
                 "type": "git",
                 "url": "https://git.steelants.cz/SteelAnts/Laravel-Boilerplate.Dashboard.git",
-                "reference": "9b13a6232cd1fd29dbfb69eb2dc0f625eb0cc8e6"
+                "reference": "d5cff007252caf3f61f8deb5213e2c8f26fa54ea"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/laravel-boilerplate.dashboard/9b13a6232cd1fd29dbfb69eb2dc0f625eb0cc8e6.zip",
-                "reference": "9b13a6232cd1fd29dbfb69eb2dc0f625eb0cc8e6",
+                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/laravel-boilerplate.dashboard/d5cff007252caf3f61f8deb5213e2c8f26fa54ea.zip",
+                "reference": "d5cff007252caf3f61f8deb5213e2c8f26fa54ea",
                 "mirrors": [
                     {
                         "url": "https://packistry.sa-dev.cz/public/zipball/%package%/%reference%.%type%",
@@ -4746,7 +4746,7 @@
             },
             "notification-url": "https://packistry.sa-dev.cz/public/downloads/",
             "license": [
-                "MIT"
+                "Apache-2.0"
             ],
             "authors": [
                 {
@@ -4754,7 +4754,7 @@
                 }
             ],
             "description": "Livewire dashboard",
-            "time": "2026-06-19T09:13:49+00:00"
+            "time": "2026-07-16T13:50:52+00:00"
         },
         {
             "name": "steelants/laravel-general",
@@ -9813,7 +9813,9 @@
     ],
     "aliases": [],
     "minimum-stability": "stable",
-    "stability-flags": {},
+    "stability-flags": {
+        "steelants/laravel-boilerplate.dashboard": 20
+    },
     "prefer-stable": true,
     "prefer-lowest": false,
     "platform": {

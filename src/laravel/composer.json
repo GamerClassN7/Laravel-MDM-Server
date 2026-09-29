@@ -16,7 +16,7 @@
         "laravel/tinker": "^3.0",
         "livewire/livewire": "^3.6",
         "steelants/laravel-boilerplate": "^2.6",
-        "steelants/laravel-boilerplate.dashboard": "^1.2"
+        "steelants/laravel-boilerplate.dashboard": "dev-main"
     },
     "require-dev": {
         "fakerphp/faker": "^1.23",
