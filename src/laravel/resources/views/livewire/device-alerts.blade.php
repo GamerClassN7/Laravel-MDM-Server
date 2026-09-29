@@ -9,6 +9,20 @@
         <x-badge :color="$selectedDevice->agentVersion === null ? 'secondary' : ($selectedDevice->agentOutdated ? 'warning' : 'success')" icon="fas fa-robot" title="{{ $selectedDevice->agentOutdated ? __('A newer agent is available') : __('The agent is up to date') }}" variant="subtle">
             {{ __('Agent') }} {{ $selectedDevice->agentVersion ?? __('unknown') }}
         </x-badge>
+        @if ($selectedDevice->signsRequests)
+            <x-badge color="success" icon="fas fa-lock" title="{{ __('Every request and response is signed. Device key fingerprint: :fingerprint', ['fingerprint' => \App\Support\Signing::fingerprint($selectedDevice->public_key)]) }}" variant="subtle">
+                {{ __('Signed') }}
+            </x-badge>
+            @can('is-system-admin')
+                <button class="btn btn-sm btn-link p-0 text-decoration-none" type="button" title="{{ __('The agent registers a new key with its next request, e.g. after it was reinstalled with a new key.') }}" wire:click="resetDeviceKey" wire:confirm="{{ __('Reset the device key? Until the agent registers a key again, the device only gets the agent update.') }}">
+                    <i class="fas fa-undo me-1"></i>{{ __('Reset device key') }}
+                </button>
+            @endcan
+        @else
+            <x-badge color="warning" icon="fas fa-unlock" title="{{ __('The agent does not sign its communication (older than 1.7.0): only the agent update can be sent to it.') }}" variant="subtle">
+                {{ __('Unsigned agent') }}
+            </x-badge>
+        @endif
         @if ($virtualization = $selectedDevice->virtualization)
             <x-badge color="info" :icon="$virtualization['type'] === 'container' ? 'fas fa-box' : 'fas fa-clone'" title="{{ $virtualization['type'] === 'container' ? __('Runs in a container') : __('Runs in a virtual machine') }}" variant="subtle">
                 {{ $virtualization['type'] === 'container' ? __('Container') : __('Virtual machine') }} · {{ $virtualization['label'] }}

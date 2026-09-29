@@ -4,11 +4,11 @@ use App\Models\Device;
 use App\Models\Enrolment;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 
-Route::middleware('auth:api')->post('/device', function (Request $request) {
+// Every device endpoint is signed in both directions (App\Http\Middleware\DeviceSignature).
+Route::middleware(['device.signature', 'auth:api'])->post('/device', function (Request $request) {
     /** @var Device $device */
     $device = auth()->user();
 
@@ -50,30 +50,34 @@ Route::middleware('auth:api')->post('/device', function (Request $request) {
     ]);
 });
 
-Route::post('/device/register', function (Request $request) {
-    $data = $request->json()->all();
-    Log::error($data);
-    $inviteCode = $data['enrolment_code'];
-    $invitation = Enrolment::where('code', $inviteCode)->where('expire_at', '>', CarbonImmutable::now())->first();
+Route::middleware('device.signature')->post('/device/register', function (Request $request) {
+    $invitation = Enrolment::where('code', (string) $request->json('enrolment_code'))->where('expire_at', '>', CarbonImmutable::now())->first();
 
     if (null === $invitation) {
-        return "invalid token";
+        return response()->json(['error' => 'invalid_enrolment_code'], 422);
     }
 
     $token = Str::random(60);
 
     $device = new Device();
     $device->token = hash('sha256', $token);
+    // Agents 1.7.0+ send their public key, the request is signed with it (checked by the middleware).
+    if ($key = $request->attributes->get('mdm_public_key')) {
+        $device->public_key = $key;
+        $device->key_registered_at = now();
+    }
     $device->save();
 
     $invitation->delete();
+    $request->attributes->set('mdm_device_id', $device->id);
 
     return response()->json([
         'token' => $token,
+        'device_id' => $device->id,
     ]);
 });
 
-Route::middleware('auth:api')->group(function () {
+Route::middleware(['device.signature', 'auth:api'])->group(function () {
     // Connection details for the agent's WebSocket (Reverb / Pusher protocol) client.
     Route::get('/device/realtime', function (Request $request) {
         /** @var Device $device */
@@ -118,7 +122,35 @@ Route::middleware('auth:api')->group(function () {
         return response()->noContent();
     });
 
-    // The agent acknowledges a command before executing it so it is not delivered twice.
+    // A device updated to a signing agent registers its key once (trust on first use, with the
+    // device token). The request is signed with that key; a registered key is only replaced after
+    // an admin resets it.
+    Route::post('/device/key', function (Request $request) {
+        /** @var Device $device */
+        $device = $request->user();
+        if ($device->public_key !== null) {
+            return response()->json(['error' => 'key_already_registered'], 409);
+        }
+        $key = $request->attributes->get('mdm_public_key');
+        if ($key === null) {
+            return response()->json(['error' => 'signature_required'], 401);
+        }
+
+        $updated = Device::query()->whereKey($device->id)->whereNull('public_key')->toBase()
+            ->update(['public_key' => json_encode($key), 'key_registered_at' => now()]);
+
+        return $updated === 1
+            ? response()->json(['device_id' => $device->id])
+            : response()->json(['error' => 'key_already_registered'], 409);
+    });
+
+    // Signing agents take their commands here when the WebSocket announces one: the response is
+    // signed for this request, so a command cannot be replayed or injected.
+    Route::post('/device/commands/take', function (Request $request) {
+        return response()->json(['commands' => Device::takeCommands($request->user()->id)]);
+    });
+
+    // Agents before 1.7.0 acknowledge a command before executing it so it is not delivered twice.
     Route::post('/device/commands/ack', function (Request $request) {
         /** @var Device $device */
         $device = $request->user();

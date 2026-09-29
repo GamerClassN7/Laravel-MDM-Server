@@ -5,6 +5,7 @@ namespace App\Livewire;
 use App\Models\Device;
 use App\Support\AgentScript;
 use App\Support\InstallCommands;
+use Illuminate\Support\Facades\Gate;
 use Livewire\Component;
 
 class DeviceAlerts extends Component
@@ -14,6 +15,14 @@ class DeviceAlerts extends Component
     public function updateAgent()
     {
         Device::find($this->selectedDeviceId)?->queueCommand('updateAgent');
+    }
+
+    /** The agent registers a key again with its next request (trust on first use). */
+    public function resetDeviceKey()
+    {
+        Gate::authorize('is-system-admin');
+
+        Device::query()->whereKey($this->selectedDeviceId)->update(['public_key' => null, 'key_registered_at' => null]);
     }
 
     public function render()

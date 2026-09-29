@@ -13,10 +13,13 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withBroadcasting(__DIR__.'/../routes/channels.php', [
         'prefix' => 'api',
-        'middleware' => ['api', 'auth:api'],
+        'middleware' => ['api', 'device.signature', 'auth:api'],
     ])
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->redirectUsersTo('/devices');
+        $middleware->alias(['device.signature' => \App\Http\Middleware\DeviceSignature::class]);
+        // Before authentication, so the 401 of an unknown token is signed as well.
+        $middleware->prependToPriorityList(\Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests::class, \App\Http\Middleware\DeviceSignature::class);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //

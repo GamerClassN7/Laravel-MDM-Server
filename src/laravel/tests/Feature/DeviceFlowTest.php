@@ -10,11 +10,12 @@ use App\Models\Enrolment;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
+use Tests\Concerns\SignsDeviceRequests;
 use Tests\TestCase;
 
 class DeviceFlowTest extends TestCase
 {
-    use RefreshDatabase;
+    use RefreshDatabase, SignsDeviceRequests;
 
     private array $payload = [
         'machine' => [
@@ -48,15 +49,20 @@ class DeviceFlowTest extends TestCase
         Livewire::test(ShowDevices::class)->set('addDevice', true);
         $code = Enrolment::firstOrFail()->code;
 
-        $token = $this->postJson('/api/device/register', ['enrolment_code' => $code])
-            ->assertOk()
-            ->json('token');
-
-        $this->withToken($token)->postJson('/api/device', $this->payload)
-            ->assertOk()
-            ->assertJson(['commands' => []]);
-
+        // A signing agent (1.7.0+) enrols with its public key, the request signed with that key.
+        $response = $this->signedJson('POST', '/api/device/register', ['enrolment_code' => $code, 'public_key' => $this->devicePublicKey()])
+            ->assertOk();
+        $token = $response->json('token');
         $device = Device::firstOrFail();
+        $this->assertSame($device->id, $response->json('device_id'));
+        $this->assertSignedResponse($response, $device->id);
+        $this->assertSame($this->devicePublicKey(), $device->public_key);
+
+        $this->assertSignedResponse($this->signedJson('POST', '/api/device', $this->payload, $token)
+            ->assertOk()
+            ->assertJson(['commands' => []]), $device->id);
+
+        $device->refresh();
         $this->assertSame('pc1', $device->name);
 
         $this->actingAs($user);
@@ -75,9 +81,41 @@ class DeviceFlowTest extends TestCase
             ->call('saveFriendlyName')
             ->assertSee('My PC');
 
+        $this->signedJson('POST', '/api/device/commands/take', [], $token)
+            ->assertExactJson(['commands' => ['restart']]);
+        $this->signedJson('POST', '/api/device', $this->payload, $token)
+            ->assertJson(['commands' => []]);
+    }
+
+    public function test_agents_that_do_not_sign_only_get_the_agent_update(): void
+    {
+        $this->withoutVite();
+        $user = User::factory()->create();
+        $this->actingAs($user);
+        Livewire::test(ShowDevices::class)->set('addDevice', true);
+
+        // Agents before 1.7.0 enrol and report without signatures.
+        $token = $this->postJson('/api/device/register', ['enrolment_code' => Enrolment::firstOrFail()->code])
+            ->assertOk()
+            ->json('token');
+        $this->withToken($token)->postJson('/api/device', $this->payload)->assertOk();
+        $device = Device::firstOrFail();
+        $this->assertNull($device->public_key);
+
+        $this->assertFalse($device->queueCommand('restart'));
+        $this->assertTrue($device->queueCommand('updateAgent'));
+
         $this->app['auth']->forgetGuards();
         $this->withToken($token)->postJson('/api/device', $this->payload)
-            ->assertJson(['commands' => ['restart']]);
+            ->assertJson(['commands' => ['updateAgent']]);
+    }
+
+    public function test_invalid_enrolment_code_is_rejected(): void
+    {
+        $this->postJson('/api/device/register', ['enrolment_code' => '0000'])
+            ->assertStatus(422)
+            ->assertExactJson(['error' => 'invalid_enrolment_code']);
+        $this->assertSame(0, Device::count());
     }
 
     public function test_device_api_requires_token(): void

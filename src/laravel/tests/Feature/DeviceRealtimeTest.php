@@ -9,11 +9,12 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Event;
 use Livewire\Livewire;
+use Tests\Concerns\SignsDeviceRequests;
 use Tests\TestCase;
 
 class DeviceRealtimeTest extends TestCase
 {
-    use RefreshDatabase;
+    use RefreshDatabase, SignsDeviceRequests;
 
     protected function setUp(): void
     {
@@ -117,7 +118,7 @@ class DeviceRealtimeTest extends TestCase
     {
         Event::fake([DeviceCommandIssued::class]);
         $this->actingAs(User::factory()->create());
-        $device = $this->createDevice('secret-token');
+        $device = $this->registerDeviceKey($this->createDevice('secret-token'));
 
         Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $device->id])
             ->call('sendCommandToDevice', 'restart');
@@ -145,7 +146,7 @@ class DeviceRealtimeTest extends TestCase
     {
         config(['broadcasting.connections.reverb.options' => ['host' => '127.0.0.1', 'port' => 1, 'scheme' => 'http', 'useTLS' => false]]);
         $this->actingAs(User::factory()->create());
-        $device = $this->createDevice('secret-token');
+        $device = $this->registerDeviceKey($this->createDevice('secret-token'));
 
         Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $device->id])
             ->call('sendCommandToDevice', 'restart')

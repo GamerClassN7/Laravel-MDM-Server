@@ -58,6 +58,11 @@
                                     </div>
                                 @endforeach
                             </div>
+
+                            <p class="small text-muted mt-3 mb-0" title="{{ __('The agent accepts only commands, responses and updates signed with this key. It logs the fingerprint it pinned in agent.log.') }}">
+                                <i class="fas fa-key me-1"></i>{{ __('Server key fingerprint') }}:
+                                <code class="text-break">{{ \App\Support\Signing::fingerprint() }}</code>
+                            </p>
                         </div>
                     </div>
                 @elseif (isset($selectedDevice))

@@ -18,6 +18,9 @@ class InstallCommands
         $arguments = $enrolmentCode === null
             ? sprintf("-ServerUrl '%s' -Install", $serverUrl)
             : sprintf("-ServerUrl '%s' -EnrolmentCode %s -Install", $serverUrl, $enrolmentCode);
+        // The agent pins the server key only when it has this fingerprint, a check independent of
+        // where the script was downloaded from.
+        $arguments .= sprintf(" -ServerKeyFingerprint '%s'", Signing::fingerprint());
 
         // A unique file name avoids reusing a stale download (e.g. one another user left in /tmp),
         // and "if ($?)" only runs the installer when the download succeeded.

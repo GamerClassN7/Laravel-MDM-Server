@@ -122,7 +122,7 @@ class DeviceAgentStatusTest extends TestCase
         $this->assertSame(\App\Support\InstallCommands::for()['pwsh'], \App\Support\InstallCommands::update($linux));
         $this->assertSame(\App\Support\InstallCommands::for()['windows'], \App\Support\InstallCommands::update($windows));
         $this->assertStringNotContainsString('-EnrolmentCode', \App\Support\InstallCommands::update($linux));
-        $this->assertStringContainsString("-ServerUrl '".url('/')."' -Install }", \App\Support\InstallCommands::update($linux));
+        $this->assertStringContainsString("-ServerUrl '".url('/')."' -Install -ServerKeyFingerprint '", \App\Support\InstallCommands::update($linux));
     }
 
     public function test_platform_is_guessed_for_older_agents(): void
