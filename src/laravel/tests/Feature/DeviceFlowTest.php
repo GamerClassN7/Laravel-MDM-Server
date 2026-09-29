@@ -108,4 +108,29 @@ class DeviceFlowTest extends TestCase
             ->dispatch('device-deleted')
             ->assertSet('selectedDeviceId', null);
     }
+
+    public function test_first_device_is_opened_without_selection(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $devices = collect(['a', 'b'])->map(function ($token) {
+            $device = new Device();
+            $device->token = hash('sha256', $token);
+            $device->save();
+
+            return $device;
+        });
+
+        Livewire::test(ShowDevices::class)
+            ->assertSet('selectedDeviceId', $devices[0]->id);
+        Livewire::test(ShowDevices::class, ['selectedDeviceId' => $devices[1]->id])
+            ->assertSet('selectedDeviceId', $devices[1]->id);
+        // A link to a deleted device opens the first one instead of an empty page.
+        Livewire::test(ShowDevices::class, ['selectedDeviceId' => 999])
+            ->assertSet('selectedDeviceId', $devices[0]->id);
+
+        $devices[0]->delete();
+        Livewire::test(ShowDevices::class, ['selectedDeviceId' => $devices[0]->id])
+            ->dispatch('device-deleted')
+            ->assertSet('selectedDeviceId', $devices[1]->id);
+    }
 }
