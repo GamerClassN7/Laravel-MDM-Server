@@ -129,6 +129,14 @@ Debian / Ubuntu (PowerShell 7). It runs continuously as a scheduled task under `
 as a systemd service (`laravel-mdm-agent`) running as root on Linux. It keeps a WebSocket connection
 open for commands, sends a heartbeat with CPU and RAM usage every 30 seconds (over the WebSocket, or
 over HTTPS when the WebSocket is unavailable) and sends a device report every 5 minutes over HTTPS.
+
+The heartbeat also carries the fast-changing state: restart pending and the states of services and
+Docker containers, only when something changed, so the portal shows a failed service or a stopped
+container within 30 seconds. Everything large (updates, drives, networks, disk health, service and
+container details) goes with the report over HTTPS; a state too large for a WebSocket message
+(10 kB) is sent over HTTPS too. The live state is stored apart from the report in a single update,
+so neither overwrites the other and the newer one is shown. Queued commands are taken with a
+compare-and-swap, so a command queued while a report is processed is never lost.
 A device without a heartbeat for 90 seconds is shown as offline.
 
 The agent is designed to stay out of the way:

@@ -41,14 +41,12 @@ Route::middleware('auth:api')->post('/device', function (Request $request) {
 
     $device->data = json_encode($data);
     $device->last_http_at = now();
-
-    $commands = $device->commands;
-
-    $device->commands = [];
+    // The commands column is not written here: queued commands are taken atomically below.
     $device->save();
 
     return response()->json([
-        'commands' => $commands,
+        // Commands not delivered over the WebSocket; queued meanwhile ones wait for the next report.
+        'commands' => Device::takeCommands($device->id),
     ]);
 });
 
@@ -115,7 +113,7 @@ Route::middleware('auth:api')->group(function () {
 
     // Heartbeat fallback for agents without a WebSocket connection.
     Route::post('/device/heartbeat', function (Request $request) {
-        Device::recordHeartbeat($request->user()->id, $request->input('metrics'), 'http');
+        Device::recordHeartbeat($request->user()->id, $request->input('metrics'), 'http', $request->input('state'));
 
         return response()->noContent();
     });

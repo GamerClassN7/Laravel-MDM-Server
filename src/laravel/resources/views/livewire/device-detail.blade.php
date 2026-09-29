@@ -264,7 +264,7 @@
                                         @php
                                             $state = $container['State'] ?? 'unknown';
                                             $color = match (true) {
-                                                $state === 'running' && str_contains($container['Status'] ?? '', '(unhealthy)') => 'danger',
+                                                $state === 'running' && ($container['Health'] ?? null) === 'unhealthy' => 'danger',
                                                 $state === 'running' => 'success',
                                                 in_array($state, ['restarting', 'paused'], true) => 'warning',
                                                 $state === 'dead' => 'danger',
@@ -279,7 +279,7 @@
                                             <td class="d-none d-md-table-cell text-muted text-break">{{ $container['Image'] ?? '' }}</td>
                                             <td class="d-none d-lg-table-cell small text-muted text-break">{{ $container['Ports'] ?? '' }}</td>
                                             <td class="text-end">
-                                                <x-badge :color="$color" variant="subtle">{{ __(ucfirst($state)) }}</x-badge>
+                                                <x-badge :color="$color" variant="subtle">{{ ($container['Health'] ?? null) === 'unhealthy' ? __('Unhealthy') : __(ucfirst($state)) }}</x-badge>
                                                 <div class="small text-muted text-nowrap">{{ $container['Status'] ?? '' }}</div>
                                             </td>
                                         </tr>

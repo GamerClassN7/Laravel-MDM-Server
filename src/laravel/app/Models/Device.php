@@ -31,22 +31,111 @@ class Device extends Model
         'last_seen_at' => 'datetime',
         'last_ws_at' => 'datetime',
         'last_http_at' => 'datetime',
+        'live_state_at' => 'datetime',
     ];
+
+    /** Live state values the agent may report (anything else is dropped). */
+    private const SERVICE_STATES = ['running', 'stopped', 'failed'];
+
+    private const CONTAINER_STATES = ['created', 'running', 'unhealthy', 'paused', 'restarting', 'removing', 'exited', 'dead'];
 
     /**
      * @param  'ws'|'http'  $channel
      */
-    public static function recordHeartbeat(int $id, mixed $metrics = null, string $channel = 'ws'): void
+    public static function recordHeartbeat(int $id, mixed $metrics = null, string $channel = 'ws', mixed $state = null): void
     {
-        // Query builder update, so the heartbeat does not touch updated_at (time of the last report).
-        $updated = static::query()->whereKey($id)->toBase()->update([
+        $values = [
             'last_seen_at' => now(),
             $channel === 'ws' ? 'last_ws_at' : 'last_http_at' => now(),
-        ]);
+        ];
+        if ($state = self::sanitizeLiveState($state)) {
+            $values['live_state'] = json_encode($state);
+            $values['live_state_at'] = now();
+        }
+
+        // One UPDATE (atomic, no read-modify-write) through the query builder, so the heartbeat
+        // does not touch updated_at (time of the last report) or the report data.
+        $updated = static::query()->whereKey($id)->toBase()->update($values);
 
         if ($updated && $metrics = DeviceMetric::sanitize($metrics)) {
             DeviceMetric::query()->create($metrics + ['device_id' => $id]);
         }
+    }
+
+    /**
+     * Keeps only known fields and values: {restart_required: bool, services: {name: state},
+     * containers: {name: state}}. Returns null when nothing usable is left.
+     */
+    public static function sanitizeLiveState(mixed $state): ?array
+    {
+        if (! is_array($state)) {
+            return null;
+        }
+
+        $clean = [];
+        if (array_key_exists('restart_required', $state)) {
+            $clean['restart_required'] = filter_var($state['restart_required'], FILTER_VALIDATE_BOOLEAN);
+        }
+        foreach (['services' => self::SERVICE_STATES, 'containers' => self::CONTAINER_STATES] as $key => $allowed) {
+            if (! isset($state[$key]) || ! is_array($state[$key])) {
+                continue;
+            }
+            $clean[$key] = [];
+            foreach (array_slice($state[$key], 0, 2000, true) as $name => $value) {
+                if (is_string($name) && $name !== '' && strlen($name) <= 256 && in_array($value, $allowed, true)) {
+                    $clean[$key][$name] = $value;
+                }
+            }
+        }
+
+        return $clean === [] ? null : $clean;
+    }
+
+    /** The live state when it is newer than the last report, otherwise null (the report wins). */
+    public function getLiveStateAttribute(): ?array
+    {
+        $value = $this->attributes['live_state'] ?? null;
+        if ($value === null || $this->live_state_at === null || ($this->updated_at !== null && $this->live_state_at->lt($this->updated_at))) {
+            return null;
+        }
+
+        return json_decode($value, true) ?: null;
+    }
+
+    /**
+     * Removes and returns the queued commands atomically: a command queued at the same time is
+     * either returned now or stays queued for the next report, it is never lost.
+     */
+    public static function takeCommands(int $id): array
+    {
+        $taken = [];
+        self::swapCommands($id, function (array $commands) use (&$taken) {
+            $taken = $commands;
+
+            return [];
+        });
+
+        return $taken;
+    }
+
+    /** Compare-and-swap on the commands column, retried when another request changed it meanwhile. */
+    private static function swapCommands(int $id, callable $change): bool
+    {
+        for ($attempt = 0; $attempt < 10; $attempt++) {
+            $current = static::query()->whereKey($id)->toBase()->value('commands');
+            $next = json_encode(array_values($change((array) (json_decode((string) $current, true) ?? []))));
+            if ($next === $current) {
+                return true;
+            }
+
+            $query = static::query()->whereKey($id)->toBase();
+            $current === null ? $query->whereNull('commands') : $query->where('commands', $current);
+            if ($query->update(['commands' => $next]) === 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function metrics(): HasMany
@@ -59,12 +148,21 @@ class Device extends Model
      */
     public function queueCommand(string $command): bool
     {
-        if (! in_array($command, self::COMMANDS, true) || in_array($command, $this->commands ?? [], true) || $this->offline) {
+        if (! in_array($command, self::COMMANDS, true) || $this->offline) {
             return false;
         }
 
-        $this->commands = array_merge($this->commands ?? [], [$command]);
-        $this->save();
+        $queued = false;
+        self::swapCommands($this->id, function (array $commands) use ($command, &$queued) {
+            $queued = ! in_array($command, $commands, true);
+
+            return $queued ? [...$commands, $command] : $commands;
+        });
+        if (! $queued) {
+            return false;
+        }
+        $this->commands = self::query()->whereKey($this->id)->value('commands');
+        $this->syncOriginalAttribute('commands');
 
         // Instant delivery over WebSocket; the command stays queued for the HTTP report as a fallback.
         rescue(fn () => \App\Events\DeviceCommandIssued::dispatch($this, $command));
@@ -198,7 +296,11 @@ class Device extends Model
 
     public function getRestartPendingAttribute()
     {
-        if (null !== $this->data->machine->RestartRequired) {
+        if (isset($this->liveState['restart_required'])) {
+            return $this->liveState['restart_required'];
+        }
+
+        if (null !== ($this->data->machine->RestartRequired ?? null)) {
             if (filter_var($this->data->machine->RestartRequired, FILTER_VALIDATE_BOOLEAN) === true) {
                 return true;
             }
@@ -242,7 +344,10 @@ class Device extends Model
     /** Running services and the ones that failed or should run but do not, failed first. */
     public function getServicesAttribute(): array
     {
-        $services = self::listOf(json_decode(json_encode($this->data->services ?? []), true));
+        $services = self::withLiveStates(
+            self::listOf(json_decode(json_encode($this->data->services ?? []), true)),
+            $this->liveState['services'] ?? null,
+        );
         $order = ['failed' => 0, 'stopped' => 1, 'running' => 2];
         usort($services, fn ($a, $b) => [$order[$a['State'] ?? ''] ?? 1, strtolower($a['Name'] ?? '')] <=> [$order[$b['State'] ?? ''] ?? 1, strtolower($b['Name'] ?? '')]);
 
@@ -257,11 +362,59 @@ class Device extends Model
         }
 
         $docker = json_decode(json_encode($this->data->docker), true);
+        $live = $this->liveState['containers'] ?? null;
+
+        $containers = array_map(function (array $container) {
+            // "unhealthy" is a running container whose health check fails.
+            if (($container['State'] ?? null) === 'unhealthy') {
+                $container['State'] = 'running';
+                $container['Health'] = 'unhealthy';
+            }
+
+            return $container;
+        }, self::withLiveStates(array_map(function (array $container) {
+            // Same naming as the live state, so an unchanged container keeps its status text.
+            if (($container['State'] ?? null) === 'running' && str_contains($container['Status'] ?? '', '(unhealthy)')) {
+                $container['State'] = 'unhealthy';
+            }
+
+            return $container;
+        }, self::listOf($docker['containers'] ?? [])), $live));
 
         return [
-            'error' => $docker['error'] ?? null,
-            'containers' => self::listOf($docker['containers'] ?? []),
+            // A newer live state means the agent reads the containers again.
+            'error' => $live !== null ? null : ($docker['error'] ?? null),
+            'containers' => $containers,
         ];
+    }
+
+    /**
+     * Applies the live states to the items of the last report. The live state lists every item
+     * (running and failed / stopped ones): items it no longer has are gone, new ones are added
+     * with their name only. A changed item loses its report-time status text.
+     */
+    private static function withLiveStates(array $items, ?array $states): array
+    {
+        if ($states === null) {
+            return $items;
+        }
+
+        $byName = [];
+        foreach ($items as $item) {
+            $byName[$item['Name'] ?? ''] = $item;
+        }
+
+        $merged = [];
+        foreach ($states as $name => $state) {
+            $item = $byName[$name] ?? ['Name' => $name];
+            if (($item['State'] ?? null) !== $state) {
+                $item['State'] = $state;
+                unset($item['Status'], $item['Health']);
+            }
+            $merged[] = $item;
+        }
+
+        return $merged;
     }
 
     /** Null until the agent reported disk health (agents before 1.2.0). */
