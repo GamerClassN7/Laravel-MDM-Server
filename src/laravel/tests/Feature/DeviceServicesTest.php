@@ -114,6 +114,23 @@ class DeviceServicesTest extends TestCase
             ->assertSee('5.5.0 → 5.6.1');
     }
 
+    public function test_detail_splits_module_updates_of_agents_on_windows_powershell(): void
+    {
+        // Agents up to 1.7.2 on Windows PowerShell 5.1 sent the modules of an edition as one row of lists.
+        $this->actingAs(User::factory()->create());
+        $device = $this->report(['module_updates' => [
+            ['Name' => ['JiraPS', 'Microsoft.WinGet.Client'], 'Version' => ['2.14.7', '1.10.340'], 'Available' => ['2.16.0', '1.29.380'], 'Edition' => 'Windows PowerShell', 'User' => [null, null], 'Error' => [null, null]],
+        ]]);
+
+        $this->assertSame([
+            ['Name' => 'JiraPS', 'Version' => '2.14.7', 'Available' => '2.16.0', 'Edition' => 'Windows PowerShell', 'User' => null, 'Error' => null],
+            ['Name' => 'Microsoft.WinGet.Client', 'Version' => '1.10.340', 'Available' => '1.29.380', 'Edition' => 'Windows PowerShell', 'User' => null, 'Error' => null],
+        ], $device->moduleUpdates);
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('JiraPS')
+            ->assertSee('1.10.340 → 1.29.380');
+    }
+
     public function test_detail_shows_collection_errors(): void
     {
         $this->actingAs(User::factory()->create());
