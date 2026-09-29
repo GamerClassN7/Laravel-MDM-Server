@@ -4,7 +4,6 @@ namespace Tests\Feature;
 
 use App\Models\Device;
 use App\Models\User;
-use App\Types\PermissionType;
 use App\View\Components\Widgets\DeviceStatus;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Blade;
@@ -43,7 +42,7 @@ class DashboardTest extends TestCase
 
     public function test_dashboard_page_renders_for_any_user(): void
     {
-        // Not the owner of the shared default dashboard and not a system admin.
+        // Not the owner of the shared default dashboard and not a system admin: may view it.
         $this->actingAs(User::factory()->create());
 
         $this->get('/dashboard')->assertOk()->assertSee('Overview');
@@ -77,12 +76,26 @@ class DashboardTest extends TestCase
         $this->assertArrayNotHasKey('bogus', $widget->config);
     }
 
-    public function test_system_admins_get_the_admin_permission(): void
+    public function test_owners_and_system_admins_may_edit_dashboards(): void
     {
-        $user = User::factory()->create();
-        config(['boilerplate.system_admins' => [(string) $user->id]]);
+        $owner = User::factory()->create();
+        $admin = User::factory()->create();
+        $other = User::factory()->create();
+        config(['boilerplate.system_admins' => [(string) $admin->id]]);
+        $dashboardClass = config('boilerplate-dashboard.models.dashboard');
+        $shared = $dashboardClass::query()->first();
+        $private = new $dashboardClass(['name' => 'Mine', 'is_shared' => false, 'body' => []]);
+        $private->user_id = $owner->id;
+        $private->save();
 
-        $this->assertSame(PermissionType::ADMIN, $user->fresh()->permission);
-        $this->assertSame(PermissionType::USER, User::factory()->create()->permission);
+        $this->assertTrue($owner->fresh()->can('update', $private));
+        $this->assertTrue($admin->fresh()->can('update', $private));
+        $this->assertTrue($admin->fresh()->can('update', $shared));
+        $this->assertFalse($other->fresh()->can('update', $shared));
+        $this->assertFalse($other->fresh()->can('view', $private));
+        $this->assertTrue($other->fresh()->can('view', $shared));
+
+        $this->actingAs($admin->fresh())->get('/dashboard/editor?dashboard='.$shared->id)->assertOk();
+        $this->actingAs($other->fresh())->get('/dashboard/editor?dashboard='.$shared->id)->assertForbidden();
     }
 }

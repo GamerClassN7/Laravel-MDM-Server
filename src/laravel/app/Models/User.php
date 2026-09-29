@@ -5,7 +5,6 @@ namespace App\Models;
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 
 use App\Observers\UserObserver;
-use App\Types\PermissionType;
 use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -51,14 +50,6 @@ class User extends Authenticatable
      *
      * @return array<string, string>
      */
-    /** Used by the dashboard views: system admins may edit every dashboard. */
-    protected function permission(): Attribute
-    {
-        return Attribute::make(
-            get: fn () => $this->isSystemAdmin ? PermissionType::ADMIN : PermissionType::USER,
-        );
-    }
-
     protected function casts(): array
     {
         return [
