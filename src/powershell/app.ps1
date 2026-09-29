@@ -71,7 +71,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.6.0'
+$AgentVersion = '1.6.1'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent')
 # $IsLinux only exists in PowerShell 6+, Windows PowerShell 5.1 is always Windows.
 $OnLinux = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
@@ -1044,11 +1044,9 @@ function Get-CachedInventory {
 
     try {
         $cache = Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json
-        # Collected by another agent version (update): it may lack what this one reports, collect again.
-        if ($cache.agent_version -ne $AgentVersion) {
-            return $null
-        }
-        return @{ CollectedAt = [DateTime]$cache.collected_at; Data = $cache.data }
+        # Collected by another agent version (update): still reported until the new one is ready (the
+        # portal would lose its update list meanwhile), but collected again right away.
+        return @{ CollectedAt = [DateTime]$cache.collected_at; Data = $cache.data; Stale = $cache.agent_version -ne $AgentVersion }
     }
     catch {
         return $null
@@ -1684,10 +1682,10 @@ function Start-Agent {
     Write-AgentLog ('Agent {0} started (PowerShell {1}, {2}, server {3})' -f $AgentVersion, $PSVersionTable.PSVersion, $(if ($OnLinux) { 'Linux' } else { 'Windows' }), $ServerUrl)
     $inventory = Get-CachedInventory
     # First inventory a few minutes after start, so it does not add to the load during boot.
-    $nextInventory = if ($inventory) { $inventory.CollectedAt.AddSeconds($InventoryInterval) } else { (Get-Date).AddMinutes(5) }
+    $nextInventory = if ($inventory -and -not $inventory.Stale) { $inventory.CollectedAt.AddSeconds($InventoryInterval) } elseif ($inventory) { (Get-Date).AddMinutes(1) } else { (Get-Date).AddMinutes(5) }
     $inventoryJob = $null
     $health = Get-CachedInventory -Name 'health'
-    $nextHealth = if ($health) { $health.CollectedAt.AddSeconds($HealthInterval) } else { (Get-Date).AddMinutes(2) }
+    $nextHealth = if ($health -and -not $health.Stale) { $health.CollectedAt.AddSeconds($HealthInterval) } else { (Get-Date).AddMinutes(2) }
     $healthJob = $null
     $lastReport = [DateTime]::MinValue
     $realtime = $null
