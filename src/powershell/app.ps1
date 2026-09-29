@@ -16,6 +16,9 @@
 .PARAMETER InventoryInterval
     Seconds between the (expensive) Windows Update and winget checks, default 6 hours.
 
+.PARAMETER InstallPath
+    Where -Install copies the agent to, default %ProgramData%\Laravel-MDM or /opt/laravel-mdm.
+
 .PARAMETER NoRealtime
     Do not use the WebSocket, rely on HTTP only.
 
@@ -56,13 +59,17 @@ param (
     [string]
     $ReverbKey,
     [switch]
-    $NoRealtime
+    $NoRealtime,
+    [string]
+    $InstallPath
 )
 
 $ErrorActionPreference = 'Stop'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates')
 # $IsLinux only exists in PowerShell 6+, Windows PowerShell 5.1 is always Windows.
 $OnLinux = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
+# Token, logs and cache live next to the script; -Install moves the agent to its install directory first.
+$AgentDir = $PSScriptRoot
 
 function Get-MachineInfo {
     $DnsInfo = [System.Net.Dns]::GetHostByName($env:computerName)
@@ -341,7 +348,7 @@ function Write-AgentLog {
         $Message
     )
 
-    $LogPath = "$PSScriptRoot/agent.log"
+    $LogPath = "$AgentDir/agent.log"
     if ((Test-Path -Path $LogPath) -and (Get-Item -Path $LogPath).Length -gt 1MB) {
         Move-Item -Path $LogPath -Destination "$LogPath.1" -Force
     }
@@ -394,7 +401,7 @@ function Register-MDMDevice {
 function Get-AgentToken {
     if ($OnLinux) {
         # SecureString export is Windows only (DPAPI); keep the token in a root-only file.
-        $tokenPath = "$PSScriptRoot/token"
+        $tokenPath = "$AgentDir/token"
         if (-not (Test-Path -Path $tokenPath)) {
             if (-not $EnrolmentCode) {
                 $script:EnrolmentCode = Read-Host -Prompt 'Enrolment code'
@@ -405,7 +412,7 @@ function Get-AgentToken {
         return (Get-Content -Path $tokenPath -Raw).Trim()
     }
 
-    $AuthFilePath = "$PSScriptRoot/Token.xml"
+    $AuthFilePath = "$AgentDir/Token.xml"
     if (-not (Test-Path -Path $AuthFilePath)) {
         if (-not $EnrolmentCode) {
             $script:EnrolmentCode = Read-Host -Prompt 'Enrolment code'
@@ -444,8 +451,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$pwsh -NoLogo -NoProfile -NonInteractive -File "$PSScriptRoot/app.ps1" $(Get-AgentArguments)
-WorkingDirectory=$PSScriptRoot
+ExecStart=$pwsh -NoLogo -NoProfile -NonInteractive -File "$AgentDir/app.ps1" $(Get-AgentArguments)
+WorkingDirectory=$AgentDir
 Restart=always
 RestartSec=10
 Nice=10
@@ -465,7 +472,7 @@ function Register-AgentTask {
     $Trigger1 = New-ScheduledTaskTrigger -AtStartup
     $Trigger2 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15)
     $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-    $arguments = '-WindowStyle Hidden -ExecutionPolicy Bypass -NoLogo -File "{0}\app.ps1" {1}' -f $PSScriptRoot, (Get-AgentArguments)
+    $arguments = '-WindowStyle Hidden -ExecutionPolicy Bypass -NoLogo -File "{0}\app.ps1" {1}' -f $AgentDir, (Get-AgentArguments)
     $Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument $arguments
 
     Register-ScheduledTask -TaskName "Laravel-MDM-Agent" -Trigger @($Trigger1, $Trigger2) -Settings $Settings -User "NT AUTHORITY\SYSTEM" -Action $Action -RunLevel Highest -Force | Out-Null
@@ -495,7 +502,7 @@ function Start-InventoryCollection {
 }
 
 function Get-CachedInventory {
-    $path = "$PSScriptRoot/inventory.json"
+    $path = "$AgentDir/inventory.json"
     if (-not (Test-Path -Path $path)) {
         return $null
     }
@@ -515,7 +522,7 @@ function Save-CachedInventory {
         $Data
     )
 
-    @{ collected_at = (Get-Date).ToString('o'); data = $Data } | ConvertTo-Json -Depth 6 -Compress | Set-Content -Path "$PSScriptRoot/inventory.json" -Encoding UTF8
+    @{ collected_at = (Get-Date).ToString('o'); data = $Data } | ConvertTo-Json -Depth 6 -Compress | Set-Content -Path "$AgentDir/inventory.json" -Encoding UTF8
 }
 
 function Get-Report {
@@ -941,6 +948,17 @@ if ($env:MDM_AGENT_NO_START) {
 }
 
 if ($Install) {
+    # The installer may run from a temporary download, install the agent to a permanent location.
+    if (-not $InstallPath) {
+        $InstallPath = if ($OnLinux) { '/opt/laravel-mdm' } else { Join-Path $env:ProgramData 'Laravel-MDM' }
+    }
+    New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
+    $AgentDir = (Resolve-Path -Path $InstallPath).Path
+    $target = Join-Path $AgentDir 'app.ps1'
+    if ($PSCommandPath -ne $target) {
+        Copy-Item -Path $PSCommandPath -Destination $target -Force
+    }
+
     Get-AgentToken | Out-Null
     if ($OnLinux) { Register-AgentService } else { Register-AgentTask }
     return

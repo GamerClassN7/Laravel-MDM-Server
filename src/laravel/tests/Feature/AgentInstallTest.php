@@ -31,8 +31,9 @@ class AgentInstallTest extends TestCase
             $this->assertStringContainsString("'".url('agent/app.ps1')."'", $command);
             $this->assertStringContainsString("-ServerUrl '".url('/')."' -EnrolmentCode 1234 -Install", $command);
         }
-        $this->assertStringContainsString('$IsWindows', $commands['pwsh']);
-        $this->assertStringContainsString('/opt/laravel-mdm', $commands['pwsh']);
+        $this->assertStringStartsWith('iwr -useb ', $commands['windows']);
+        $this->assertStringContainsString('& powershell -ExecutionPolicy Bypass -File "$env:TEMP\\mdm-agent.ps1"', $commands['windows']);
+        $this->assertStringContainsString('& pwsh -ExecutionPolicy Bypass -File $f', $commands['pwsh']);
     }
 
     public function test_agent_download_url_can_be_overridden(): void

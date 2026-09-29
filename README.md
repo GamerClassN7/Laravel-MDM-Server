@@ -147,9 +147,15 @@ a copy button:
 - **PowerShell 7** – run in pwsh as Administrator on Windows, or with `sudo pwsh` on Debian / Ubuntu
   ([install PowerShell](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu)).
 
-The command downloads the agent from the server (`/agent/app.ps1`, the version matching the server),
-to `%ProgramData%\Laravel-MDM` on Windows or `/opt/laravel-mdm` on Linux, enrols the device and
-installs the service. Set `AGENT_DOWNLOAD_URL` to download it from elsewhere, e.g. a GitHub release.
+The command downloads the agent from the server (`/agent/app.ps1`, the version matching the server)
+to a temporary file and runs its installer, which copies the agent to `%ProgramData%\Laravel-MDM`
+on Windows or `/opt/laravel-mdm` on Linux (`-InstallPath` to change), enrols the device and installs
+the service:
+
+```powershell
+iwr -useb 'https://mdm.example.com/agent/app.ps1' -OutFile "$env:TEMP\mdm-agent.ps1"; & powershell -ExecutionPolicy Bypass -File "$env:TEMP\mdm-agent.ps1" -ServerUrl 'https://mdm.example.com' -EnrolmentCode 1234 -Install
+```
+ Set `AGENT_DOWNLOAD_URL` to download it from elsewhere, e.g. a GitHub release.
 
 Manually:
 
