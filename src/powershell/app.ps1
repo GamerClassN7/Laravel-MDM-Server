@@ -681,10 +681,32 @@ function Get-LinuxNetworks {
 }
 
 function Get-AptUpdates {
-    # Reads the local apt cache only, no network access.
+    # Reads the local apt cache only, no network access. "apt list --upgradable" also lists
+    # packages apt will not install now, so a simulated upgrade (as Install updates runs it)
+    # tells which ones are installable, deferred by phasing or held back.
+    $simulation = @(apt-get -s -q -o Debug::NoLocking=1 --with-new-pkgs upgrade 2>$null)
+    $installable = @{}
+    $phased = @{}
+    $section = $null
+    foreach ($line in $simulation) {
+        if ($line -match '^Inst (\S+)') {
+            $installable[$Matches[1]] = $true
+        } elseif ($line -match '^\S.*:\s*$') {
+            # A list header, e.g. "The following upgrades have been deferred due to phasing:" (apt 2)
+            # or "Not upgrading yet due to phasing:" (apt 3).
+            $section = if ($line -match 'phasing') { 'phased' } else { 'other' }
+        } elseif ($section -eq 'phased' -and $line -match '^\s+\S') {
+            foreach ($name in ($line.Trim() -split '\s+')) { $phased[$name] = $true }
+        } elseif ($line -notmatch '^\s') {
+            $section = $null
+        }
+    }
+
     apt list --upgradable 2>$null | Where-Object { $_ -match '^(\S+?)/\S+\s+(\S+)' } | ForEach-Object {
+        $name = $Matches[1]
         [PSCustomObject]@{
-            Title          = "$($Matches[1]) $($Matches[2])"
+            Title          = "$name $($Matches[2])"
+            Status         = if ($installable[$name]) { 'installable' } elseif ($phased[$name]) { 'phased' } else { 'held' }
             IsDownloaded   = $false
             RebootRequired = $false
         }
@@ -1063,7 +1085,8 @@ function Start-UpdateJob {
             "apt-get upgrade: exit $code$(if ($summary) { ', ' + $summary.Trim() })$(if ($code) { ': ' + (Get-Tail $output) })"
             $keptBack = $false
             $held = foreach ($line in $output) {
-                if ($line -match 'kept back') { $keptBack = $true; continue }
+                # apt 2: "... kept back:" / "... deferred due to phasing:", apt 3: "Not upgrading ...:"
+                if ($line -match '(kept back|phasing|Not upgrading).*:\s*$') { $keptBack = $true; continue }
                 if ($keptBack -and $line -match '^\s+\S') { $line.Trim() } elseif ($keptBack) { $keptBack = $false }
             }
             if ($held) { "apt-get upgrade: kept back (phased or held): $($held -join ' ')" }
@@ -1541,6 +1564,7 @@ function Start-Agent {
     $nextConnect = Get-Date
     $lastActivity = Get-Date
     $lastHeartbeat = [DateTime]::MinValue
+    $lastPackageCheck = [DateTime]::MinValue
 
     while ($true) {
         try {
@@ -1566,6 +1590,16 @@ function Start-Agent {
             if (Complete-UpdateJob) {
                 # Show what is left right away instead of the pre-update list for 6 hours.
                 $nextInventory = Get-Date
+            }
+            if ($OnLinux -and $inventory -and -not $inventoryJob -and ((Get-Date) - $lastPackageCheck).TotalSeconds -ge 60) {
+                # Packages installed outside the agent (apt, unattended-upgrades): collect again once
+                # dpkg has been quiet for 2 minutes, so the portal does not list installed updates.
+                $lastPackageCheck = Get-Date
+                $dpkgChanged = (Get-Item -Path /var/lib/dpkg/status -ErrorAction SilentlyContinue).LastWriteTime
+                if ($dpkgChanged -gt $inventory.CollectedAt -and $dpkgChanged -lt (Get-Date).AddMinutes(-2) -and $nextInventory -gt (Get-Date)) {
+                    Write-AgentLog 'Packages changed, collecting the inventory again'
+                    $nextInventory = Get-Date
+                }
             }
             if (-not $inventoryJob -and (Get-Date) -ge $nextInventory) {
                 Write-AgentLog 'Inventory collection started'

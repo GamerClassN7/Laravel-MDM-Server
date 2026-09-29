@@ -2,6 +2,8 @@
     @php
         $moduleUpdates = $selectedDevice->moduleUpdates;
         $hasUpdates = count($selectedDevice->updates) > 0 || count($selectedDevice->apps_packages_updates) > 0 || count($moduleUpdates) > 0;
+        // Phased and held back updates cannot be installed now, they do not raise a warning.
+        $pendingUpdates = count($selectedDevice->installableUpdates) + count($selectedDevice->apps_packages_updates) + count($moduleUpdates);
         $power = $selectedDevice->batteryLevel;
         $pluggedIn = $selectedDevice->pluggedIn;
         $services = $selectedDevice->services;
@@ -22,9 +24,9 @@
                         </div>
                     @else
                         <h2 class="mb-1">
-                            @if (count($selectedDevice->updates) > 1)
+                            @if (count($selectedDevice->installableUpdates) > 1)
                                 <i class="fas fa-exclamation-triangle text-danger me-2" title="{{ __('Updates available') }}"></i>
-                            @elseif ($hasUpdates)
+                            @elseif ($pendingUpdates > 0)
                                 <i class="fas fa-exclamation-triangle text-warning me-2" title="{{ __('Updates available') }}"></i>
                             @endif
                             <i class="{{ $selectedDevice->typeIcon }} text-body-secondary me-2" title="{{ __(ucfirst($selectedDevice->type)) }}"></i>
@@ -172,7 +174,24 @@
                         <h5>{{ __('Operating system') }}</h5>
                         <ul class="list-group mb-3">
                             @foreach ($selectedDevice->updates as $update)
-                                <li class="list-group-item">{{ $update['Title'] }}</li>
+                                @php
+                                    $deferred = match ($update['Status']) {
+                                        'phased' => ['icon' => 'fas fa-hourglass-half', 'label' => __('Phased'), 'title' => __('Rolled out gradually by the distribution, apt installs it later on its own.')],
+                                        'held' => ['icon' => 'fas fa-pause-circle', 'label' => __('Held back'), 'title' => __('apt does not install it now (held, pinned, or it needs other packages to change).')],
+                                        default => null,
+                                    };
+                                @endphp
+                                <li class="list-group-item d-flex justify-content-between align-items-center gap-2 {{ $deferred ? 'text-body-secondary' : '' }}" wire:key="os-update-{{ $loop->index }}">
+                                    <span>
+                                        @if ($deferred)
+                                            <i class="{{ $deferred['icon'] }} me-2" title="{{ $deferred['title'] }}"></i>
+                                        @endif
+                                        {{ $update['Title'] }}
+                                    </span>
+                                    @if ($deferred)
+                                        <x-badge color="secondary" title="{{ $deferred['title'] }}" variant="subtle">{{ $deferred['label'] }}</x-badge>
+                                    @endif
+                                </li>
                             @endforeach
                         </ul>
                     @endif

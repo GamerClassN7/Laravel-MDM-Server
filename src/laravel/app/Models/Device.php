@@ -406,12 +406,32 @@ class Device extends Model
         return self::listOf(json_decode(json_encode($this->data->module_updates ?? []), true));
     }
 
+    /**
+     * OS updates, installable ones first. Status (Linux agents 1.6+): installable, phased (apt
+     * defers it, rolled out gradually) or held (apt will not install it now); missing means installable.
+     */
     public function getUpdatesAttribute()
     {
-        if (isset($this->data->os_updates)) {
-            return (array)  self::stdToArray($this->data->os_updates);
+        if (! isset($this->data->os_updates)) {
+            return [];
         }
-        return [];
+
+        $order = ['installable' => 0, 'phased' => 1, 'held' => 2];
+        $updates = array_map(function ($update) {
+            $update = (array) $update;
+            $update['Status'] = in_array($update['Status'] ?? null, ['phased', 'held'], true) ? $update['Status'] : 'installable';
+
+            return $update;
+        }, (array) self::stdToArray($this->data->os_updates));
+        usort($updates, fn ($a, $b) => $order[$a['Status']] <=> $order[$b['Status']]);
+
+        return $updates;
+    }
+
+    /** OS updates Install updates can install now (without phased and held back ones). */
+    public function getInstallableUpdatesAttribute(): array
+    {
+        return array_values(array_filter($this->updates, fn ($update) => $update['Status'] === 'installable'));
     }
 
     public function getNetworksAttribute()

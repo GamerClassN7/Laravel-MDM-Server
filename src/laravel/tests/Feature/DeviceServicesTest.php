@@ -144,4 +144,40 @@ class DeviceServicesTest extends TestCase
         ])->assertOk();
         $this->assertCount(1, $device->fresh()->docker['containers']);
     }
+
+    public function test_phased_and_held_updates_are_marked_and_not_counted(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $device = $this->report(['os_updates' => [
+            ['Title' => 'drkonqi 6.6.6-0ubuntu0.1', 'Status' => 'phased'],
+            ['Title' => 'forticlient 7.4.8.1904', 'Status' => 'held'],
+            ['Title' => 'curl 8.18.0-1ubuntu2.7', 'Status' => 'installable'],
+        ]]);
+
+        $this->assertSame(['curl 8.18.0-1ubuntu2.7', 'drkonqi 6.6.6-0ubuntu0.1', 'forticlient 7.4.8.1904'], array_column($device->updates, 'Title'));
+        $this->assertCount(1, $device->installableUpdates);
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('Phased')
+            ->assertSee('Held back')
+            ->assertSeeHtml('fa-hourglass-half')
+            ->assertSeeHtml('fa-pause-circle')
+            ->assertSeeHtml('text-warning me-2" title="Updates available"');
+    }
+
+    public function test_only_deferred_updates_raise_no_warning(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $device = $this->report(['os_updates' => [['Title' => 'drkonqi 6.6.6', 'Status' => 'phased']]]);
+
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('drkonqi 6.6.6')
+            ->assertDontSeeHtml('title="Updates available"');
+
+        // Windows and older agents send no status: installable.
+        $this->withToken('secret-token')->postJson('/api/device', [
+            'machine' => ['Hostname' => 'srv1', 'Drives' => []],
+            'os_updates' => [['Title' => 'KB5031356']],
+        ])->assertOk();
+        $this->assertCount(1, $device->fresh()->installableUpdates);
+    }
 }

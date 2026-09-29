@@ -174,6 +174,11 @@ charging indicator while the device is on mains power.
 running apt, installs new dependencies, removes nothing), on Windows winget, Windows Update, and on
 both PowerShell module updates. Every step with its result is written to `agent.log`, the full
 output of apt / winget to `updates.log`, and the update list is collected again right after.
+On Linux the update list tells what apt would install now (a simulated `apt-get upgrade`, no
+network): updates deferred by phasing and held back ones (pinned, held, or needing other packages
+to change) are shown with an icon and do not count as available updates. The list is also
+collected again a few minutes after packages are installed outside the agent (apt,
+unattended-upgrades).
 
 ### Installation
 
