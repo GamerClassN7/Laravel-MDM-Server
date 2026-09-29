@@ -437,12 +437,24 @@ function Get-AgentArguments {
     return $arguments
 }
 
-function Register-AgentService {
-    # Linux: systemd service running as root, restarted when it exits, low CPU and I/O priority.
-    if ((id -u) -ne '0') {
-        throw 'Run the installation as root, e.g. sudo pwsh ./app.ps1 ... -Install'
+function Remove-TemporaryInstaller {
+    # The install command downloads the agent to the temp directory; the installed copy lives elsewhere.
+    if ($PSCommandPath.StartsWith([System.IO.Path]::GetTempPath())) {
+        Remove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-AgentAdmin {
+    if ($OnLinux) {
+        return (id -u) -eq '0'
     }
 
+    $principal = New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
+    return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Register-AgentService {
+    # Linux: systemd service running as root, restarted when it exits, low CPU and I/O priority.
     $pwsh = (Get-Process -Id $PID).Path
     $unit = @"
 [Unit]
@@ -948,6 +960,14 @@ if ($env:MDM_AGENT_NO_START) {
 }
 
 if ($Install) {
+    # Check privileges before anything else, so a failed install does not use up the enrolment code.
+    if (-not (Test-AgentAdmin)) {
+        $hint = if ($OnLinux) { 'run it with sudo (sudo pwsh ...)' } else { 'run PowerShell as Administrator' }
+        Write-Host "The agent installs a system service and needs administrator rights: $hint." -ForegroundColor Red
+        Remove-TemporaryInstaller
+        exit 1
+    }
+
     # The installer may run from a temporary download, install the agent to a permanent location.
     if (-not $InstallPath) {
         $InstallPath = if ($OnLinux) { '/opt/laravel-mdm' } else { Join-Path $env:ProgramData 'Laravel-MDM' }
@@ -961,6 +981,10 @@ if ($Install) {
 
     Get-AgentToken | Out-Null
     if ($OnLinux) { Register-AgentService } else { Register-AgentTask }
+
+    Remove-TemporaryInstaller
+
+    Write-Host "Laravel-MDM agent installed to $AgentDir and started." -ForegroundColor Green
     return
 }
 

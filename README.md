@@ -153,8 +153,11 @@ on Windows or `/opt/laravel-mdm` on Linux (`-InstallPath` to change), enrols the
 the service:
 
 ```powershell
-iwr -useb 'https://mdm.example.com/agent/app.ps1' -OutFile "$env:TEMP\mdm-agent.ps1"; & powershell -ExecutionPolicy Bypass -File "$env:TEMP\mdm-agent.ps1" -ServerUrl 'https://mdm.example.com' -EnrolmentCode 1234 -Install
+iwr -useb 'https://mdm.example.com/agent/app.ps1' -OutFile ($f = "$env:TEMP\mdm-agent-$(Get-Random).ps1"); if ($?) { & powershell -ExecutionPolicy Bypass -File $f -ServerUrl 'https://mdm.example.com' -EnrolmentCode 1234 -Install }
 ```
+
+The installer needs administrator rights (Administrator on Windows, root via `sudo` on Linux). It
+checks them first and stops without using up the enrolment code when they are missing.
  Set `AGENT_DOWNLOAD_URL` to download it from elsewhere, e.g. a GitHub release.
 
 Manually:
