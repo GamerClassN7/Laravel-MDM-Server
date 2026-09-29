@@ -150,6 +150,47 @@ The agent is designed to stay out of the way:
 - disk health (S.M.A.R.T.) is read once an hour in an idle-priority process and cached in `health.json`;
   on Linux sleeping disks are skipped (`smartctl -n standby`), so the agent never spins them up.
 
+### Feature matrix
+
+✅ supported · ⚠️ partly (see the note) · ❌ not supported
+
+| Feature | Windows | Debian / Ubuntu |
+|---|:---:|:---:|
+| **Agent** | | |
+| PowerShell | ✅ 5.1 or 7 | ✅ 7 |
+| Runs as | scheduled task, `SYSTEM` | systemd service, root |
+| Enrolment with a code, install commands | ✅ | ✅ |
+| Remote agent update | ✅ | ✅ |
+| WebSocket: instant commands, heartbeat | ✅ | ✅ |
+| HTTPS fallback (heartbeat, commands) | ✅ | ✅ |
+| **Monitoring** | | |
+| CPU and RAM (charts) | ✅ | ✅ |
+| OS, uptime, user, CPU, drives, networks | ✅ | ✅ |
+| Restart pending | ✅ | ✅ |
+| Battery and charging | ✅ | ✅ |
+| Virtual machine / container badge | ✅ | ✅ |
+| Services and their state | ✅ automatic services | ✅ systemd units |
+| Docker containers | ✅ when installed | ✅ when installed |
+| Disk health (S.M.A.R.T.) | ✅ | ⚠️ needs smartmontools |
+| **Updates** | | |
+| OS updates | ✅ Windows Update | ✅ apt (phased and held back marked) |
+| Applications | ✅ winget | ✅ flatpak, snap |
+| PowerShell modules (PowerShell Gallery) | ✅ Windows PowerShell and 7 | ✅ PowerShell 7 |
+| Users' own PowerShell modules | ⚠️ listed only | ✅ updated as the user |
+| Newer PowerShell 7 release | ✅ | ✅ |
+| **Commands** | | |
+| Install updates | ✅ Windows Update, winget, modules | ✅ apt, flatpak, snap, modules |
+| Restart / Turn off | ✅ | ✅ |
+
+Notes:
+
+- Disk health is not collected on virtual machines and in containers. On Linux it needs
+  `smartctl` (`apt install smartmontools`).
+- On Windows the agent runs as `SYSTEM`, which cannot act as a logged-on user. Modules installed in
+  a user's own profile are only listed.
+
+Where the data comes from:
+
 | | Windows | Debian / Ubuntu |
 |---|---|---|
 | Report | OS, uptime, user, CPU, battery, drives, networks, pending reboot | the same, from `/etc/os-release`, `/proc`, `df`, `ip` and `/var/run/reboot-required` |
