@@ -32,6 +32,13 @@ class GenerateMenus
             ],
         ];
 
+        if (\Illuminate\Support\Facades\Gate::allows('is-system-admin')) {
+            $menuRoutes['Scripts'] = [
+                'fas fa-scroll',
+                'scripts',
+            ];
+        }
+
         $systemRoutes = [
             'Settings' => [
                 'fas fa-cog',

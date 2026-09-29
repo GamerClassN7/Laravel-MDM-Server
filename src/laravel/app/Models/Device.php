@@ -13,7 +13,7 @@ class Device extends Model
 {
     use HasFactory;
 
-    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'updateAgent'];
+    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'updateAgent', 'runScripts'];
 
     public const TYPE_ICONS = [
         'server' => 'fas fa-server',
@@ -241,6 +241,17 @@ class Device extends Model
     public function getAgentUpdatableAttribute(): bool
     {
         return $this->agent_version !== null;
+    }
+
+    /** Whether the agent allows remediation scripts (config.json on the device, agents 1.7.0+). */
+    public function getScriptsEnabledAttribute(): bool
+    {
+        return ($this->data->machine->ScriptsEnabled ?? false) === true;
+    }
+
+    public function scriptRuns(): HasMany
+    {
+        return $this->hasMany(ScriptRun::class);
     }
 
     /** Agents 1.7.0+ register a key and sign every request; older ones only get the agent update. */

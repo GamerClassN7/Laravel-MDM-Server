@@ -2,6 +2,7 @@
 
 use App\Models\Device;
 use App\Models\Enrolment;
+use App\Models\ScriptRun;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -47,6 +48,8 @@ Route::middleware(['device.signature', 'auth:api'])->post('/device', function (R
     return response()->json([
         // Commands not delivered over the WebSocket; queued meanwhile ones wait for the next report.
         'commands' => Device::takeCommands($device->id),
+        // Script runs queued while the device was offline.
+        'scripts_pending' => $device->signsRequests && ScriptRun::query()->where('device_id', $device->id)->where('status', 'pending')->exists(),
     ]);
 });
 
@@ -148,6 +151,65 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
     // signed for this request, so a command cannot be replayed or injected.
     Route::post('/device/commands/take', function (Request $request) {
         return response()->json(['commands' => Device::takeCommands($request->user()->id)]);
+    });
+
+    // Remediation scripts waiting for this device, each with its manifest signed with the server
+    // key (for this device and run, valid for 24 hours). Taking them marks them sent.
+    Route::get('/device/scripts', function (Request $request) {
+        /** @var Device $device */
+        $device = $request->user();
+        abort_unless($device->signsRequests, 403);
+
+        $runs = ScriptRun::query()->with('script')->where('device_id', $device->id)->where('status', 'pending')->orderBy('id')->limit(20)->get();
+        $payloads = [];
+        foreach ($runs as $run) {
+            if ($run->expires_at->isPast()) {
+                $run->update(['status' => 'expired']);
+                continue;
+            }
+            // The script changed after the run was issued: that version cannot be sent anymore.
+            if ($run->script->fingerprint !== $run->fingerprint) {
+                $run->update(['status' => 'superseded']);
+                continue;
+            }
+            // Only the request that changes it from pending sends it (no double delivery).
+            if (ScriptRun::query()->whereKey($run->id)->where('status', 'pending')->update(['status' => 'sent', 'sent_at' => now()]) === 1) {
+                $payloads[] = $run->toSignedPayload();
+            }
+        }
+
+        return response()->json(['runs' => $payloads]);
+    });
+
+    // The result of a run: exit codes and the output (shortened), for this device's runs only.
+    Route::post('/device/scripts/runs/{run}', function (Request $request, int $run) {
+        /** @var Device $device */
+        $device = $request->user();
+        $scriptRun = ScriptRun::query()->whereKey($run)->where('device_id', $device->id)->first();
+        abort_if($scriptRun === null, 404);
+        if ($scriptRun->status !== 'sent') {
+            return response()->json(['error' => 'not_running'], 409);
+        }
+
+        $status = (string) $request->json('status');
+        $exit = fn (string $key) => is_numeric($request->json($key)) ? max(-32768, min(32767, (int) $request->json($key))) : null;
+        $error = $request->json('error');
+        // The agent reports the fingerprint it verified and ran.
+        if ($request->json('fingerprint') !== $scriptRun->fingerprint && $status !== 'rejected') {
+            $status = 'error';
+            $error = 'The device ran a different fingerprint';
+        }
+
+        $scriptRun->status = in_array($status, ScriptRun::RESULTS, true) ? $status : 'error';
+        $scriptRun->detection_exit = $exit('detection_exit');
+        $scriptRun->remediation_exit = $exit('remediation_exit');
+        $scriptRun->post_detection_exit = $exit('post_detection_exit');
+        $scriptRun->output = mb_strcut((string) $request->json('output'), 0, ScriptRun::MAX_OUTPUT) ?: null;
+        $scriptRun->error = is_string($error) && $error !== '' ? mb_strcut($error, 0, 1000) : null;
+        $scriptRun->finished_at = now();
+        $scriptRun->save();
+
+        return response()->json(['status' => $scriptRun->status]);
     });
 
     // Agents before 1.7.0 acknowledge a command before executing it so it is not delivered twice.
