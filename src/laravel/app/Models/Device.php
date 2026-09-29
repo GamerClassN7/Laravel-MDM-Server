@@ -239,6 +239,68 @@ class Device extends Model
         return [];
     }
 
+    /** Running services and the ones that failed or should run but do not, failed first. */
+    public function getServicesAttribute(): array
+    {
+        $services = self::listOf(json_decode(json_encode($this->data->services ?? []), true));
+        $order = ['failed' => 0, 'stopped' => 1, 'running' => 2];
+        usort($services, fn ($a, $b) => [$order[$a['State'] ?? ''] ?? 1, strtolower($a['Name'] ?? '')] <=> [$order[$b['State'] ?? ''] ?? 1, strtolower($b['Name'] ?? '')]);
+
+        return $services;
+    }
+
+    /** Null when Docker is not installed on the device. */
+    public function getDockerAttribute(): ?array
+    {
+        if (! isset($this->data->docker)) {
+            return null;
+        }
+
+        $docker = json_decode(json_encode($this->data->docker), true);
+
+        return [
+            'error' => $docker['error'] ?? null,
+            'containers' => self::listOf($docker['containers'] ?? []),
+        ];
+    }
+
+    /** Null until the agent reported disk health (agents before 1.2.0). */
+    public function getDiskHealthAttribute(): ?array
+    {
+        if (! isset($this->data->disk_health)) {
+            return null;
+        }
+
+        $health = json_decode(json_encode($this->data->disk_health), true);
+
+        return [
+            'error' => $health['error'] ?? null,
+            'disks' => self::listOf($health['disks'] ?? []),
+        ];
+    }
+
+    /** Any disk reporting a failed or warning SMART status. */
+    public function getDiskHealthProblemAttribute(): bool
+    {
+        foreach ($this->diskHealth['disks'] ?? [] as $disk) {
+            if (in_array($disk['Health'] ?? null, ['failed', 'warning'], true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** A single item serialized by PowerShell as an object instead of a list. */
+    private static function listOf(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        return array_is_list($value) ? array_values(array_filter($value, 'is_array')) : [$value];
+    }
+
     private static function  stdToArray($stdObject){
         if (is_object($stdObject)){
             return [json_decode(json_encode($stdObject), true)];

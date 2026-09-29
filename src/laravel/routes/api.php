@@ -17,7 +17,6 @@ Route::middleware('auth:api')->post('/device', function (Request $request) {
     }
 
     $data = json_decode($request->getContent(), true);
-    Log::info($data);
 
     if ($data === null) {
         return;

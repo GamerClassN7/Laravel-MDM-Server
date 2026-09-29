@@ -16,6 +16,9 @@
 .PARAMETER InventoryInterval
     Seconds between the (expensive) Windows Update and winget checks, default 6 hours.
 
+.PARAMETER HealthInterval
+    Seconds between the disk health (S.M.A.R.T.) checks, default 1 hour.
+
 .PARAMETER InstallPath
     Where -Install copies the agent to, default %ProgramData%\Laravel-MDM or /opt/laravel-mdm.
 
@@ -49,6 +52,8 @@ param (
     $HeartbeatInterval = 30,
     [int]
     $InventoryInterval = 21600,
+    [int]
+    $HealthInterval = 3600,
     [string]
     $ReverbHost,
     [int]
@@ -66,7 +71,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.1.0'
+$AgentVersion = '1.2.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent')
 # $IsLinux only exists in PowerShell 6+, Windows PowerShell 5.1 is always Windows.
 $OnLinux = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
@@ -233,50 +238,162 @@ function Test-PendingReboot {
     return $false
 }
 
-function Get-DockerContainers {
-    begin {
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        $upgradeResult = $(docker ps --no-trunc | Out-String)
-        $lines = $upgradeResult.Split([Environment]::NewLine)
-
-        $fl = 0
-        while ( -not $lines[$fl].StartsWith("CONTAINER ID")) {
-            $fl++
-        }
-
-        $ContainerIdStart = $lines[$fl].IndexOf("CONTAINER ID")
-        $ImageStart = $lines[$fl].IndexOf("IMAGE")
-        $CommandStart = $lines[$fl].IndexOf("COMMAND")
-        $CreatedStart = $lines[$fl].IndexOf("CREATED")
-        $StatusStart = $lines[$fl].IndexOf("STATUS")
-        $PortsStart = $lines[$fl].IndexOf("PORTS")
-        $NamesStart = $lines[$fl].IndexOf("NAMES")
-    }
-
-    process {
-        For ($i = $fl + 1; $i -le $lines.Length; $i++) {
-            $line = $lines[$i]
-            if (-not [string]::IsNullOrEmpty($line)) {
-                $ContainerId = $line.Substring(0, $ImageStart).TrimEnd()
-                $Image = $line.Substring($ImageStart, ($CommandStart - $ImageStart)).TrimEnd()
-                $Command = $line.Substring($CommandStart, ($CreatedStart - $CommandStart)).TrimEnd()
-                $Created = $line.Substring($CreatedStart, ($StatusStart - $CreatedStart)).TrimEnd()
-                $Status = $line.Substring($StatusStart, ($PortsStart - $StatusStart)).TrimEnd()
-                $Ports = $line.Substring($PortsStart, ($NamesStart - $PortsStart)).TrimEnd()
-                $Names = $line.Substring($NamesStart, ($line.Length - $NamesStart)).TrimEnd()
-
+function Get-AgentServices {
+    # Running services and the ones that should run but do not (automatic but stopped, failed).
+    if ($OnLinux) {
+        # unit load active sub description
+        systemctl list-units --type=service --all --plain --no-legend --no-pager 2>$null | ForEach-Object {
+            $parts = $_.Trim() -split '\s+', 5
+            if ($parts.Count -ge 4 -and $parts[1] -eq 'loaded' -and ($parts[3] -eq 'running' -or $parts[2] -eq 'failed')) {
                 [PSCustomObject]@{
-                    ContainerId = $ContainerId
-                    Image       = $Image
-                    Command     = $Command
-                    Created     = $Created
-                    Status      = $Status
-                    Ports       = ($Ports -split ",")
-                    Names       = $Names
+                    Name        = $parts[0] -replace '\.service$', ''
+                    DisplayName = if ($parts.Count -eq 5) { $parts[4] } else { '' }
+                    State       = if ($parts[2] -eq 'failed') { 'failed' } else { 'running' }
+                    StartType   = $null
                 }
             }
         }
+        return
     }
+
+    Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Running' -or ($_.StartType -eq 'Automatic' -and $_.Status -eq 'Stopped') } | ForEach-Object {
+        [PSCustomObject]@{
+            Name        = $_.Name
+            DisplayName = $_.DisplayName
+            State       = if ($_.Status -eq 'Running') { 'running' } else { 'stopped' }
+            StartType   = "$($_.StartType)".ToLowerInvariant()
+        }
+    }
+}
+
+function Get-DockerContainers {
+    # Only when Docker is installed; one call to the local daemon, no per-container requests.
+    if (-not (Get-Command -Name docker -CommandType Application -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+
+    $output = @(docker ps --all --no-trunc --format '{{json .}}' 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        return @{ error = (($output | Select-Object -First 1) -as [string]).Trim() }
+    }
+
+    return @{
+        containers = @($output | Where-Object { $_ -is [string] -and $_.StartsWith('{') } | ForEach-Object {
+                $container = $_ | ConvertFrom-Json
+                [PSCustomObject]@{
+                    Name    = $container.Names
+                    Image   = $container.Image
+                    State   = $container.State
+                    Status  = $container.Status
+                    Ports   = $container.Ports
+                    Created = $container.CreatedAt
+                }
+            })
+    }
+}
+
+function Get-DiskHealth {
+    param (
+        # The previous result, reused for disks that are asleep now.
+        $Previous
+    )
+
+    if ($OnLinux) {
+        return Get-LinuxDiskHealth -Previous $Previous
+    }
+
+    $disks = @(Get-PhysicalDisk -ErrorAction Stop | ForEach-Object {
+            $counter = $_ | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
+            $errors = [long]$counter.ReadErrorsUncorrected + [long]$counter.WriteErrorsUncorrected
+            [PSCustomObject]@{
+                Device       = "PhysicalDisk$($_.DeviceId)"
+                Model        = $_.FriendlyName
+                Serial       = "$($_.SerialNumber)".Trim()
+                Protocol     = "$($_.BusType)"
+                MediaType    = "$($_.MediaType)"
+                Size         = [long]$_.Size
+                Health       = switch ("$($_.HealthStatus)") { 'Healthy' { 'passed' } 'Unhealthy' { 'failed' } 'Warning' { 'warning' } default { 'unknown' } }
+                Temperature  = if ($counter.Temperature) { [int]$counter.Temperature } else { $null }
+                PowerOnHours = if ($null -ne $counter.PowerOnHours) { [long]$counter.PowerOnHours } else { $null }
+                WearPercent  = if ($null -ne $counter.Wear) { [int]$counter.Wear } else { $null }
+                Reallocated  = $null
+                Pending      = $null
+                MediaErrors  = if ($counter) { $errors } else { $null }
+                Standby      = $false
+            }
+        })
+
+    return @{ disks = $disks }
+}
+
+function Get-LinuxDiskHealth {
+    param (
+        $Previous
+    )
+
+    if (-not (Get-Command -Name smartctl -CommandType Application -ErrorAction SilentlyContinue)) {
+        return @{ error = 'smartctl not found, install smartmontools (apt install smartmontools).' }
+    }
+
+    $scan = (smartctl --scan -j 2>$null | Out-String | ConvertFrom-Json).devices
+    $disks = foreach ($device in @($scan)) {
+        if (-not $device.name) {
+            continue
+        }
+
+        # -n standby: do not spin up a sleeping disk just to read its values.
+        $result = smartctl -j -n standby -H -A -i -d $device.type $device.name 2>$null | Out-String | ConvertFrom-Json -ErrorAction SilentlyContinue
+        if (-not $result) {
+            continue
+        }
+
+        if ([bool](@($result.smartctl.messages.string) -match 'STANDBY|SLEEP')) {
+            $last = @($Previous.disks) | Where-Object { $_.Device -eq $device.name } | Select-Object -First 1
+            if ($last) {
+                $last.Standby = $true
+                $last
+            } else {
+                [PSCustomObject]@{ Device = $device.name; Model = $null; Serial = $null; Protocol = $device.protocol; MediaType = $null; Size = $null; Health = 'unknown'; Temperature = $null; PowerOnHours = $null; WearPercent = $null; Reallocated = $null; Pending = $null; MediaErrors = $null; Standby = $true }
+            }
+            continue
+        }
+
+        if (-not $result.model_name -and -not $result.serial_number) {
+            # No SMART on this device (virtual disks, some USB bridges).
+            continue
+        }
+
+        $attributes = @{}
+        foreach ($attribute in @($result.ata_smart_attributes.table)) {
+            if ($attribute) { $attributes[[int]$attribute.id] = $attribute }
+        }
+        $nvme = $result.nvme_smart_health_information_log
+        # SSD wear on ATA: normalized "life left" attributes (Samsung 177, Intel 233, others 231, 202).
+        $wear = $null
+        foreach ($id in 177, 231, 233, 202) {
+            if ($attributes.ContainsKey($id)) { $wear = 100 - [int]$attributes[$id].value; break }
+        }
+        if ($nvme) { $wear = $nvme.percentage_used }
+
+        [PSCustomObject]@{
+            Device       = $device.name
+            Model        = $result.model_name
+            Serial       = $result.serial_number
+            Protocol     = $result.device.protocol
+            MediaType    = if ($nvme -or $result.rotation_rate -eq 0) { 'SSD' } elseif ($result.rotation_rate) { 'HDD' } else { $null }
+            Size         = $result.user_capacity.bytes
+            Health       = if ($null -eq $result.smart_status.passed) { 'unknown' } elseif ($result.smart_status.passed) { 'passed' } else { 'failed' }
+            Temperature  = $result.temperature.current
+            PowerOnHours = $result.power_on_time.hours
+            WearPercent  = $wear
+            Reallocated  = if ($attributes.ContainsKey(5)) { [long]$attributes[5].raw.value } else { $null }
+            Pending      = if ($attributes.ContainsKey(197)) { [long]$attributes[197].raw.value } else { $null }
+            MediaErrors  = if ($nvme) { [long]$nvme.media_errors } elseif ($attributes.ContainsKey(198)) { [long]$attributes[198].raw.value } else { $null }
+            Standby      = $false
+        }
+    }
+
+    return @{ disks = @($disks) }
 }
 
 #region Linux
@@ -464,7 +581,7 @@ function Get-AgentToken {
 
 function Get-AgentArguments {
     # Agent options persisted by -Install.
-    $arguments = '-ServerUrl "{0}" -ReportInterval {1} -HeartbeatInterval {2} -InventoryInterval {3}' -f $ServerUrl, $ReportInterval, $HeartbeatInterval, $InventoryInterval
+    $arguments = '-ServerUrl "{0}" -ReportInterval {1} -HeartbeatInterval {2} -InventoryInterval {3} -HealthInterval {4}' -f $ServerUrl, $ReportInterval, $HeartbeatInterval, $InventoryInterval, $HealthInterval
     if ($ReverbHost) { $arguments += ' -ReverbHost "{0}"' -f $ReverbHost }
     if ($ReverbPort) { $arguments += ' -ReverbPort {0}' -f $ReverbPort }
     if ($ReverbScheme) { $arguments += ' -ReverbScheme {0}' -f $ReverbScheme }
@@ -551,8 +668,36 @@ function Start-InventoryCollection {
     }
 }
 
+function Start-HealthCollection {
+    param (
+        $Previous
+    )
+
+    # smartctl / storage reliability counters talk to every disk, run them rarely and at idle priority.
+    $init = [scriptblock]::Create(@"
+    function Get-DiskHealth {${function:Get-DiskHealth}}
+    function Get-LinuxDiskHealth {${function:Get-LinuxDiskHealth}}
+"@)
+
+    return Start-Job -Name 'health' -InitializationScript $init -ArgumentList $OnLinux, $Previous -ScriptBlock {
+        param ($OnLinux, $Previous)
+        try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
+        try {
+            return Get-DiskHealth -Previous $Previous
+        }
+        catch {
+            return @{ error = $_.Exception.Message }
+        }
+    }
+}
+
 function Get-CachedInventory {
-    $path = "$AgentDir/inventory.json"
+    param (
+        [string]
+        $Name = 'inventory'
+    )
+
+    $path = "$AgentDir/$Name.json"
     if (-not (Test-Path -Path $path)) {
         return $null
     }
@@ -569,21 +714,35 @@ function Get-CachedInventory {
 function Save-CachedInventory {
     param (
         [Parameter(Mandatory = $true)]
-        $Data
+        $Data,
+        [string]
+        $Name = 'inventory'
     )
 
-    @{ collected_at = (Get-Date).ToString('o'); data = $Data } | ConvertTo-Json -Depth 6 -Compress | Set-Content -Path "$AgentDir/inventory.json" -Encoding UTF8
+    @{ collected_at = (Get-Date).ToString('o'); data = $Data } | ConvertTo-Json -Depth 6 -Compress | Set-Content -Path "$AgentDir/$Name.json" -Encoding UTF8
 }
 
 function Get-Report {
     param (
-        $Inventory
+        $Inventory,
+        $Health
     )
 
     $data = @{ machine = if ($OnLinux) { Get-LinuxMachineInfo } else { Get-MachineInfo } }
     if ($Inventory) {
         $data['os_updates'] = $Inventory.os_updates
         $data['packages_updates'] = $Inventory.packages_updates
+    }
+    if ($Health) {
+        $data['disk_health'] = $Health
+    }
+    try { $data['services'] = @(Get-AgentServices) } catch { Write-AgentLog "Services failed: $($_.Exception.Message)" }
+    try {
+        $docker = Get-DockerContainers
+        if ($docker) { $data['docker'] = $docker }
+    }
+    catch {
+        Write-AgentLog "Docker failed: $($_.Exception.Message)"
     }
 
     return $data
@@ -958,6 +1117,9 @@ function Start-Agent {
     # First inventory a few minutes after start, so it does not add to the load during boot.
     $nextInventory = if ($inventory) { $inventory.CollectedAt.AddSeconds($InventoryInterval) } else { (Get-Date).AddMinutes(5) }
     $inventoryJob = $null
+    $health = Get-CachedInventory -Name 'health'
+    $nextHealth = if ($health) { $health.CollectedAt.AddSeconds($HealthInterval) } else { (Get-Date).AddMinutes(2) }
+    $healthJob = $null
     $lastReport = [DateTime]::MinValue
     $realtime = $null
     $nextConnect = Get-Date
@@ -989,10 +1151,27 @@ function Start-Agent {
                 $nextInventory = (Get-Date).AddSeconds($InventoryInterval)
             }
 
+            if ($healthJob -and $healthJob.State -ne 'Running') {
+                if ($healthJob.State -eq 'Completed') {
+                    $data = Receive-Job -Job $healthJob | Select-Object -Last 1
+                    Save-CachedInventory -Data $data -Name 'health'
+                    $health = @{ CollectedAt = Get-Date; Data = $data }
+                    $lastReport = [DateTime]::MinValue
+                } else {
+                    Write-AgentLog "Disk health collection failed: $($healthJob.ChildJobs[0].JobStateInfo.Reason)"
+                }
+                Remove-Job -Job $healthJob -Force
+                $healthJob = $null
+            }
+            if (-not $healthJob -and (Get-Date) -ge $nextHealth) {
+                $healthJob = Start-HealthCollection -Previous $health.Data
+                $nextHealth = (Get-Date).AddSeconds($HealthInterval)
+            }
+
             if (((Get-Date) - $lastReport).TotalSeconds -ge $ReportInterval) {
                 $lastReport = Get-Date
                 try {
-                    Send-Report -Data (Get-Report -Inventory $inventory.Data) -Token $Token
+                    Send-Report -Data (Get-Report -Inventory $inventory.Data -Health $health.Data) -Token $Token
                 }
                 catch {
                     # HTTP problems must not tear down the WebSocket connection.

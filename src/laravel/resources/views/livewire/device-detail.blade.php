@@ -2,6 +2,11 @@
     @php
         $hasUpdates = count($selectedDevice->updates) > 0 || count($selectedDevice->apps_packages_updates) > 0;
         $power = $selectedDevice->data->machine->Battery ?? null;
+        $services = $selectedDevice->services;
+        $failedServices = collect($services)->where('State', '!=', 'running')->count();
+        $docker = $selectedDevice->docker;
+        $stoppedContainers = collect($docker['containers'] ?? [])->where('State', '!=', 'running')->count();
+        $diskHealth = $selectedDevice->diskHealth;
     @endphp
 
     <div class="card">
@@ -96,6 +101,36 @@
                     </button>
                 </li>
             @endif
+            @if (count($services) > 0)
+                <li class="nav-item" role="presentation">
+                    <button aria-controls="services-tab-pane" aria-selected="false" class="nav-link" data-bs-target="#services-tab-pane" data-bs-toggle="tab" id="services-tab" role="tab" type="button">
+                        <i class="fas fa-cogs me-2"></i>{{ __('Services') }}
+                        @if ($failedServices > 0)
+                            <x-badge class="ms-1" color="danger" size="sm" title="{{ __('Not running') }}">{{ $failedServices }}</x-badge>
+                        @endif
+                    </button>
+                </li>
+            @endif
+            @if ($docker !== null)
+                <li class="nav-item" role="presentation">
+                    <button aria-controls="docker-tab-pane" aria-selected="false" class="nav-link" data-bs-target="#docker-tab-pane" data-bs-toggle="tab" id="docker-tab" role="tab" type="button">
+                        <i class="fab fa-docker me-2"></i>{{ __('Docker') }}
+                        @if ($stoppedContainers > 0)
+                            <x-badge class="ms-1" color="secondary" size="sm" title="{{ __('Not running') }}">{{ $stoppedContainers }}</x-badge>
+                        @endif
+                    </button>
+                </li>
+            @endif
+            @if ($diskHealth !== null)
+                <li class="nav-item" role="presentation">
+                    <button aria-controls="health-tab-pane" aria-selected="false" class="nav-link" data-bs-target="#health-tab-pane" data-bs-toggle="tab" id="health-tab" role="tab" type="button">
+                        <i class="fas fa-heartbeat me-2"></i>{{ __('Disk health') }}
+                        @if ($selectedDevice->diskHealthProblem)
+                            <i class="fas fa-exclamation-triangle text-danger ms-1"></i>
+                        @endif
+                    </button>
+                </li>
+            @endif
         </ul>
 
         <div class="tab-content pt-3">
@@ -163,6 +198,159 @@
                             </li>
                         @endforeach
                     </ul>
+                </div>
+            @endif
+
+            @if (count($services) > 0)
+                <div aria-labelledby="services-tab" class="tab-pane fade" id="services-tab-pane" role="tabpanel" tabindex="0" x-data="{ search: '' }">
+                    <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+                        <input class="form-control form-control-sm" placeholder="{{ __('Search') }}" style="max-width: 20rem;" type="search" x-model="search">
+                        <span class="small text-muted ms-auto">{{ __(':running running, :other not running', ['running' => count($services) - $failedServices, 'other' => $failedServices]) }}</span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-0">
+                            <thead>
+                                <tr>
+                                    <th>{{ __('Service') }}</th>
+                                    <th class="d-none d-md-table-cell">{{ __('Description') }}</th>
+                                    <th class="text-end">{{ __('State') }}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($services as $service)
+                                    @php
+                                        $state = $service['State'] ?? 'unknown';
+                                        $search = strtolower(($service['Name'] ?? '') . ' ' . ($service['DisplayName'] ?? ''));
+                                    @endphp
+                                    <tr wire:key="service-{{ $loop->index }}" x-show="!search || @js($search).includes(search.toLowerCase())">
+                                        <td class="text-break">
+                                            <span class="fw-semibold">{{ $service['Name'] ?? '' }}</span>
+                                            <div class="small text-muted d-md-none">{{ $service['DisplayName'] ?? '' }}</div>
+                                        </td>
+                                        <td class="d-none d-md-table-cell text-muted">{{ $service['DisplayName'] ?? '' }}</td>
+                                        <td class="text-end text-nowrap">
+                                            <x-badge :color="$state === 'running' ? 'success' : ($state === 'failed' ? 'danger' : 'warning')" variant="subtle">
+                                                {{ __(ucfirst($state)) }}
+                                            </x-badge>
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            @endif
+
+            @if ($docker !== null)
+                <div aria-labelledby="docker-tab" class="tab-pane fade" id="docker-tab-pane" role="tabpanel" tabindex="0">
+                    @if ($docker['error'])
+                        <div class="alert alert-warning mb-3" role="alert">
+                            <i class="fab fa-docker me-2"></i>{{ __('Docker is installed but the agent cannot read the containers: :error', ['error' => $docker['error']]) }}
+                        </div>
+                    @endif
+                    @if (count($docker['containers']) > 0)
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>{{ __('Container') }}</th>
+                                        <th class="d-none d-md-table-cell">{{ __('Image') }}</th>
+                                        <th class="d-none d-lg-table-cell">{{ __('Ports') }}</th>
+                                        <th class="text-end">{{ __('State') }}</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (collect($docker['containers'])->sortBy(fn ($c) => [($c['State'] ?? '') === 'running' ? 1 : 0, $c['Name'] ?? '']) as $container)
+                                        @php
+                                            $state = $container['State'] ?? 'unknown';
+                                            $color = match (true) {
+                                                $state === 'running' && str_contains($container['Status'] ?? '', '(unhealthy)') => 'danger',
+                                                $state === 'running' => 'success',
+                                                in_array($state, ['restarting', 'paused'], true) => 'warning',
+                                                $state === 'dead' => 'danger',
+                                                default => 'secondary',
+                                            };
+                                        @endphp
+                                        <tr wire:key="container-{{ $loop->index }}">
+                                            <td class="text-break">
+                                                <span class="fw-semibold">{{ $container['Name'] ?? '' }}</span>
+                                                <div class="small text-muted d-md-none">{{ $container['Image'] ?? '' }}</div>
+                                            </td>
+                                            <td class="d-none d-md-table-cell text-muted text-break">{{ $container['Image'] ?? '' }}</td>
+                                            <td class="d-none d-lg-table-cell small text-muted text-break">{{ $container['Ports'] ?? '' }}</td>
+                                            <td class="text-end">
+                                                <x-badge :color="$color" variant="subtle">{{ __(ucfirst($state)) }}</x-badge>
+                                                <div class="small text-muted text-nowrap">{{ $container['Status'] ?? '' }}</div>
+                                            </td>
+                                        </tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
+                        </div>
+                    @elseif (! $docker['error'])
+                        <p class="text-muted mb-0">{{ __('No containers.') }}</p>
+                    @endif
+                </div>
+            @endif
+
+            @if ($diskHealth !== null)
+                <div aria-labelledby="health-tab" class="tab-pane fade" id="health-tab-pane" role="tabpanel" tabindex="0">
+                    @if ($diskHealth['error'])
+                        <div class="alert alert-warning mb-3" role="alert">
+                            <i class="fas fa-heartbeat me-2"></i>{{ $diskHealth['error'] }}
+                        </div>
+                    @endif
+                    @if (count($diskHealth['disks']) > 0)
+                        <div class="row g-3">
+                            @foreach ($diskHealth['disks'] as $disk)
+                                @php
+                                    $health = $disk['Health'] ?? 'unknown';
+                                    $values = array_filter([
+                                        __('Temperature') => isset($disk['Temperature']) ? $disk['Temperature'] . ' °C' : null,
+                                        __('Power on') => isset($disk['PowerOnHours']) ? __(':hours h (:days days)', ['hours' => number_format($disk['PowerOnHours'], 0, ',', ' '), 'days' => intdiv((int) $disk['PowerOnHours'], 24)]) : null,
+                                        __('Wear') => isset($disk['WearPercent']) ? $disk['WearPercent'] . ' %' : null,
+                                        __('Reallocated sectors') => $disk['Reallocated'] ?? null,
+                                        __('Pending sectors') => $disk['Pending'] ?? null,
+                                        __('Media errors') => $disk['MediaErrors'] ?? null,
+                                    ], fn ($value) => $value !== null);
+                                @endphp
+                                <div class="col-12 col-md-6" wire:key="disk-{{ $loop->index }}">
+                                    <div class="card h-100">
+                                        <div class="card-body">
+                                            <div class="d-flex align-items-start gap-3">
+                                                <i class="fas {{ ($disk['MediaType'] ?? '') === 'HDD' ? 'fa-hdd' : 'fa-memory' }} fa-2x text-muted"></i>
+                                                <div class="flex-grow-1 min-w-0">
+                                                    <div class="d-flex justify-content-between gap-2">
+                                                        <span class="fw-semibold text-break">{{ $disk['Model'] ?? $disk['Device'] }}</span>
+                                                        <x-badge class="align-self-start flex-shrink-0" :color="match ($health) { 'passed' => 'success', 'failed' => 'danger', 'warning' => 'warning', default => 'secondary' }" variant="subtle">
+                                                            {{ match ($health) { 'passed' => __('Healthy'), 'failed' => __('Failing'), 'warning' => __('Warning'), default => __('Unknown') } }}
+                                                        </x-badge>
+                                                    </div>
+                                                    <div class="small text-muted text-break">
+                                                        {{ collect([$disk['Device'] ?? null, $disk['MediaType'] ?? null, $disk['Protocol'] ?? null, isset($disk['Size']) ? \App\Support\Bytes::format($disk['Size']) : null, $disk['Serial'] ?? null])->filter()->implode(' · ') }}
+                                                    </div>
+                                                    @if (! empty($disk['Standby']))
+                                                        <div class="small text-muted mt-1"><i class="fas fa-moon me-1"></i>{{ __('Disk is asleep, showing the last known values.') }}</div>
+                                                    @endif
+                                                    @if ($values)
+                                                        <dl class="row small mb-0 mt-2">
+                                                            @foreach ($values as $label => $value)
+                                                                <dt class="col-6 fw-normal text-muted">{{ $label }}</dt>
+                                                                <dd class="col-6 mb-1 text-end">{{ $value }}</dd>
+                                                            @endforeach
+                                                        </dl>
+                                                    @endif
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            @endforeach
+                        </div>
+                    @elseif (! $diskHealth['error'])
+                        <p class="text-muted mb-0">{{ __('No disks with S.M.A.R.T. support found.') }}</p>
+                    @endif
+                    <p class="small text-muted mt-3 mb-0">{{ __('Checked by the agent every hour; sleeping disks are not woken up.') }}</p>
                 </div>
             @endif
         </div>
