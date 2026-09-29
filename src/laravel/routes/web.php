@@ -65,6 +65,14 @@ Route::prefix('system')->name('system.')->middleware(['auth', 'is-system-admin']
 
 /* BOILERPLATE routes */
 
+// Agent script for the install commands (public, the device has no token yet).
+Route::get('/agent/app.ps1', function () {
+    $path = collect([resource_path('agent/app.ps1'), base_path('../powershell/app.ps1')])->first(fn ($path) => is_file($path));
+    abort_if($path === null, 404);
+
+    return response()->file($path, ['Content-Type' => 'text/plain; charset=utf-8']);
+})->name('agent.script');
+
 Route::middleware('auth')->group(function () {
     Route::redirect('/', '/devices');
     Route::get('/devices', ShowDevices::class)->name('devices');

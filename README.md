@@ -2,8 +2,8 @@
 
 ## Description
 
-A simple system for managing your Windows computers with a self-hosted portal and a lightweight
-agent written in PowerShell. Linux support is planned.
+A simple system for managing your Windows and Linux (Debian / Ubuntu) computers with a self-hosted
+portal and a lightweight agent written in PowerShell.
 
 ## Why I wrote this
 
@@ -30,7 +30,7 @@ Device detail with status, commands and CPU/memory history:
 | Path | Content |
 |------|---------|
 | `src/laravel` | Server application (Laravel) |
-| `src/powershell` | Windows agent |
+| `src/powershell` | Agent (Windows, Debian / Ubuntu) |
 | `Dockerfile`, `docker-compose.yml`, `docker/` | Container setup |
 
 ## Server setup
@@ -113,41 +113,67 @@ the agent's next periodic report.
    }
    ```
 
-## Windows agent
+## Agent
 
-The agent (`src/powershell/app.ps1`) runs continuously as a scheduled task under the `SYSTEM`
-account. It keeps a WebSocket connection open for commands, sends a heartbeat with CPU and RAM usage
-every 30 seconds (over the WebSocket, or over HTTPS when the WebSocket is unavailable) and sends a
-device report every 5 minutes over HTTPS. A device without a heartbeat for 90 seconds is shown as
-offline.
+The agent (`src/powershell/app.ps1`) runs on Windows (Windows PowerShell 5.1 or PowerShell 7) and on
+Debian / Ubuntu (PowerShell 7). It runs continuously as a scheduled task under `SYSTEM` on Windows and
+as a systemd service (`laravel-mdm-agent`) running as root on Linux. It keeps a WebSocket connection
+open for commands, sends a heartbeat with CPU and RAM usage every 30 seconds (over the WebSocket, or
+over HTTPS when the WebSocket is unavailable) and sends a device report every 5 minutes over HTTPS.
+A device without a heartbeat for 90 seconds is shown as offline.
 
 The agent is designed to stay out of the way:
 
-- it runs with below-normal priority,
-- CPU and RAM usage come from plain Win32 calls (`GetSystemTimes`, `GlobalMemoryStatusEx`); CPU usage
-  is the average over the heartbeat interval, so nothing is sampled in between,
-- the expensive Windows Update and winget checks run every 6 hours in an idle-priority process; the
-  result is cached in `inventory.json` and reused in reports.
+- it runs with below-normal priority (`Nice=10` and idle I/O priority on Linux),
+- CPU and RAM usage come from plain Win32 calls (`GetSystemTimes`, `GlobalMemoryStatusEx`) on Windows
+  and from `/proc/stat` and `/proc/meminfo` on Linux; CPU usage is the average over the heartbeat
+  interval, so nothing is sampled in between,
+- the expensive update checks (Windows Update and winget, or the local apt cache on Linux) run every
+  6 hours in an idle-priority process; the result is cached in `inventory.json` and reused in reports.
+
+| | Windows | Debian / Ubuntu |
+|---|---|---|
+| Report | OS, uptime, user, CPU, battery, drives, networks, pending reboot | the same, from `/etc/os-release`, `/proc`, `df`, `ip` and `/var/run/reboot-required` |
+| Updates | Windows Update, winget | `apt list --upgradable` |
+| Turn off / Restart | `Stop-Computer` / `Restart-Computer` | `systemctl poweroff` / `systemctl reboot` |
+| Install updates | winget + Windows Update | `apt-get update && apt-get upgrade` |
 
 ### Installation
 
-1. Add a device in the portal to get an enrolment code.
-2. Copy `app.ps1` to the device and run it from an elevated PowerShell prompt:
+Click **Add device** in the portal. It shows the enrolment code and ready-made install commands with
+a copy button:
 
-   ```powershell
-   .\app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -Install
-   ```
+- **Windows PowerShell** – run in PowerShell as Administrator,
+- **PowerShell 7** – run in pwsh as Administrator on Windows, or with `sudo pwsh` on Debian / Ubuntu
+  ([install PowerShell](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu)).
 
-Optional parameters (stored in the scheduled task by `-Install`):
+The command downloads the agent from the server (`/agent/app.ps1`, the version matching the server)
+to a temporary file and runs its installer, which copies the agent to `%ProgramData%\Laravel-MDM`
+on Windows or `/opt/laravel-mdm` on Linux (`-InstallPath` to change), enrols the device and installs
+the service:
+
+```powershell
+iwr -useb 'https://mdm.example.com/agent/app.ps1' -OutFile "$env:TEMP\mdm-agent.ps1"; & powershell -ExecutionPolicy Bypass -File "$env:TEMP\mdm-agent.ps1" -ServerUrl 'https://mdm.example.com' -EnrolmentCode 1234 -Install
+```
+ Set `AGENT_DOWNLOAD_URL` to download it from elsewhere, e.g. a GitHub release.
+
+Manually:
+
+```powershell
+.\app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -Install
+```
+
+Optional parameters (stored in the scheduled task / service by `-Install`):
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `-ReportInterval` | `300` | Seconds between device reports |
 | `-HeartbeatInterval` | `30` | Seconds between heartbeats (with CPU/RAM) |
-| `-InventoryInterval` | `21600` | Seconds between Windows Update / winget checks |
+| `-InventoryInterval` | `21600` | Seconds between update checks |
 | `-ReverbScheme` | scheme of `-ServerUrl` | `https` (wss) or `http` (ws) |
 | `-ReverbHost`, `-ReverbPort`, `-ReverbKey` | from server | Override the WebSocket address announced by the server |
 | `-NoRealtime` | | Use HTTPS only, without the WebSocket |
 
-The token is stored next to the script in `Token.xml` and logs are written to `agent.log`.
-The agent only executes the commands `turnOff`, `restart` and `doUpdates`.
+The token is stored next to the script (`Token.xml` on Windows, `token` readable by root only on
+Linux) and logs are written to `agent.log`. The agent only executes the commands `turnOff`, `restart`
+and `doUpdates`.

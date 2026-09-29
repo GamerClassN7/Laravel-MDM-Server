@@ -71,6 +71,8 @@ COPY docker/entrypoint.sh /usr/local/bin/entrypoint
 
 COPY --from=vendor --chown=app:app /var/www ./
 COPY --from=assets --chown=app:app /build/public/build ./public/build
+# Served at /agent/app.ps1 for the install commands.
+COPY --chown=app:app src/powershell/app.ps1 ./resources/agent/app.ps1
 
 RUN rm -rf tests .env .env.example phpunit.xml \
     && php artisan package:discover --ansi \

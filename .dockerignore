@@ -2,6 +2,7 @@
 *
 !docker/
 !src/laravel/
+!src/powershell/app.ps1
 src/laravel/.env
 src/laravel/.env.*
 !src/laravel/.env.example

@@ -112,7 +112,7 @@
                                                 <div aria-valuemax="100" aria-valuemin="0" aria-valuenow="{{ $drive['PercentUsed'] }}" class="progress-bar {{ $drive['PercentUsed'] > 90 ? 'bg-danger' : '' }}" role="progressbar" style="width: {{ $drive['PercentUsed'] }}%"></div>
                                             </div>
                                             <small class="text-muted">
-                                                {{ __(':free GB free of :total GB', ['free' => round($drive['SizeRemaining'] / 1024 / 1024 / 1024), 'total' => round($drive['Size'] / 1024 / 1024 / 1024)]) }}
+                                                {{ __(':free free of :total', ['free' => \App\Support\Bytes::format($drive['SizeRemaining']), 'total' => \App\Support\Bytes::format($drive['Size'])]) }}
                                             </small>
                                         @endif
                                     </div>
