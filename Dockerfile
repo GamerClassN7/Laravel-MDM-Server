@@ -78,6 +78,7 @@ COPY --chown=app:app src/powershell/app.ps1 ./resources/agent/app.ps1
 # volume is mounted over database/.
 RUN rm -rf tests .env .env.example phpunit.xml \
     && php artisan package:discover --ansi \
+    && php artisan vendor:publish --tag=laravel-assets --force --ansi \
     && ln -sfn /var/www/storage/app/public public/storage \
     && chown -R app:app bootstrap/cache storage \
     && cp -a database /usr/share/laravel-mdm-database

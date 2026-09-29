@@ -4714,12 +4714,12 @@
             "source": {
                 "type": "git",
                 "url": "https://git.steelants.cz/SteelAnts/Laravel-Boilerplate.Dashboard.git",
-                "reference": "528f5f94fddb5f63dfa53cba891b7ca522edb668"
+                "reference": "4ff5120ff7a396dad51c15a22c8b60278c12e53b"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/laravel-boilerplate.dashboard/528f5f94fddb5f63dfa53cba891b7ca522edb668.zip",
-                "reference": "528f5f94fddb5f63dfa53cba891b7ca522edb668",
+                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/laravel-boilerplate.dashboard/4ff5120ff7a396dad51c15a22c8b60278c12e53b.zip",
+                "reference": "4ff5120ff7a396dad51c15a22c8b60278c12e53b",
                 "mirrors": [
                     {
                         "url": "https://packistry.sa-dev.cz/public/zipball/%package%/%reference%.%type%",
@@ -4754,7 +4754,7 @@
                 }
             ],
             "description": "Livewire dashboard",
-            "time": "2026-09-29T13:07:42+00:00"
+            "time": "2026-09-29T13:27:15+00:00"
         },
         {
             "name": "steelants/laravel-general",
