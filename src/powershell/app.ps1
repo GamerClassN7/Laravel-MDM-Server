@@ -71,7 +71,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.2.0'
+$AgentVersion = '1.3.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent')
 # $IsLinux only exists in PowerShell 6+, Windows PowerShell 5.1 is always Windows.
 $OnLinux = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
@@ -1086,6 +1086,53 @@ function Get-SystemMetrics {
     }
 }
 
+function Get-LiveState {
+    # Small, fast-changing state sent with the heartbeat (the full details go with the report):
+    # restart pending, service and container states. Kept cheap, it runs every heartbeat.
+    $services = [ordered]@{}
+    if ($OnLinux) {
+        foreach ($service in @(Get-AgentServices | Sort-Object -Property Name)) { $services[$service.Name] = $service.State }
+    } else {
+        Add-Type -AssemblyName System.ServiceProcess -ErrorAction SilentlyContinue
+        # Start types (one service manager query each) change rarely: cached, only needed for stopped services.
+        if (-not $script:StartTypes -or $script:StartTypesAt -lt (Get-Date).AddHours(-1)) {
+            $script:StartTypes = @{}
+            $script:StartTypesAt = Get-Date
+        }
+        foreach ($service in @([System.ServiceProcess.ServiceController]::GetServices() | Sort-Object -Property ServiceName)) {
+            if ($service.Status -eq 'Running') {
+                $services[$service.ServiceName] = 'running'
+            } else {
+                if (-not $script:StartTypes.ContainsKey($service.ServiceName)) {
+                    $script:StartTypes[$service.ServiceName] = "$($service.StartType)"
+                }
+                if ($script:StartTypes[$service.ServiceName] -eq 'Automatic') { $services[$service.ServiceName] = 'stopped' }
+            }
+            $service.Dispose()
+        }
+    }
+
+    $state = [ordered]@{
+        restart_required = if ($OnLinux) { Test-Path -Path /var/run/reboot-required } else { [bool](Test-PendingReboot) }
+        services         = $services
+    }
+
+    if (Get-Command -Name docker -CommandType Application -ErrorAction SilentlyContinue) {
+        $lines = @(docker ps --all --no-trunc --format '{{.Names}}|{{.State}}|{{.Status}}' 2>$null)
+        if ($LASTEXITCODE -eq 0) {
+            $containers = [ordered]@{}
+            foreach ($line in ($lines | Sort-Object)) {
+                $name, $containerState, $status = "$line" -split '\|', 3
+                if (-not $name) { continue }
+                $containers[$name] = if ($containerState -eq 'running' -and $status -like '*(unhealthy)*') { 'unhealthy' } else { $containerState }
+            }
+            $state['containers'] = $containers
+        }
+    }
+
+    return $state
+}
+
 function Send-Heartbeat {
     param (
         $Realtime,
@@ -1095,16 +1142,41 @@ function Send-Heartbeat {
     )
 
     $metrics = Get-SystemMetrics
+
+    # The live state is sent only when it changed; the server keeps the last one.
+    $state = $null
+    try {
+        $current = Get-LiveState
+        $stateJson = $current | ConvertTo-Json -Depth 4 -Compress
+        if ($stateJson -ne $script:LastStateJson) { $state = $current }
+    }
+    catch {
+        Write-AgentLog "Live state failed: $($_.Exception.Message)"
+    }
+    # Reverb limits messages to 10 kB: a large state (many services) goes over HTTPS instead.
+    $stateOverWs = $state -and $stateJson.Length -le 8000
+
     if ($Realtime -and $Realtime.Subscribed) {
         $data = if ($metrics) { $metrics } else { @{} }
+        if ($stateOverWs) { $data['state'] = $state }
+        # A failed send throws: the connection is reset and the state is sent again later.
         Send-WsMessage -Socket $Realtime.Socket -Message @{ event = 'client-heartbeat'; channel = $Realtime.Config.channel; data = $data }
-    } else {
-        try {
-            Invoke-MdmApi -Method Post -Path 'device/heartbeat' -Token $Token -Body @{ metrics = $metrics } | Out-Null
+        if ($stateOverWs) {
+            $script:LastStateJson = $stateJson
+            return
         }
-        catch {
-            Write-AgentLog "Heartbeat failed: $($_.Exception.Message)"
-        }
+        $metrics = $null
+    }
+    if (-not $state -and $Realtime -and $Realtime.Subscribed) {
+        return
+    }
+
+    try {
+        Invoke-MdmApi -Method Post -Path 'device/heartbeat' -Token $Token -Body @{ metrics = $metrics; state = $state } | Out-Null
+        if ($state) { $script:LastStateJson = $stateJson }
+    }
+    catch {
+        Write-AgentLog "Heartbeat failed: $($_.Exception.Message)"
     }
 }
 
