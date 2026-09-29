@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "1cafa38eff1086634371d0386a1b83f8",
+    "content-hash": "92b9ce3b368937ce45099743996d8d66",
     "packages": [
         {
             "name": "bacon/bacon-qr-code",
@@ -4707,6 +4707,54 @@
                 "source": "https://github.com/steelants/Laravel-Boilerplate/tree/2.6.3"
             },
             "time": "2026-08-21T19:25:52+00:00"
+        },
+        {
+            "name": "steelants/laravel-boilerplate.dashboard",
+            "version": "dev-main",
+            "source": {
+                "type": "git",
+                "url": "https://git.steelants.cz/SteelAnts/Laravel-Boilerplate.Dashboard.git",
+                "reference": "528f5f94fddb5f63dfa53cba891b7ca522edb668"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/laravel-boilerplate.dashboard/528f5f94fddb5f63dfa53cba891b7ca522edb668.zip",
+                "reference": "528f5f94fddb5f63dfa53cba891b7ca522edb668",
+                "mirrors": [
+                    {
+                        "url": "https://packistry.sa-dev.cz/public/zipball/%package%/%reference%.%type%",
+                        "preferred": true
+                    }
+                ]
+            },
+            "require": {
+                "steelants/laravel-boilerplate": "dev-dev|^2.0",
+                "steelants/livewire-datatable": "dev-dev|^2.0"
+            },
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "providers": [
+                        "SteelAnts\\LaravelBoilerplate\\Dashboard\\BoilerplateDashboardServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "SteelAnts\\LaravelBoilerplate\\Dashboard\\": "src/"
+                }
+            },
+            "notification-url": "https://packistry.sa-dev.cz/public/downloads/",
+            "license": [
+                "Apache-2.0"
+            ],
+            "authors": [
+                {
+                    "name": "SteelAnts"
+                }
+            ],
+            "description": "Livewire dashboard",
+            "time": "2026-09-29T13:07:42+00:00"
         },
         {
             "name": "steelants/laravel-general",
@@ -9765,7 +9813,9 @@
     ],
     "aliases": [],
     "minimum-stability": "stable",
-    "stability-flags": {},
+    "stability-flags": {
+        "steelants/laravel-boilerplate.dashboard": 20
+    },
     "prefer-stable": true,
     "prefer-lowest": false,
     "platform": {

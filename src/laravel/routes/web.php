@@ -79,6 +79,9 @@ Route::middleware('auth')->group(function () {
     Route::get('/devices', ShowDevices::class)->name('devices');
 });
 
+// Configurable dashboards (steelants/laravel-boilerplate.dashboard): /dashboard and its editor.
+Route::dashboard(['middleware' => ['web', 'auth']]);
+
 // Missing from the boilerplate routes stub, used by the system jobs page.
 Route::prefix('system/jobs')->name('system.jobs.')->middleware(['auth', 'is-system-admin'])->group(function () {
     Route::get('/rerun', [JobsController::class, 'rerun'])->name('rerun');
