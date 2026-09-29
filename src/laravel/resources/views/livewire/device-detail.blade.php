@@ -1,6 +1,7 @@
 <div>
     @php
-        $hasUpdates = count($selectedDevice->updates) > 0 || count($selectedDevice->apps_packages_updates) > 0;
+        $moduleUpdates = $selectedDevice->moduleUpdates;
+        $hasUpdates = count($selectedDevice->updates) > 0 || count($selectedDevice->apps_packages_updates) > 0 || count($moduleUpdates) > 0;
         $power = $selectedDevice->data->machine->Battery ?? null;
         $services = $selectedDevice->services;
         $failedServices = collect($services)->where('State', '!=', 'running')->count();
@@ -176,6 +177,20 @@
                                 <li class="list-group-item d-flex justify-content-between">
                                     <span>{{ $appUpdate['Id'] }}</span>
                                     <x-badge color="primary" variant="subtle">{{ $appUpdate['Version'] }}</x-badge>
+                                </li>
+                            @endforeach
+                        </ul>
+                    @endif
+                    @if (count($moduleUpdates) > 0)
+                        <h5 class="mt-3">{{ __('PowerShell modules') }}</h5>
+                        <ul class="list-group">
+                            @foreach ($moduleUpdates as $module)
+                                <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2" wire:key="module-{{ $loop->index }}">
+                                    <span>
+                                        <span class="fw-semibold">{{ $module['Name'] ?? '' }}</span>
+                                        <span class="small text-muted ms-1">{{ $module['Edition'] ?? '' }}</span>
+                                    </span>
+                                    <x-badge color="primary" variant="subtle">{{ $module['Version'] ?? '?' }} → {{ $module['Available'] ?? '?' }}</x-badge>
                                 </li>
                             @endforeach
                         </ul>
