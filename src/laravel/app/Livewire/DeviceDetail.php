@@ -2,12 +2,17 @@
 
 namespace App\Livewire;
 
-use Livewire\Component;
 use App\Models\Device;
+use Livewire\Attributes\Url;
+use Livewire\Component;
 
 class DeviceDetail extends Component
 {
     public $selectedDeviceId;
+
+    /** Selected tab, kept in the URL; the view falls back to the first tab the device has. */
+    #[Url(except: 'drives')]
+    public string $tab = 'drives';
 
     /* Edit Mode*/
     public $editMode = false;
