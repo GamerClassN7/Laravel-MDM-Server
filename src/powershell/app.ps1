@@ -71,7 +71,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.3.0'
+$AgentVersion = '1.4.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent')
 # $IsLinux only exists in PowerShell 6+, Windows PowerShell 5.1 is always Windows.
 $OnLinux = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
@@ -119,6 +119,22 @@ function Get-MachineInfo {
     }
 }
 
+function Get-WingetPath {
+    # SYSTEM (the agent's account) has no App Installer alias on the PATH: use the newest installed package.
+    $command = Get-Command -Name winget.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($command) {
+        return $command.Source
+    }
+
+    $candidates = Get-ChildItem -Path "$env:ProgramFiles\WindowsApps\Microsoft.DesktopAppInstaller_*__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue
+    $newest = $candidates | Sort-Object -Property { try { [version](($_.Directory.Name -split '_')[1]) } catch { [version]'0.0' } } -Descending | Select-Object -First 1
+    if ($newest) {
+        return $newest.FullName
+    }
+
+    return $null
+}
+
 function Get-WingetSoftware {
     param (
         [switch]
@@ -126,9 +142,14 @@ function Get-WingetSoftware {
     )
     begin {
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        $upgradeResult = winget list | Out-String
+        $winget = Get-WingetPath
+        if (-not $winget) {
+            throw 'winget not found'
+        }
+        # Never prompt (the agent runs without a user): accept the source agreements up front.
+        $upgradeResult = & $winget list --accept-source-agreements --disable-interactivity | Out-String
         if ($Updatable) {
-            $upgradeResult = winget update | Out-String
+            $upgradeResult = & $winget update --accept-source-agreements --disable-interactivity | Out-String
         }
 
         $lines = $upgradeResult.Split([Environment]::NewLine)
@@ -396,6 +417,101 @@ function Get-LinuxDiskHealth {
     return @{ disks = @($disks) }
 }
 
+function Get-PowerShellHosts {
+    param (
+        [bool]
+        $OnLinux
+    )
+
+    # Windows PowerShell and PowerShell 7 keep their modules apart, both are checked.
+    $hosts = @()
+    if (-not $OnLinux) {
+        $hosts += @{ Edition = 'Windows PowerShell'; Path = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" }
+    }
+    $pwsh = Get-Command -Name pwsh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    $pwshPath = if ($pwsh) { $pwsh.Source } elseif (-not $OnLinux) { "$env:ProgramFiles\PowerShell\7\pwsh.exe" }
+    if ($pwshPath) {
+        $hosts += @{ Edition = 'PowerShell 7'; Path = $pwshPath }
+    }
+
+    return @($hosts | Where-Object { Test-Path -Path $_.Path })
+}
+
+function Invoke-PowerShellModules {
+    param (
+        [bool]
+        $OnLinux,
+        # Install the newer versions instead of only listing them.
+        [switch]
+        $Update
+    )
+
+    # Runs in each PowerShell edition. Only modules installed from the PowerShell Gallery with
+    # Install-Module are considered; nothing ever prompts (-NonInteractive, no NuGet bootstrap).
+    $moduleScript = @'
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+function ConvertTo-ModuleVersion ($Value) {
+    $base = ("$Value" -split '-')[0]
+    if ($base -notmatch '\.') { $base += '.0' }
+    try { [version]$base } catch { [version]'0.0' }
+}
+$outdated = @()
+$canCheck = (Get-Command -Name Get-InstalledModule -ErrorAction SilentlyContinue) -and (Get-Command -Name Find-Module -ErrorAction SilentlyContinue)
+# PowerShellGet 1 (Windows PowerShell) would ask to install the NuGet provider first.
+if ($canCheck -and $PSVersionTable.PSEdition -ne 'Core' -and -not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) { $canCheck = $false }
+if ($canCheck) {
+    $installed = @(Get-InstalledModule -ErrorAction SilentlyContinue | Where-Object { $_.Repository -eq 'PSGallery' } |
+        Group-Object -Property Name | ForEach-Object { $_.Group | Sort-Object -Property { ConvertTo-ModuleVersion $_.Version } -Descending | Select-Object -First 1 })
+    if ($installed) {
+        $latest = @{}
+        foreach ($module in @(Find-Module -Name $installed.Name -Repository PSGallery -ErrorAction SilentlyContinue)) { $latest[$module.Name] = "$($module.Version)" }
+        foreach ($module in $installed) {
+            $available = $latest[$module.Name]
+            if ($available -and (ConvertTo-ModuleVersion $available) -gt (ConvertTo-ModuleVersion $module.Version)) {
+                $outdated += [pscustomobject]@{ Name = $module.Name; Version = "$($module.Version)"; Available = $available }
+            }
+        }
+    }
+}
+if ($Update) {
+    # Installed next to the current version, like Update-Module always does; failed ones stay listed.
+    $outdated = @($outdated | Where-Object {
+        try { Update-Module -Name $_.Name -RequiredVersion $_.Available -Force -Confirm:$false -ErrorAction Stop; $false } catch { $true }
+    })
+}
+ConvertTo-Json -InputObject @($outdated) -Compress
+'@
+
+    $result = @()
+    foreach ($powershell in @(Get-PowerShellHosts -OnLinux $OnLinux)) {
+        $prefix = if ($Update) { '$Update = $true' } else { '$Update = $false' }
+        $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes("$prefix`n$moduleScript"))
+        $output = [System.IO.Path]::GetTempFileName()
+        try {
+            # A separate process per edition (inherits the idle priority), stopped when the gallery hangs.
+            $process = Start-Process -FilePath $powershell.Path -ArgumentList '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded -RedirectStandardOutput $output -NoNewWindow -PassThru
+            if (-not $process.WaitForExit(900000)) {
+                try { $process.Kill() } catch { }
+                continue
+            }
+            $json = (Get-Content -Path $output -Raw) -as [string]
+            if ($json) {
+                foreach ($module in @($json.Trim() | ConvertFrom-Json)) {
+                    if ($module) { $result += [PSCustomObject]@{ Name = $module.Name; Version = $module.Version; Available = $module.Available; Edition = $powershell.Edition } }
+                }
+            }
+        }
+        catch {
+        }
+        finally {
+            Remove-Item -Path $output -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    return $result
+}
+
 #region Linux
 
 function Get-LinuxMachineInfo {
@@ -652,12 +768,16 @@ function Start-InventoryCollection {
     function Get-WingetSoftware {${function:Get-WingetSoftware}}
     function Get-WindowsUpdate {${function:Get-WindowsUpdate}}
     function Get-AptUpdates {${function:Get-AptUpdates}}
+    function Get-WingetPath {${function:Get-WingetPath}}
+    function Get-PowerShellHosts {${function:Get-PowerShellHosts}}
+    function Invoke-PowerShellModules {${function:Invoke-PowerShellModules}}
 "@)
 
     return Start-Job -Name 'inventory' -InitializationScript $init -ArgumentList $OnLinux -ScriptBlock {
         param ($OnLinux)
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
         $data = @{}
+        try { $data['module_updates'] = @(Invoke-PowerShellModules -OnLinux $OnLinux) } catch { }
         if ($OnLinux) {
             try { $data['os_updates'] = @(Get-AptUpdates) } catch { }
             return $data
@@ -732,6 +852,7 @@ function Get-Report {
     if ($Inventory) {
         $data['os_updates'] = $Inventory.os_updates
         $data['packages_updates'] = $Inventory.packages_updates
+        $data['module_updates'] = $Inventory.module_updates
     }
     if ($Health) {
         $data['disk_health'] = $Health
@@ -833,10 +954,13 @@ function Invoke-DeviceCommand {
             'turnOff' { systemctl poweroff }
             'restart' { systemctl reboot }
             'doUpdates' {
-                Start-Job -Name 'updates' -ScriptBlock {
+                $init = [scriptblock]::Create("function Get-PowerShellHosts {${function:Get-PowerShellHosts}}`nfunction Invoke-PowerShellModules {${function:Invoke-PowerShellModules}}")
+                Start-Job -Name 'updates' -InitializationScript $init -ScriptBlock {
                     $env:DEBIAN_FRONTEND = 'noninteractive'
+                    # PowerShell 7 itself comes from the Microsoft apt repository.
                     apt-get update -q | Out-Null
                     apt-get upgrade -y -q -o Dpkg::Options::=--force-confold | Out-Null
+                    try { Invoke-PowerShellModules -OnLinux $true -Update | Out-Null } catch { }
                 } | Out-Null
             }
         }
@@ -847,9 +971,15 @@ function Invoke-DeviceCommand {
         'turnOff' { Stop-Computer -Force }
         'restart' { Restart-Computer -Force }
         'doUpdates' {
-            $init = [scriptblock]::Create("function Install-WindowsUpdate {${function:Install-WindowsUpdate}}")
+            $init = [scriptblock]::Create("function Install-WindowsUpdate {${function:Install-WindowsUpdate}}`nfunction Get-WingetPath {${function:Get-WingetPath}}`nfunction Get-PowerShellHosts {${function:Get-PowerShellHosts}}`nfunction Invoke-PowerShellModules {${function:Invoke-PowerShellModules}}")
             Start-Job -Name 'updates' -InitializationScript $init -ScriptBlock {
-                try { winget upgrade --all --silent --accept-source-agreements --accept-package-agreements | Out-Null } catch { }
+                # winget also updates PowerShell 7 (Microsoft.PowerShell).
+                try {
+                    $winget = Get-WingetPath
+                    if ($winget) { & $winget upgrade --all --silent --accept-source-agreements --accept-package-agreements --disable-interactivity | Out-Null }
+                }
+                catch { }
+                try { Invoke-PowerShellModules -OnLinux $false -Update | Out-Null } catch { }
                 Install-WindowsUpdate
             } | Out-Null
         }

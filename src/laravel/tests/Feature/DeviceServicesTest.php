@@ -96,6 +96,23 @@ class DeviceServicesTest extends TestCase
             ->assertSee('Disk is asleep, showing the last known values.');
     }
 
+    public function test_detail_shows_powershell_module_updates(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $device = $this->report(['module_updates' => [
+            ['Name' => 'Az.Accounts', 'Version' => '2.12.1', 'Available' => '3.0.4', 'Edition' => 'Windows PowerShell'],
+            ['Name' => 'Pester', 'Version' => '5.5.0', 'Available' => '5.6.1', 'Edition' => 'PowerShell 7'],
+        ]]);
+
+        $this->assertCount(2, $device->moduleUpdates);
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('Updates')
+            ->assertSee('PowerShell modules')
+            ->assertSee('Az.Accounts')
+            ->assertSee('Windows PowerShell')
+            ->assertSee('5.5.0 → 5.6.1');
+    }
+
     public function test_detail_shows_collection_errors(): void
     {
         $this->actingAs(User::factory()->create());

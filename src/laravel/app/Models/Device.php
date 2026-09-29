@@ -325,6 +325,12 @@ class Device extends Model
         return [];
     }
 
+    /** Outdated PowerShell Gallery modules per edition (Windows PowerShell, PowerShell 7). */
+    public function getModuleUpdatesAttribute(): array
+    {
+        return self::listOf(json_decode(json_encode($this->data->module_updates ?? []), true));
+    }
+
     public function getUpdatesAttribute()
     {
         if (isset($this->data->os_updates)) {

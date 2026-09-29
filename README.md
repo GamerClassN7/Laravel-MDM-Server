@@ -145,8 +145,8 @@ The agent is designed to stay out of the way:
 - CPU and RAM usage come from plain Win32 calls (`GetSystemTimes`, `GlobalMemoryStatusEx`) on Windows
   and from `/proc/stat` and `/proc/meminfo` on Linux; CPU usage is the average over the heartbeat
   interval, so nothing is sampled in between,
-- the expensive update checks (Windows Update and winget, or the local apt cache on Linux) run every
-  6 hours in an idle-priority process; the result is cached in `inventory.json` and reused in reports,
+- the expensive update checks (Windows Update, winget and PowerShell Gallery modules, or the local apt
+  cache and modules on Linux) run every 6 hours in an idle-priority process; the result is cached in `inventory.json` and reused in reports,
 - disk health (S.M.A.R.T.) is read once an hour in an idle-priority process and cached in `health.json`;
   on Linux sleeping disks are skipped (`smartctl -n standby`), so the agent never spins them up.
 
@@ -154,11 +154,12 @@ The agent is designed to stay out of the way:
 |---|---|---|
 | Report | OS, uptime, user, CPU, battery, drives, networks, pending reboot | the same, from `/etc/os-release`, `/proc`, `df`, `ip` and `/var/run/reboot-required` |
 | Updates | Windows Update, winget | `apt list --upgradable` |
+| PowerShell modules | outdated PowerShell Gallery modules in Windows PowerShell and PowerShell 7 | the same in PowerShell 7 |
 | Services | running and stopped automatic services (`Get-Service`) | running and failed units (`systemctl`) |
 | Docker (when installed) | containers and their state (`docker ps --all`) | the same |
 | Disk health | `Get-PhysicalDisk`, `Get-StorageReliabilityCounter` | `smartctl` ([smartmontools](https://www.smartmontools.org/), `apt install smartmontools`) |
 | Turn off / Restart | `Stop-Computer` / `Restart-Computer` | `systemctl poweroff` / `systemctl reboot` |
-| Install updates | winget + Windows Update | `apt-get update && apt-get upgrade` |
+| Install updates | winget (also PowerShell 7 itself), PowerShell modules, Windows Update | `apt-get update && apt-get upgrade` (also PowerShell 7), PowerShell modules |
 
 The device detail has tabs for drives, updates, networks, **services** (with search, failed ones
 first), **Docker** containers (only on devices with Docker) and **disk health** (temperature,
