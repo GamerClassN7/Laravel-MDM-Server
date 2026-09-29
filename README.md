@@ -180,6 +180,42 @@ to change) are shown with an icon and do not count as available updates. The lis
 collected again a few minutes after packages are installed outside the agent (apt,
 unattended-upgrades).
 
+### Signed communication
+
+Agents 1.7.0 and newer sign everything they send and accept only what the server signed. The
+signatures are RSA-3072 (PKCS#1 v1.5, SHA-256) and are checked with plain .NET, which works in
+Windows PowerShell 5.1 and PowerShell 7 without extra modules. HTTPS still keeps the content
+private; the signatures make sure nothing was forged or changed on the way, in the database or on
+the device's disk.
+
+- **Server key:** `storage/mdm-signing.key`, created on the first start (`php artisan mdm:signing-key`
+  shows its fingerprint) and never stored in the database. Keep it in the backup of the storage
+  volume: without it agents accept no more updates or commands and have to be reinstalled.
+  `/agent/app.ps1` is served with the public key filled in, so a new or updated agent pins it on
+  its first start. The install commands also pass `-ServerKeyFingerprint`, and **Add device** shows
+  the fingerprint.
+- **Device key:** created on the device and never sent anywhere; the server stores only the public
+  key. On Windows it is a non-exportable CNG machine key (with a DPAPI-protected file as a fallback),
+  on Linux a root-only file.
+- **Requests:** every request of the agent is signed with the device key over the method, path,
+  time, a one-time nonce and the body hash. The server rejects unsigned, changed, replayed and stale
+  requests (more than 5 minutes off; the agent corrects its clock from signed server responses).
+- **Responses:** every response is signed with the server key for exactly that request (its nonce),
+  error responses included. The agent ignores anything else.
+- **WebSocket:** a command event is only a trigger signed by the server. The agent then takes the
+  commands over the signed API, so nothing can be injected or replayed over the WebSocket.
+  Heartbeats sent over the WebSocket are signed with the device key.
+- **Agent updates:** the agent downloads the new version into memory, checks its signature
+  (`/agent/app.ps1.sig`) and only then writes it to disk.
+
+The agent keeps the pinned key and its settings in `config.json`, which only `SYSTEM` / root and
+administrators can read. The server has no way to change this file. Agents older than 1.7.0 keep
+working, but they only get **Update agent**. After updating, the agent pins the key embedded in
+the new version and registers its device key once. The device detail shows **Signed** or
+**Unsigned agent**. System admins can reset a device key, for example after the agent was
+reinstalled with a new key. `MDM_REQUIRE_SIGNED_AGENTS=true` rejects unsigned agents entirely;
+they then have to be reinstalled.
+
 ### Dashboard
 
 `/dashboard` (menu **Dashboard**) is a configurable dashboard from
@@ -264,6 +300,11 @@ Windows (PowerShell as Administrator):
 Stop-ScheduledTask -TaskName 'Laravel-MDM-Agent'
 Unregister-ScheduledTask -TaskName 'Laravel-MDM-Agent' -Confirm:$false
 Remove-Item -Recurse -Force "$env:ProgramData\Laravel-MDM"
+# The device key (agents 1.7.0+) is a CNG machine key outside that folder.
+$provider = [Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider
+if ([Security.Cryptography.CngKey]::Exists('Laravel-MDM-Agent', $provider, 'MachineKey')) {
+    [Security.Cryptography.CngKey]::Open('Laravel-MDM-Agent', $provider, 'MachineKey').Delete()
+}
 ```
 
 Linux:
