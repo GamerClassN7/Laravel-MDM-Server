@@ -46,13 +46,22 @@ class ShowDevices extends Component
     #[On('device-deleted')]
     public function deviceDeleted()
     {
-        $this->selectedDeviceId = null;
         $this->devices = Device::all();
+        $this->selectFirstDevice();
     }
 
     public function mount()
     {
         $this->devices = Device::all();
+        $this->selectFirstDevice();
+    }
+
+    /** Opens the first device when none (or a deleted one) is selected, saving a click. */
+    private function selectFirstDevice(): void
+    {
+        if (! $this->devices->contains('id', (int) $this->selectedDeviceId)) {
+            $this->selectedDeviceId = $this->devices->first()?->id;
+        }
     }
 
     public function render()
