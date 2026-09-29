@@ -1417,16 +1417,16 @@
         },
         {
             "name": "laravel/framework",
-            "version": "v13.33.0",
+            "version": "v13.34.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/laravel/framework.git",
-                "reference": "91188a17ceaa3dbace6e8a5f7abd0d042e466359"
+                "reference": "c829b4982d29344cbcf1d7ad78eb5d2bb8ae66c4"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/laravel/framework/zipball/91188a17ceaa3dbace6e8a5f7abd0d042e466359",
-                "reference": "91188a17ceaa3dbace6e8a5f7abd0d042e466359",
+                "url": "https://api.github.com/repos/laravel/framework/zipball/c829b4982d29344cbcf1d7ad78eb5d2bb8ae66c4",
+                "reference": "c829b4982d29344cbcf1d7ad78eb5d2bb8ae66c4",
                 "shasum": ""
             },
             "require": {
@@ -1542,10 +1542,10 @@
                 "league/flysystem-sftp-v3": "^3.25.1",
                 "mockery/mockery": "^1.6.10",
                 "opis/json-schema": "^2.4.1",
-                "orchestra/testbench-core": "^11.0.0",
+                "orchestra/testbench-core": "^11.5.0",
                 "pda/pheanstalk": "^7.0.0 || ^8.0.0",
                 "php-http/discovery": "^1.15",
-                "phpstan/phpstan": "^2.2.14",
+                "phpstan/phpstan": "2.2.15",
                 "phpunit/phpunit": "^11.5.50 || ^12.5.8 || ^13.0.3",
                 "predis/predis": "^2.3 || ^3.0",
                 "rector/rector": "2.6.3",
@@ -1644,7 +1644,7 @@
                 "issues": "https://github.com/laravel/framework/issues",
                 "source": "https://github.com/laravel/framework"
             },
-            "time": "2026-09-22T14:12:33+00:00"
+            "time": "2026-09-29T12:46:21+00:00"
         },
         {
             "name": "laravel/prompts",
@@ -2538,16 +2538,16 @@
         },
         {
             "name": "livewire/livewire",
-            "version": "v3.8.9",
+            "version": "v3.8.10",
             "source": {
                 "type": "git",
                 "url": "https://github.com/livewire/livewire.git",
-                "reference": "993a3f5051774ca12768067ab8644ea97c417417"
+                "reference": "3adc7ff5d0898876f9848ab155310a296c717c1b"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/livewire/livewire/zipball/993a3f5051774ca12768067ab8644ea97c417417",
-                "reference": "993a3f5051774ca12768067ab8644ea97c417417",
+                "url": "https://api.github.com/repos/livewire/livewire/zipball/3adc7ff5d0898876f9848ab155310a296c717c1b",
+                "reference": "3adc7ff5d0898876f9848ab155310a296c717c1b",
                 "shasum": ""
             },
             "require": {
@@ -2602,7 +2602,7 @@
             "description": "A front-end framework for Laravel.",
             "support": {
                 "issues": "https://github.com/livewire/livewire/issues",
-                "source": "https://github.com/livewire/livewire/tree/v3.8.9"
+                "source": "https://github.com/livewire/livewire/tree/v3.8.10"
             },
             "funding": [
                 {
@@ -2610,7 +2610,7 @@
                     "type": "github"
                 }
             ],
-            "time": "2026-09-14T19:27:17+00:00"
+            "time": "2026-09-28T18:12:47+00:00"
         },
         {
             "name": "monolog/monolog",
@@ -2719,16 +2719,16 @@
         },
         {
             "name": "nesbot/carbon",
-            "version": "3.14.0",
+            "version": "3.14.1",
             "source": {
                 "type": "git",
                 "url": "https://github.com/CarbonPHP/carbon.git",
-                "reference": "0023eaa2c9110e47446dd512a263c69c40cd41f2"
+                "reference": "34e9109535165bf1d7ff17a610492372ae73a896"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/CarbonPHP/carbon/zipball/0023eaa2c9110e47446dd512a263c69c40cd41f2",
-                "reference": "0023eaa2c9110e47446dd512a263c69c40cd41f2",
+                "url": "https://api.github.com/repos/CarbonPHP/carbon/zipball/34e9109535165bf1d7ff17a610492372ae73a896",
+                "reference": "34e9109535165bf1d7ff17a610492372ae73a896",
                 "shasum": ""
             },
             "require": {
@@ -2820,7 +2820,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2026-09-12T20:45:19+00:00"
+            "time": "2026-09-27T12:07:26+00:00"
         },
         {
             "name": "nette/schema",
@@ -4550,9 +4550,14 @@
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/steelants/Laravel-Form/zipball/3d8ce5d0d19fbce7ff0854f545d3b9150a9c9f7b",
+                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/form/3d8ce5d0d19fbce7ff0854f545d3b9150a9c9f7b.zip",
                 "reference": "3d8ce5d0d19fbce7ff0854f545d3b9150a9c9f7b",
-                "shasum": ""
+                "mirrors": [
+                    {
+                        "url": "https://packistry.sa-dev.cz/public/zipball/%package%/%reference%.%type%",
+                        "preferred": true
+                    }
+                ]
             },
             "require": {
                 "laravel/framework": "^11.0|^12.0|^13.0",
@@ -4571,7 +4576,7 @@
                     "SteelAnts\\Form\\": "src/"
                 }
             },
-            "notification-url": "https://packagist.org/downloads/",
+            "notification-url": "https://packistry.sa-dev.cz/public/downloads/",
             "license": [
                 "MIT"
             ],
@@ -4581,10 +4586,6 @@
                 }
             ],
             "description": "Simple Form Builder class based on Laravel & Bootstrap 5",
-            "support": {
-                "issues": "https://github.com/steelants/Laravel-Form/issues",
-                "source": "https://github.com/steelants/Laravel-Form/tree/1.8.1"
-            },
             "time": "2026-08-03T18:19:07+00:00"
         },
         {
@@ -4597,9 +4598,14 @@
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/steelants/Laravel-Auth/zipball/98d5bcf5a7ade8f2e1e9978509d517f7037aaff6",
+                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/laravel-auth/98d5bcf5a7ade8f2e1e9978509d517f7037aaff6.zip",
                 "reference": "98d5bcf5a7ade8f2e1e9978509d517f7037aaff6",
-                "shasum": ""
+                "mirrors": [
+                    {
+                        "url": "https://packistry.sa-dev.cz/public/zipball/%package%/%reference%.%type%",
+                        "preferred": true
+                    }
+                ]
             },
             "require": {
                 "endroid/qr-code": "^6.1",
@@ -4625,7 +4631,7 @@
                     "SteelAnts\\LaravelAuth\\": "src/"
                 }
             },
-            "notification-url": "https://packagist.org/downloads/",
+            "notification-url": "https://packistry.sa-dev.cz/public/downloads/",
             "license": [
                 "MIT"
             ],
@@ -4636,10 +4642,6 @@
                 }
             ],
             "description": "Laravel Auth",
-            "support": {
-                "issues": "https://github.com/steelants/Laravel-Auth/issues",
-                "source": "https://github.com/steelants/Laravel-Auth/tree/1.3.0"
-            },
             "time": "2026-08-03T18:16:39+00:00"
         },
         {
@@ -4652,9 +4654,14 @@
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/steelants/Laravel-Boilerplate/zipball/9117bd93a448d69967dac4e0aac25e681952b335",
+                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/laravel-boilerplate/9117bd93a448d69967dac4e0aac25e681952b335.zip",
                 "reference": "9117bd93a448d69967dac4e0aac25e681952b335",
-                "shasum": ""
+                "mirrors": [
+                    {
+                        "url": "https://packistry.sa-dev.cz/public/zipball/%package%/%reference%.%type%",
+                        "preferred": true
+                    }
+                ]
             },
             "require": {
                 "laravel/framework": "^11.0|^12.0|^13.0",
@@ -4684,14 +4691,14 @@
                 }
             },
             "autoload": {
-                "files": [
-                    "src/helpers.php"
-                ],
                 "psr-4": {
                     "SteelAnts\\LaravelBoilerplate\\": "src/"
-                }
+                },
+                "files": [
+                    "src/helpers.php"
+                ]
             },
-            "notification-url": "https://packagist.org/downloads/",
+            "notification-url": "https://packistry.sa-dev.cz/public/downloads/",
             "license": [
                 "MIT"
             ],
@@ -4702,10 +4709,6 @@
                 }
             ],
             "description": "Everything you need to start your Laravel journey.",
-            "support": {
-                "issues": "https://github.com/steelants/Laravel-Boilerplate/issues",
-                "source": "https://github.com/steelants/Laravel-Boilerplate/tree/2.6.3"
-            },
             "time": "2026-08-21T19:25:52+00:00"
         },
         {
@@ -4714,12 +4717,12 @@
             "source": {
                 "type": "git",
                 "url": "https://git.steelants.cz/SteelAnts/Laravel-Boilerplate.Dashboard.git",
-                "reference": "528f5f94fddb5f63dfa53cba891b7ca522edb668"
+                "reference": "a996df1b6da46a2c76669cd64336a0f68eba1773"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/laravel-boilerplate.dashboard/528f5f94fddb5f63dfa53cba891b7ca522edb668.zip",
-                "reference": "528f5f94fddb5f63dfa53cba891b7ca522edb668",
+                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/laravel-boilerplate.dashboard/a996df1b6da46a2c76669cd64336a0f68eba1773.zip",
+                "reference": "a996df1b6da46a2c76669cd64336a0f68eba1773",
                 "mirrors": [
                     {
                         "url": "https://packistry.sa-dev.cz/public/zipball/%package%/%reference%.%type%",
@@ -4754,7 +4757,7 @@
                 }
             ],
             "description": "Livewire dashboard",
-            "time": "2026-09-29T13:07:42+00:00"
+            "time": "2026-09-29T13:58:48+00:00"
         },
         {
             "name": "steelants/laravel-general",
@@ -4815,9 +4818,14 @@
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/steelants/Livewire-DataTable/zipball/d55a44448d2f448591dbf959f873e5e817a23efd",
+                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/livewire-datatable/d55a44448d2f448591dbf959f873e5e817a23efd.zip",
                 "reference": "d55a44448d2f448591dbf959f873e5e817a23efd",
-                "shasum": ""
+                "mirrors": [
+                    {
+                        "url": "https://packistry.sa-dev.cz/public/zipball/%package%/%reference%.%type%",
+                        "preferred": true
+                    }
+                ]
             },
             "require": {
                 "laravel/framework": "^11.0|^12.0|^13.0",
@@ -4845,7 +4853,7 @@
                     "SteelAnts\\DataTable\\": "src/"
                 }
             },
-            "notification-url": "https://packagist.org/downloads/",
+            "notification-url": "https://packistry.sa-dev.cz/public/downloads/",
             "license": [
                 "Apache-2.0"
             ],
@@ -4855,10 +4863,6 @@
                 }
             ],
             "description": "Simple Datatable class based on Laravel and livewire",
-            "support": {
-                "issues": "https://github.com/steelants/Livewire-DataTable/issues",
-                "source": "https://github.com/steelants/Livewire-DataTable/tree/2.8.0"
-            },
             "time": "2026-08-03T18:08:57+00:00"
         },
         {
@@ -4871,9 +4875,14 @@
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/steelants/Livewire-Form/zipball/d5949fb5b263f6a416bc26de6eae3a2d516d3725",
+                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/livewire-form/d5949fb5b263f6a416bc26de6eae3a2d516d3725.zip",
                 "reference": "d5949fb5b263f6a416bc26de6eae3a2d516d3725",
-                "shasum": ""
+                "mirrors": [
+                    {
+                        "url": "https://packistry.sa-dev.cz/public/zipball/%package%/%reference%.%type%",
+                        "preferred": true
+                    }
+                ]
             },
             "require": {
                 "laravel/framework": "^11.0|^12.0|^13.0",
@@ -4893,7 +4902,7 @@
                     "SteelAnts\\LivewireForm\\": "src/"
                 }
             },
-            "notification-url": "https://packagist.org/downloads/",
+            "notification-url": "https://packistry.sa-dev.cz/public/downloads/",
             "license": [
                 "MIT"
             ],
@@ -4903,10 +4912,6 @@
                 }
             ],
             "description": "Simple Form class based on Laravel & Livewire",
-            "support": {
-                "issues": "https://github.com/steelants/Livewire-Form/issues",
-                "source": "https://github.com/steelants/Livewire-Form/tree/0.2.0"
-            },
             "time": "2026-08-03T18:53:19+00:00"
         },
         {
@@ -4919,9 +4924,14 @@
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/steelants/Livewire-Modal/zipball/d27a12facea5253fa16baa26429b25b00a7467d1",
+                "url": "https://packistry.sa-dev.cz/public/zipball/steelants/modal/d27a12facea5253fa16baa26429b25b00a7467d1.zip",
                 "reference": "d27a12facea5253fa16baa26429b25b00a7467d1",
-                "shasum": ""
+                "mirrors": [
+                    {
+                        "url": "https://packistry.sa-dev.cz/public/zipball/%package%/%reference%.%type%",
+                        "preferred": true
+                    }
+                ]
             },
             "require": {
                 "laravel/framework": "^11.0|^12.0|^13.0",
@@ -4945,7 +4955,7 @@
                     "SteelAnts\\Modal\\": "src/"
                 }
             },
-            "notification-url": "https://packagist.org/downloads/",
+            "notification-url": "https://packistry.sa-dev.cz/public/downloads/",
             "license": [
                 "MIT"
             ],
@@ -4955,10 +4965,6 @@
                 }
             ],
             "description": "Package for opening any livewire component inside modal. Styled with Bootstrap 5.",
-            "support": {
-                "issues": "https://github.com/steelants/Livewire-Modal/issues",
-                "source": "https://github.com/steelants/Livewire-Modal/tree/3.0.2"
-            },
             "abandoned": "steelants/laravel-boilerplate",
             "time": "2026-08-03T18:14:59+00:00"
         },
@@ -8699,16 +8705,16 @@
         },
         {
             "name": "phpunit/phpunit",
-            "version": "12.5.35",
+            "version": "12.5.37",
             "source": {
                 "type": "git",
                 "url": "https://github.com/sebastianbergmann/phpunit.git",
-                "reference": "345ac22e42cb14cdc7aa8428655d8bb8c82a4aab"
+                "reference": "684340c1590e5f3f3b859f5e80619725d88b63ba"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/sebastianbergmann/phpunit/zipball/345ac22e42cb14cdc7aa8428655d8bb8c82a4aab",
-                "reference": "345ac22e42cb14cdc7aa8428655d8bb8c82a4aab",
+                "url": "https://api.github.com/repos/sebastianbergmann/phpunit/zipball/684340c1590e5f3f3b859f5e80619725d88b63ba",
+                "reference": "684340c1590e5f3f3b859f5e80619725d88b63ba",
                 "shasum": ""
             },
             "require": {
@@ -8777,7 +8783,7 @@
             "support": {
                 "issues": "https://github.com/sebastianbergmann/phpunit/issues",
                 "security": "https://github.com/sebastianbergmann/phpunit/security/policy",
-                "source": "https://github.com/sebastianbergmann/phpunit/tree/12.5.35"
+                "source": "https://github.com/sebastianbergmann/phpunit/tree/12.5.37"
             },
             "funding": [
                 {
@@ -8785,7 +8791,7 @@
                     "type": "other"
                 }
             ],
-            "time": "2026-09-09T04:48:50+00:00"
+            "time": "2026-09-29T12:08:54+00:00"
         },
         {
             "name": "sebastian/cli-parser",

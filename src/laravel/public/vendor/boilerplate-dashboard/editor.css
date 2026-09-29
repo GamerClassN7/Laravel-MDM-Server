@@ -1,0 +1,20 @@
+.dash-handle { position: absolute; z-index: 15; touch-action: none; }
+.dash-handle::after { content: ''; position: absolute; border-radius: 4px; background: var(--bs-primary, #0d6efd); opacity: 0; transition: opacity .15s; }
+[data-widget]:hover > .dash-handle::after, .dash-handle:hover::after, [data-resizing] > .dash-handle::after { opacity: .6; }
+.dash-handle-x { top: 0; bottom: 0; right: calc(var(--bs-gutter-x, 0px) * .5 - 8px); width: 16px; cursor: col-resize; }
+.dash-handle-x::after { top: 25%; bottom: 25%; left: 6px; width: 4px; }
+.dash-handle-y { left: 0; right: 0; bottom: -8px; height: 16px; cursor: row-resize; }
+.dash-handle-y::after { left: 25%; right: 25%; top: 6px; height: 4px; }
+[data-resizing] { user-select: none; }
+[data-resizing] > .card { outline: 2px dashed var(--bs-primary, #0d6efd); outline-offset: 2px; user-select: none; }
+[data-resizing] > .card::before { content: attr(data-live); position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 30; padding: 2px 8px; border-radius: 4px; background: var(--bs-primary, #0d6efd); color: #fff; font-size: .8rem; pointer-events: none; }
+
+.dash-row-before { box-shadow: 0 -4px 0 -1px var(--bs-primary, #0d6efd); }
+.dash-row-after { box-shadow: 0 4px 0 -1px var(--bs-primary, #0d6efd); }
+
+.dash-drop-target { border-color: var(--bs-primary, #0d6efd) !important; background: rgba(13, 110, 253, .05); box-shadow: 0 0 0 2px rgba(13, 110, 253, .35); }
+.dash-drop-bar { position: absolute; top: 0; bottom: 0; left: -10px; width: 6px; z-index: 20; border-radius: 3px; background: var(--bs-primary, #0d6efd); box-shadow: 0 0 0 3px rgba(13, 110, 253, .25); pointer-events: none; }
+.dash-drop-end { display: flex; align-items: center; justify-content: center; min-height: 3rem; border: 2px dashed var(--bs-primary, #0d6efd); border-radius: .5rem; color: var(--bs-primary, #0d6efd); background: rgba(13, 110, 253, .06); pointer-events: none; }
+
+.dash-drag-chip { position: fixed; top: -100px; left: -100px; padding: 6px 14px; border-radius: 999px; background: var(--bs-primary, #0d6efd); color: #fff; font-size: .9rem; font-weight: 500; box-shadow: 0 4px 12px rgba(0, 0, 0, .25); }
+.opacity-50 > .dash-handle { display: none; }
