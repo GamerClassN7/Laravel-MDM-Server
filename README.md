@@ -156,6 +156,9 @@ the service:
 iwr -useb 'https://mdm.example.com/agent/app.ps1' -OutFile ($f = "$env:TEMP\mdm-agent-$(Get-Random).ps1"); if ($?) { & powershell -ExecutionPolicy Bypass -File $f -ServerUrl 'https://mdm.example.com' -EnrolmentCode 1234 -Install }
 ```
 
+Running the command on a device where the agent is already installed only updates it: the existing
+token is kept, the device is not enrolled again and no enrolment code is needed.
+
 The installer needs administrator rights (Administrator on Windows, root via `sudo` on Linux). It
 checks them first and stops without using up the enrolment code when they are missing.
  Set `AGENT_DOWNLOAD_URL` to download it from elsewhere, e.g. a GitHub release.
@@ -176,6 +179,21 @@ Optional parameters (stored in the scheduled task / service by `-Install`):
 | `-ReverbScheme` | scheme of `-ServerUrl` | `https` (wss) or `http` (ws) |
 | `-ReverbHost`, `-ReverbPort`, `-ReverbKey` | from server | Override the WebSocket address announced by the server |
 | `-NoRealtime` | | Use HTTPS only, without the WebSocket |
+
+The device detail shows whether the agent is connected over the **WebSocket** (heartbeat in the last
+90 s), the **REST API** (report in the last 11 min) or both, the agent version, and the device type
+(server, laptop or desktop, detected by the agent).
+
+When the server serves a newer agent than the device runs, the detail shows an **Update agent** button
+and the update command to copy. The button only asks the agent to update itself; the message carries
+no command or data. The agent then:
+
+- downloads `/agent/app.ps1` from the `-ServerUrl` it was installed with (never from an address in the
+  message), and only over HTTPS (plain HTTP is accepted for localhost only),
+- rejects a script that does not parse or is not newer than the running version (no downgrades),
+- replaces itself and restarts.
+
+Agents older than 1.1.0 cannot update themselves and have to be reinstalled via **Add device**.
 
 The token is stored next to the script (`Token.xml` on Windows, `token` readable by root only on
 Linux) and logs are written to `agent.log`. The agent only executes the commands `turnOff`, `restart`

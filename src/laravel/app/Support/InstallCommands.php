@@ -10,11 +10,14 @@ class InstallCommands
      *
      * @return array<string, string>
      */
-    public static function for(int|string $enrolmentCode): array
+    public static function for(int|string|null $enrolmentCode = null): array
     {
         $serverUrl = rtrim(url('/'), '/');
         $scriptUrl = config('mdm.agent_download_url') ?: url('agent/app.ps1');
-        $arguments = sprintf("-ServerUrl '%s' -EnrolmentCode %s -Install", $serverUrl, $enrolmentCode);
+        // Without a code the command only updates an existing installation (it keeps its token).
+        $arguments = $enrolmentCode === null
+            ? sprintf("-ServerUrl '%s' -Install", $serverUrl)
+            : sprintf("-ServerUrl '%s' -EnrolmentCode %s -Install", $serverUrl, $enrolmentCode);
 
         // A unique file name avoids reusing a stale download (e.g. one another user left in /tmp),
         // and "if ($?)" only runs the installer when the download succeeded.
@@ -32,5 +35,13 @@ class InstallCommands
                 $arguments,
             ),
         ];
+    }
+
+    /**
+     * Command that updates the agent already installed on the device.
+     */
+    public static function update(\App\Models\Device $device): string
+    {
+        return static::for()[$device->platform === 'linux' ? 'pwsh' : 'windows'];
     }
 }

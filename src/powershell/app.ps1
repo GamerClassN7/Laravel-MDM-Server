@@ -65,7 +65,9 @@ param (
 )
 
 $ErrorActionPreference = 'Stop'
-$AllowedCommands = @('turnOff', 'restart', 'doUpdates')
+# Reported to the server, which offers an update when it serves a newer agent.
+$AgentVersion = '1.1.0'
+$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent')
 # $IsLinux only exists in PowerShell 6+, Windows PowerShell 5.1 is always Windows.
 $OnLinux = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
 # Token, logs and cache live next to the script; -Install moves the agent to its install directory first.
@@ -73,16 +75,23 @@ $AgentDir = $PSScriptRoot
 
 function Get-MachineInfo {
     $DnsInfo = [System.Net.Dns]::GetHostByName($env:computerName)
-    $OperatingSystem = Get-CimInstance -ClassName Win32_OperatingSystem -Property Caption, Version, LastBootUpTime
+    $OperatingSystem = Get-CimInstance -ClassName Win32_OperatingSystem -Property Caption, Version, LastBootUpTime, ProductType
+    $ComputerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -Property UserName, PCSystemType
+    $Battery = (Get-CimInstance -ClassName Win32_Battery -Property EstimatedChargeRemaining).EstimatedChargeRemaining
+    # ProductType 1 = workstation (2, 3 = server editions), PCSystemType 2 = mobile.
+    $Type = if ($OperatingSystem.ProductType -ne 1) { 'server' } elseif ($ComputerSystem.PCSystemType -eq 2 -or $null -ne $Battery) { 'laptop' } else { 'desktop' }
     [PSCustomObject] @{
+        AgentVersion    = $AgentVersion
+        Platform        = 'windows'
+        Type            = $Type
         Hostname        = $DnsInfo.HostName
         User            = $env:USERNAME
         os              = "$($OperatingSystem.Caption) ($($OperatingSystem.Version))"
         uptime          = [int]((Get-Date) - $OperatingSystem.LastBootUpTime).TotalSeconds
-        last_logon_user = (Get-CimInstance -ClassName Win32_ComputerSystem -Property UserName).UserName
+        last_logon_user = $ComputerSystem.UserName
         Processor       = (Get-ItemProperty -Path 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name ProcessorNameString -ErrorAction SilentlyContinue).ProcessorNameString
         Cores           = [Environment]::ProcessorCount
-        Battery         = (Get-CimInstance -ClassName Win32_Battery -Property EstimatedChargeRemaining).EstimatedChargeRemaining
+        Battery         = $Battery
         RestartRequired = Test-PendingReboot
         Drives          = Get-Volume | Where-Object -Property DriveLetter -Value '' -NotLike | ForEach-Object {
             [PSCustomObject]@{
@@ -282,6 +291,9 @@ function Get-LinuxMachineInfo {
     $loggedOn = @(who 2>$null) | Select-Object -First 1
 
     [PSCustomObject]@{
+        AgentVersion    = $AgentVersion
+        Platform        = 'linux'
+        Type            = Get-LinuxDeviceType -HasBattery ([bool]$battery)
         Hostname        = [System.Net.Dns]::GetHostName()
         User            = [Environment]::UserName
         os              = $osRelease['PRETTY_NAME']
@@ -294,6 +306,30 @@ function Get-LinuxMachineInfo {
         Drives          = @(Get-LinuxDrives)
         Networks        = @(Get-LinuxNetworks)
     }
+}
+
+function Get-LinuxDeviceType {
+    param (
+        [bool]
+        $HasBattery
+    )
+
+    # SMBIOS chassis types: 8-10, 14, 30-32 portable; 17, 23, 28, 29 server / rack / blade.
+    $chassis = [int](Get-Content -Path /sys/class/dmi/id/chassis_type -ErrorAction SilentlyContinue)
+    if ($HasBattery -or $chassis -in 8, 9, 10, 14, 30, 31, 32) {
+        return 'laptop'
+    }
+    if ($chassis -in 17, 23, 28, 29) {
+        return 'server'
+    }
+
+    # No desktop environment installed: a server (also covers VMs, which report "Other").
+    $sessions = @('/usr/share/xsessions', '/usr/share/wayland-sessions') | Where-Object { (Get-ChildItem -Path $_ -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0 }
+    if (-not $sessions) {
+        return 'server'
+    }
+
+    return 'desktop'
 }
 
 function Get-LinuxDrives {
@@ -487,6 +523,8 @@ function Register-AgentTask {
     $arguments = '-WindowStyle Hidden -ExecutionPolicy Bypass -NoLogo -File "{0}\app.ps1" {1}' -f $AgentDir, (Get-AgentArguments)
     $Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument $arguments
 
+    # A running agent (update) would keep the old version; the task never starts a second instance.
+    Stop-ScheduledTask -TaskName "Laravel-MDM-Agent" -ErrorAction SilentlyContinue
     Register-ScheduledTask -TaskName "Laravel-MDM-Agent" -Trigger @($Trigger1, $Trigger2) -Settings $Settings -User "NT AUTHORITY\SYSTEM" -Action $Action -RunLevel Highest -Force | Out-Null
     Start-ScheduledTask -TaskName "Laravel-MDM-Agent"
 }
@@ -569,6 +607,50 @@ function Send-Report {
     }
 }
 
+function Update-Agent {
+    # Replace the installed script with the version the server serves, then restart.
+    # The command carries no data: the source is always the -ServerUrl set at install time.
+    $server = [Uri]$ServerUrl
+    if ($server.Scheme -ne 'https' -and -not $server.IsLoopback) {
+        Write-AgentLog 'Agent update refused: the server is not reached over HTTPS'
+        return
+    }
+
+    $download = Join-Path ([System.IO.Path]::GetTempPath()) "mdm-agent-update-$(Get-Random).ps1"
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri "$($ServerUrl.TrimEnd('/'))/agent/app.ps1" -OutFile $download
+
+        $errors = $null
+        [System.Management.Automation.Language.Parser]::ParseFile($download, [ref]$null, [ref]$errors) | Out-Null
+        if ($errors -or -not (Select-String -Path $download -Pattern 'function Start-Agent' -Quiet)) {
+            throw 'the downloaded agent is not valid'
+        }
+
+        # Only move forward, an older agent is never installed this way.
+        $version = (Select-String -Path $download -Pattern "^\`$AgentVersion = '([^']+)'" | Select-Object -First 1).Matches.Groups[1].Value
+        if (-not $version -or [version]$version -le [version]$AgentVersion) {
+            throw "the server offers version '$version', not newer than $AgentVersion"
+        }
+
+        Copy-Item -Path $download -Destination (Join-Path $AgentDir 'app.ps1') -Force
+    }
+    catch {
+        Write-AgentLog "Agent update failed: $($_.Exception.Message)"
+        return
+    }
+    finally {
+        Remove-Item -Path $download -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-AgentLog 'Agent updated, restarting'
+    if (-not $OnLinux) {
+        # The scheduled task does not start a second instance, start it again once this one has exited.
+        Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile -Command "Start-Sleep -Seconds 5; Start-ScheduledTask -TaskName Laravel-MDM-Agent"'
+    }
+    # systemd (Restart=always) starts the new version on Linux.
+    exit 0
+}
+
 function Invoke-DeviceCommand {
     param (
         [Parameter(Mandatory = $true)]
@@ -582,6 +664,11 @@ function Invoke-DeviceCommand {
     }
 
     Write-AgentLog "Executing command '$Command'"
+    if ($Command -eq 'updateAgent') {
+        Update-Agent
+        return
+    }
+
     if ($OnLinux) {
         switch ($Command) {
             'turnOff' { systemctl poweroff }
@@ -974,6 +1061,14 @@ if ($Install) {
     }
     New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
     $AgentDir = (Resolve-Path -Path $InstallPath).Path
+
+    # An existing installation keeps its token: the run only updates the agent and the service,
+    # the device is not enrolled again (an enrolment code is not needed and not used up).
+    $existing = Test-Path -Path (Join-Path $AgentDir $(if ($OnLinux) { 'token' } else { 'Token.xml' }))
+    if ($existing) {
+        Write-Host "Existing installation found in $AgentDir, updating the agent to $AgentVersion." -ForegroundColor Yellow
+    }
+
     $target = Join-Path $AgentDir 'app.ps1'
     if ($PSCommandPath -ne $target) {
         Copy-Item -Path $PSCommandPath -Destination $target -Force
@@ -984,7 +1079,8 @@ if ($Install) {
 
     Remove-TemporaryInstaller
 
-    Write-Host "Laravel-MDM agent installed to $AgentDir and started." -ForegroundColor Green
+    $action = if ($existing) { 'updated' } else { 'installed' }
+    Write-Host "Laravel-MDM agent $AgentVersion $action in $AgentDir and started." -ForegroundColor Green
     return
 }
 

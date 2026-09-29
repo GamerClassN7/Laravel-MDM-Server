@@ -20,6 +20,7 @@
                             @elseif ($hasUpdates)
                                 <i class="fas fa-exclamation-triangle text-warning me-2" title="{{ __('Updates available') }}"></i>
                             @endif
+                            <i class="{{ $selectedDevice->typeIcon }} text-body-secondary me-2" title="{{ __(ucfirst($selectedDevice->type)) }}"></i>
                             {{ $selectedDevice->DisplayName }}
                             <button class="btn btn-sm btn-sq" type="button" title="{{ __('Rename') }}" wire:click="$set('editMode', true)">
                                 <i class="fas fa-pen"></i>

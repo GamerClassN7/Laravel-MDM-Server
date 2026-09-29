@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\System\JobsController;
+use App\Support\AgentScript;
 use App\Livewire\ShowDevices;
 use Illuminate\Support\Facades\Route;
 
@@ -67,7 +68,7 @@ Route::prefix('system')->name('system.')->middleware(['auth', 'is-system-admin']
 
 // Agent script for the install commands (public, the device has no token yet).
 Route::get('/agent/app.ps1', function () {
-    $path = collect([resource_path('agent/app.ps1'), base_path('../powershell/app.ps1')])->first(fn ($path) => is_file($path));
+    $path = AgentScript::path();
     abort_if($path === null, 404);
 
     return response()->file($path, ['Content-Type' => 'text/plain; charset=utf-8']);
