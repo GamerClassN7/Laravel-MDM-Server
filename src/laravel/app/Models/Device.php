@@ -357,28 +357,10 @@ class Device extends Model
         return ['type' => $type, 'name' => $name, 'label' => self::VIRTUALIZATION_NAMES[$name] ?? ($name !== '' ? $name : __('unknown'))];
     }
 
-    /**
-     * Disk health is shown unless the device is virtual and no disk reports real S.M.A.R.T.
-     * values (virtual disks have none; disks passed through to a VM do).
-     */
+    /** Disk health is not shown for virtual machines and containers (virtual disks have no S.M.A.R.T.). */
     public function getShowDiskHealthAttribute(): bool
     {
-        if ($this->diskHealth === null) {
-            return false;
-        }
-        if ($this->virtualization === null) {
-            return true;
-        }
-
-        foreach ($this->diskHealth['disks'] as $disk) {
-            foreach (['Temperature', 'PowerOnHours', 'WearPercent', 'Reallocated', 'Pending', 'MediaErrors'] as $value) {
-                if (isset($disk[$value])) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
+        return $this->diskHealth !== null && $this->virtualization === null;
     }
 
     /** Battery level in percent, null without a battery (live state first, then the report). */

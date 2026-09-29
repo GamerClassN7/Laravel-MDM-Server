@@ -54,13 +54,13 @@ class DeviceVirtualizationTest extends TestCase
             ->assertDontSee('Disk health');
     }
 
-    public function test_disk_health_stays_for_disks_passed_through_to_a_vm(): void
+    public function test_disk_health_is_hidden_on_vms_even_with_smart_values(): void
     {
         $device = $this->createDevice(['Type' => 'vm', 'Name' => 'kvm'], [
             ['Device' => '/dev/sda', 'Model' => 'WD Red 4TB', 'Health' => 'passed', 'Temperature' => 33, 'PowerOnHours' => 1200],
         ]);
 
-        $this->assertTrue($device->showDiskHealth);
+        $this->assertFalse($device->showDiskHealth);
     }
 
     public function test_physical_machines_keep_disk_health(): void

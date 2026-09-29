@@ -71,7 +71,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.6.1'
+$AgentVersion = '1.6.2'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent')
 # $IsLinux only exists in PowerShell 6+, Windows PowerShell 5.1 is always Windows.
 $OnLinux = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
@@ -1684,8 +1684,13 @@ function Start-Agent {
     # First inventory a few minutes after start, so it does not add to the load during boot.
     $nextInventory = if ($inventory -and -not $inventory.Stale) { $inventory.CollectedAt.AddSeconds($InventoryInterval) } elseif ($inventory) { (Get-Date).AddMinutes(1) } else { (Get-Date).AddMinutes(5) }
     $inventoryJob = $null
-    $health = Get-CachedInventory -Name 'health'
-    $nextHealth = if ($health -and -not $health.Stale) { $health.CollectedAt.AddSeconds($HealthInterval) } else { (Get-Date).AddMinutes(2) }
+    # Virtual disks have no S.M.A.R.T. values: no disk health on VMs and containers.
+    $virtualization = try { if ($OnLinux) { Get-LinuxVirtualization } else { $system = Get-CimInstance -ClassName Win32_ComputerSystem -Property Manufacturer, Model; Get-Virtualization -Vendor $system.Manufacturer -Product $system.Model } } catch { $null }
+    $health = if ($virtualization) { $null } else { Get-CachedInventory -Name 'health' }
+    $nextHealth = if ($virtualization) { [DateTime]::MaxValue } elseif ($health -and -not $health.Stale) { $health.CollectedAt.AddSeconds($HealthInterval) } else { (Get-Date).AddMinutes(2) }
+    if ($virtualization) {
+        Write-AgentLog "Running in a $($virtualization.Type) ($($virtualization.Name)), disk health is not collected"
+    }
     $healthJob = $null
     $lastReport = [DateTime]::MinValue
     $realtime = $null

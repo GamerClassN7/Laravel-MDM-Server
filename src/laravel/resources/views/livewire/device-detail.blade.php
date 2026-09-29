@@ -169,8 +169,16 @@
             @endif
 
             @if ($hasUpdates)
-                <div aria-labelledby="updates-tab" class="tab-pane fade" id="updates-tab-pane" role="tabpanel" tabindex="0">
+                @php
+                    // Lowercase search text per row, for the client-side filter.
+                    $osSearch = array_map(fn ($update) => strtolower($update['Title'] ?? ''), $selectedDevice->updates);
+                    $appSearch = array_map(fn ($update) => strtolower(($update['Id'] ?? '') . ' ' . ($update['Source'] ?? '')), $selectedDevice->apps_packages_updates);
+                    $moduleSearch = array_map(fn ($module) => strtolower(($module['Name'] ?? '') . ' ' . ($module['Edition'] ?? '') . ' ' . ($module['User'] ?? '')), $moduleUpdates);
+                @endphp
+                <div aria-labelledby="updates-tab" class="tab-pane fade" id="updates-tab-pane" role="tabpanel" tabindex="0" x-data="{ search: '' }">
+                    <input class="form-control form-control-sm mb-3" placeholder="{{ __('Search') }}" style="max-width: 20rem;" type="search" x-model="search">
                     @if (count($selectedDevice->updates) > 0)
+                        <div x-show="!search || @js($osSearch).some(text => text.includes(search.toLowerCase()))">
                         <h5>{{ __('Operating system') }}</h5>
                         <ul class="list-group mb-3">
                             @foreach ($selectedDevice->updates as $update)
@@ -181,7 +189,7 @@
                                         default => null,
                                     };
                                 @endphp
-                                <li class="list-group-item d-flex justify-content-between align-items-center gap-2 {{ $deferred ? 'text-body-secondary' : '' }}" wire:key="os-update-{{ $loop->index }}">
+                                <li class="list-group-item d-flex justify-content-between align-items-center gap-2 {{ $deferred ? 'text-body-secondary' : '' }}" wire:key="os-update-{{ $loop->index }}" x-show="!search || @js($osSearch[$loop->index]).includes(search.toLowerCase())">
                                     <span>
                                         @if ($deferred)
                                             <i class="{{ $deferred['icon'] }} me-2" title="{{ $deferred['title'] }}"></i>
@@ -194,12 +202,14 @@
                                 </li>
                             @endforeach
                         </ul>
+                        </div>
                     @endif
                     @if (count($selectedDevice->apps_packages_updates) > 0)
+                        <div x-show="!search || @js($appSearch).some(text => text.includes(search.toLowerCase()))">
                         <h5>{{ __('Applications') }}</h5>
                         <ul class="list-group">
                             @foreach ($selectedDevice->apps_packages_updates as $appUpdate)
-                                <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2" wire:key="app-update-{{ $loop->index }}">
+                                <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2" wire:key="app-update-{{ $loop->index }}" x-show="!search || @js($appSearch[$loop->index]).includes(search.toLowerCase())">
                                     <span>
                                         <span class="fw-semibold">{{ $appUpdate['Id'] ?? '' }}</span>
                                         @if (! empty($appUpdate['Source']))
@@ -210,12 +220,14 @@
                                 </li>
                             @endforeach
                         </ul>
+                        </div>
                     @endif
                     @if (count($moduleUpdates) > 0)
+                        <div x-show="!search || @js($moduleSearch).some(text => text.includes(search.toLowerCase()))">
                         <h5 class="mt-3">{{ __('PowerShell modules') }}</h5>
                         <ul class="list-group">
                             @foreach ($moduleUpdates as $module)
-                                <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2" wire:key="module-{{ $loop->index }}">
+                                <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2" wire:key="module-{{ $loop->index }}" x-show="!search || @js($moduleSearch[$loop->index]).includes(search.toLowerCase())">
                                     <span>
                                         <span class="fw-semibold">{{ $module['Name'] ?? '' }}</span>
                                         <span class="small text-muted ms-1">{{ $module['Edition'] ?? '' }}</span>
@@ -227,6 +239,7 @@
                                 </li>
                             @endforeach
                         </ul>
+                        </div>
                     @endif
                 </div>
             @endif
@@ -290,13 +303,14 @@
             @endif
 
             @if ($docker !== null)
-                <div aria-labelledby="docker-tab" class="tab-pane fade" id="docker-tab-pane" role="tabpanel" tabindex="0">
+                <div aria-labelledby="docker-tab" class="tab-pane fade" id="docker-tab-pane" role="tabpanel" tabindex="0" x-data="{ search: '' }">
                     @if ($docker['error'])
                         <div class="alert alert-warning mb-3" role="alert">
                             <i class="fab fa-docker me-2"></i>{{ __('Docker is installed but the agent cannot read the containers: :error', ['error' => $docker['error']]) }}
                         </div>
                     @endif
                     @if (count($docker['containers']) > 0)
+                        <input class="form-control form-control-sm mb-3" placeholder="{{ __('Search') }}" style="max-width: 20rem;" type="search" x-model="search">
                         <div class="table-responsive">
                             <table class="table table-sm align-middle mb-0">
                                 <thead>
@@ -319,7 +333,7 @@
                                                 default => 'secondary',
                                             };
                                         @endphp
-                                        <tr wire:key="container-{{ $loop->index }}">
+                                        <tr wire:key="container-{{ $loop->index }}" x-show="!search || @js(strtolower(($container['Name'] ?? '') . ' ' . ($container['Image'] ?? '') . ' ' . ($container['Ports'] ?? '') . ' ' . $state)).includes(search.toLowerCase())">
                                             <td class="text-break">
                                                 <span class="fw-semibold">{{ $container['Name'] ?? '' }}</span>
                                                 <div class="small text-muted d-md-none">{{ $container['Image'] ?? '' }}</div>

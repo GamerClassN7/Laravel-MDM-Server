@@ -166,8 +166,8 @@ The agent is designed to stay out of the way:
 The device detail has tabs for drives, updates, networks, **services** (with search, failed ones
 first), **Docker** containers (only where the Docker engine is installed, not just the CLI) and
 **disk health** (temperature, power-on hours, SSD wear, reallocated / pending sectors and media
-errors). Virtual machines and containers get a badge with the hypervisor; their disk health tab is
-hidden unless a disk passed through to the VM reports real S.M.A.R.T. values. The battery shows a
+errors). Virtual machines and containers get a badge with the hypervisor; disk health is not collected
+or shown for them. Services, Docker and Updates have a search field. The battery shows a
 charging indicator while the device is on mains power.
 
 **Install updates** runs in the background: on Linux `apt-get upgrade --with-new-pkgs` (waits for a
