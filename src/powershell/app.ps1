@@ -1635,32 +1635,114 @@ function Register-DeviceKey {
     $script:KeyRegistered = $true
 }
 
+function Protect-MachineSecret {
+    # DPAPI bound to this computer (not to a user): for handing the token from the installing
+    # administrator to the SYSTEM task. The file is readable by SYSTEM and administrators only.
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Text
+    )
+
+    try { Add-Type -AssemblyName System.Security -ErrorAction Stop } catch { }
+    $bytes = [System.Security.Cryptography.ProtectedData]::Protect([System.Text.Encoding]::UTF8.GetBytes($Text), $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    return [Convert]::ToBase64String($bytes)
+}
+
+function Unprotect-MachineSecret {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Protected
+    )
+
+    try { Add-Type -AssemblyName System.Security -ErrorAction Stop } catch { }
+    $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String($Protected.Trim()), $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    return [System.Text.Encoding]::UTF8.GetString($bytes)
+}
+
+function Read-UserToken {
+    # Token.xml: a SecureString (DPAPI) readable only by the account that wrote it.
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Path
+    )
+
+    $auth = Import-Clixml -Path $Path
+    return [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($auth.token))
+}
+
+function Save-UserToken {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Path,
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Token
+    )
+
+    @{ token = ($Token | ConvertTo-SecureString -AsPlainText -Force) } | Export-Clixml -Path $Path
+    Protect-AgentPath -Path $Path
+}
+
+function Get-EnrolmentCode {
+    # From -EnrolmentCode, or saved by -Install for the SYSTEM task (Windows); asked for only when
+    # someone runs the agent interactively.
+    $code = $EnrolmentCode
+    if (-not $code) { $code = (Get-AgentConfig)['enrolment_code'] }
+    if (-not $code -and [Environment]::UserInteractive -and $Host.Name -eq 'ConsoleHost') {
+        $code = Read-Host -Prompt 'Enrolment code'
+    }
+    if (-not $code) {
+        throw 'The device is not enrolled: run the install command from Add device again (with a new enrolment code).'
+    }
+    return "$code"
+}
+
 function Get-AgentToken {
     if ($OnLinux) {
         # SecureString export is Windows only (DPAPI); keep the token in a root-only file.
         $tokenPath = "$AgentDir/token"
         if (-not (Test-Path -Path $tokenPath)) {
-            if (-not $EnrolmentCode) {
-                $script:EnrolmentCode = Read-Host -Prompt 'Enrolment code'
-            }
-            Set-Content -Path $tokenPath -Value (Register-MDMDevice -EnrolmentCode $EnrolmentCode) -NoNewline
-            chmod 600 $tokenPath
+            Set-Content -Path $tokenPath -Value (Register-MDMDevice -EnrolmentCode (Get-EnrolmentCode)) -NoNewline
+            Protect-AgentPath -Path $tokenPath
         }
         return (Get-Content -Path $tokenPath -Raw).Trim()
     }
 
-    $AuthFilePath = "$AgentDir/Token.xml"
-    if (-not (Test-Path -Path $AuthFilePath)) {
-        if (-not $EnrolmentCode) {
-            $script:EnrolmentCode = Read-Host -Prompt 'Enrolment code'
+    # Windows: the token is enrolled and kept by the account the agent runs as (SYSTEM), in
+    # Token.xml encrypted for that account.
+    $userPath = Join-Path $AgentDir 'Token.xml'
+    $machinePath = Join-Path $AgentDir 'token.dat'
+    if (Test-Path -Path $userPath) {
+        try {
+            return Read-UserToken -Path $userPath
         }
-        @{
-            "token" = ((Register-MDMDevice -EnrolmentCode $EnrolmentCode) | ConvertTo-SecureString -AsPlainText -Force)
-        } | Export-Clixml -Path $AuthFilePath
+        catch {
+            throw "Token.xml cannot be decrypted by $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name): it belongs to another account (agents before 1.7.0 enrolled as the installing administrator). Run the install command again as Administrator, it hands the token over."
+        }
     }
 
-    $Auth = Import-Clixml -Path $AuthFilePath
-    return [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Auth.token))
+    if (Test-Path -Path $machinePath) {
+        # Handed over by -Install: from now on only this account can read it.
+        $token = Unprotect-MachineSecret -Protected (Get-Content -Path $machinePath -Raw)
+        Save-UserToken -Path $userPath -Token $token
+        Remove-Item -Path $machinePath -Force
+        Write-AgentLog 'Device token taken over from the installation'
+        return $token
+    }
+
+    $token = Register-MDMDevice -EnrolmentCode (Get-EnrolmentCode)
+    Save-UserToken -Path $userPath -Token $token
+    $config = Get-AgentConfig
+    if ($config.ContainsKey('enrolment_code')) {
+        $config.Remove('enrolment_code')
+        Save-AgentConfig -Config $config
+    }
+    Write-AgentLog "Device enrolled (device $($script:DeviceId))"
+    return $token
 }
 
 function Get-AgentArguments {
@@ -1722,7 +1804,7 @@ function Register-AgentTask {
     $Trigger2 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15)
     $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
     $arguments = '-WindowStyle Hidden -ExecutionPolicy Bypass -NoLogo -File "{0}\app.ps1" {1}' -f $AgentDir, (Get-AgentArguments)
-    $Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument $arguments
+    $Action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument $arguments -WorkingDirectory $AgentDir
 
     # A running agent (update) would keep the old version; the task never starts a second instance.
     Stop-ScheduledTask -TaskName "Laravel-MDM-Agent" -ErrorAction SilentlyContinue
@@ -2644,7 +2726,7 @@ if ($Install) {
 
     # An existing installation keeps its token: the run only updates the agent and the service,
     # the device is not enrolled again (an enrolment code is not needed and not used up).
-    $existing = Test-Path -Path (Join-Path $AgentDir $(if ($OnLinux) { 'token' } else { 'Token.xml' }))
+    $existing = @($(if ($OnLinux) { 'token' } else { 'Token.xml', 'token.dat' }) | Where-Object { Test-Path -Path (Join-Path $AgentDir $_) }).Count -gt 0
     if ($existing) {
         Write-Host "Existing installation found in $AgentDir, updating the agent to $AgentVersion." -ForegroundColor Yellow
     }
@@ -2663,11 +2745,58 @@ if ($Install) {
     Write-Host "Server key: $($config['server_key'].fingerprint)" -ForegroundColor Yellow
     Write-Host "Remediation scripts: $(if ($config['scripts_enabled']) { 'enabled' } else { 'disabled' }) (config.json)" -ForegroundColor Yellow
 
-    Get-AgentToken | Out-Null
-    if ($existing -and -not $config['key_registered']) {
-        Register-DeviceKey -Token (Get-AgentToken)
+    if ($OnLinux) {
+        # The service runs as root like this installer: enrol right away.
+        Get-AgentToken | Out-Null
+        Register-AgentService
+    } else {
+        # The task runs as SYSTEM, which cannot read what this administrator encrypts: the agent
+        # enrols (token, device key) itself on its first start, this only hands over the code or
+        # the token of an older installation.
+        $userPath = Join-Path $AgentDir 'Token.xml'
+        if (Test-Path -Path $userPath) {
+            try {
+                Set-Content -Path (Join-Path $AgentDir 'token.dat') -Value (Protect-MachineSecret -Text (Read-UserToken -Path $userPath)) -NoNewline
+                Protect-AgentPath -Path (Join-Path $AgentDir 'token.dat')
+                Remove-Item -Path $userPath -Force
+                Write-Host 'The device token of the older installation is handed over to the SYSTEM task.' -ForegroundColor Yellow
+            }
+            catch {
+                # Already written by the SYSTEM task, nothing to hand over.
+            }
+        } elseif (-not $existing) {
+            if (-not $EnrolmentCode) {
+                Write-Host 'An enrolment code is needed (-EnrolmentCode, see Add device in the portal).' -ForegroundColor Red
+                exit 1
+            }
+            $config['enrolment_code'] = "$EnrolmentCode"
+            Save-AgentConfig -Config $config
+        }
+
+        $since = '{0:yyyy-MM-dd HH:mm:ss}' -f (Get-Date)
+        Register-AgentTask
+
+        # Wait for the first start of the task to report how it went (log lines of this run only).
+        $log = Join-Path $AgentDir 'agent.log'
+        $deadline = (Get-Date).AddSeconds(90)
+        $started = $false
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 2
+            $lines = @(if (Test-Path -Path $log) { Get-Content -Path $log -Tail 50 | Where-Object { $_.Length -ge 19 -and $_.Substring(0, 19) -ge $since } })
+            if ($lines -match 'Agent stopped: ') {
+                Write-Host "The agent failed to start: $(($lines -match 'Agent stopped: ') | Select-Object -Last 1)" -ForegroundColor Red
+                Remove-TemporaryInstaller
+                exit 1
+            }
+            if ($lines -match "Agent $([regex]::Escape($AgentVersion)) started") {
+                $started = $true
+                break
+            }
+        }
+        if (-not $started) {
+            Write-Host "The agent did not report its start within 90 s, see $log and the task Laravel-MDM-Agent in Task Scheduler." -ForegroundColor Yellow
+        }
     }
-    if ($OnLinux) { Register-AgentService } else { Register-AgentTask }
 
     Remove-TemporaryInstaller
 
@@ -2676,4 +2805,11 @@ if ($Install) {
     return
 }
 
-Start-Agent
+try {
+    Start-Agent
+}
+catch {
+    # Errors before the loop (token, keys, configuration) would end the task without a trace.
+    try { Write-AgentLog "Agent stopped: $($_.Exception.Message)" } catch { }
+    exit 1
+}

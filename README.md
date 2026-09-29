@@ -335,6 +335,26 @@ The token is stored next to the script (`Token.xml` on Windows, `token` readable
 Linux) and logs are written to `agent.log`. The agent only executes the commands `turnOff`, `restart`,
 `doUpdates` and `updateAgent`.
 
+### Checking the agent
+
+Windows: the agent is the scheduled task **Laravel-MDM-Agent** in the root of the Task Scheduler
+Library. It runs as `SYSTEM`, so Task Scheduler only lists it when started as Administrator. The
+installer only saves the enrolment code: the task enrols the device itself on its first start, as
+`SYSTEM`, which then holds the token and the device key. The installer waits for that start and
+shows whether it worked.
+
+```powershell
+Get-ScheduledTask -TaskName 'Laravel-MDM-Agent' | Select-Object TaskName, State   # Running
+Get-Content "$env:ProgramData\Laravel-MDM\agent.log" -Tail 30 -Wait                # as Administrator
+```
+
+Linux: `systemctl status laravel-mdm-agent` and `sudo tail -f /opt/laravel-mdm/agent.log`.
+
+If the agent cannot start (not enrolled, a token or key it cannot read), `agent.log` ends with
+`Agent stopped: <reason>`. On Windows, agents before 1.7.0 enrolled as the installing
+administrator, so the `SYSTEM` task could not read the token. Running the install command again
+as Administrator hands the token over.
+
 ### Uninstalling
 
 Windows (PowerShell as Administrator):
