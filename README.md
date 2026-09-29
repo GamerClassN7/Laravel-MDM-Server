@@ -218,7 +218,7 @@ they then have to be reinstalled.
 
 ### Remediation scripts
 
-**Scripts** (system admins only) holds PowerShell scripts in the style of Intune remediations:
+**Scripts** in the main menu (system admins only) lists the scripts in a data table (search, sorting, **Add** in a modal). Each script has a detail page with its code, fingerprint and all runs. The scripts are PowerShell, in the style of Intune remediations:
 
 - **Detection script** (required): exit 0 means compliant, exit 1 means the remediation should run.
 - **Remediation script** (optional): runs after a detection that exited with 1, then the detection

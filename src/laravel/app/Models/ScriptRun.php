@@ -72,7 +72,12 @@ class ScriptRun extends Model
 
     public function getStatusColorAttribute(): string
     {
-        return match ($this->status) {
+        return self::colorFor($this->status);
+    }
+
+    public static function colorFor(string $status): string
+    {
+        return match ($status) {
             'compliant', 'remediated' => 'success',
             'failed', 'error', 'rejected' => 'danger',
             'pending', 'sent' => 'info',

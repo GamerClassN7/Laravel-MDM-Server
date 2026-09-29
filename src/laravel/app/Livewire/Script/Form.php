@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Livewire\Scripts;
+namespace App\Livewire\Script;
 
 use App\Models\Script;
 use Illuminate\Support\Facades\Gate;
@@ -72,7 +72,7 @@ class Form extends Component
 
     public function render()
     {
-        return view('livewire.scripts.form', [
+        return view('livewire.script.form', [
             'script' => Script::find($this->scriptId),
         ]);
     }

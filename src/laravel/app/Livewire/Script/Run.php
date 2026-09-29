@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Livewire\Scripts;
+namespace App\Livewire\Script;
 
 use App\Models\Device;
 use App\Models\Script;
@@ -56,7 +56,7 @@ class Run extends Component
             ->sortBy(fn (array $device) => [$device['reason'] === null ? 0 : 1, mb_strtolower($device['name'])])
             ->values();
 
-        return view('livewire.scripts.run', [
+        return view('livewire.script.run', [
             'script' => $script,
             'devices' => $devices,
         ]);

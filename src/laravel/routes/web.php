@@ -94,7 +94,8 @@ Route::middleware('auth')->group(function () {
 
 // Remediation scripts: system admins only (they run as SYSTEM / root on the devices).
 Route::middleware(['auth', 'is-system-admin'])->group(function () {
-    Route::get('/scripts', App\Livewire\Scripts\Index::class)->name('scripts');
+    Route::get('/scripts', [App\Http\Controllers\ScriptController::class, 'index'])->name('script.index');
+    Route::get('/scripts/{script}', App\Livewire\Script\Detail::class)->name('script.show');
 });
 
 // Configurable dashboards (steelants/laravel-boilerplate.dashboard): /dashboard and its editor.

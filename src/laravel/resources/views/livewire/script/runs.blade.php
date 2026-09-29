@@ -24,7 +24,7 @@
                             @if ($showDevice)
                                 <a href="{{ route('devices', ['selectedDeviceId' => $run->device_id, 'tab' => 'scripts']) }}">{{ $run->device?->displayName }}</a>
                             @else
-                                {{ $run->script?->name }}
+                                <a href="{{ route('script.show', $run->script_id) }}">{{ $run->script?->name }}</a>
                             @endif
                         </td>
                         <td><span title="{{ $run->fingerprint }}">v{{ $run->version }} · <code>{{ substr($run->fingerprint, 0, 8) }}</code></span></td>

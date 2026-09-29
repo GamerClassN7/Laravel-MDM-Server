@@ -3,9 +3,11 @@
 namespace Tests\Feature;
 
 use App\Livewire\DeviceDetail;
-use App\Livewire\Scripts\Form;
-use App\Livewire\Scripts\Index;
-use App\Livewire\Scripts\Run;
+use App\Livewire\Script\DataTable;
+use App\Livewire\Script\Detail;
+use App\Livewire\Script\Form;
+use App\Livewire\Script\Run;
+use App\Livewire\ScriptRun\DataTable as RunDataTable;
 use App\Models\Device;
 use App\Models\Script;
 use App\Models\ScriptRun;
@@ -177,13 +179,16 @@ class ScriptTest extends TestCase
     public function test_scripts_are_for_system_admins_only(): void
     {
         $this->withoutVite();
+        $script = $this->script(['name' => 'Firewall on']);
         // APP_SYSTEM_ADMINS of the local .env would make the first users admins.
         config(['boilerplate.system_admins' => []]);
         $this->actingAs(User::factory()->create());
         $this->get('/scripts')->assertForbidden();
+        $this->get('/scripts/'.$script->id)->assertForbidden();
 
         $this->actingAs($this->admin());
-        $this->get('/scripts')->assertOk()->assertSee('Remediation scripts');
+        $this->get('/scripts')->assertOk()->assertSee('Scripts')->assertSee('Firewall on');
+        $this->get('/scripts/'.$script->id)->assertOk()->assertSee('Firewall on')->assertSee($script->fingerprint);
     }
 
     public function test_admin_creates_and_runs_a_script(): void
@@ -213,7 +218,9 @@ class ScriptTest extends TestCase
         // Opened again, the devices of the last run are selected.
         Livewire::test(Run::class, ['scriptId' => $script->id])->assertSet('selected', [(string) $device->id]);
 
-        Livewire::test(Index::class)->assertSee('Disk space')->assertSee('Pending 1');
+        Livewire::test(DataTable::class)->assertSee('Disk space')->assertSee('Pending 1')->assertSee(route('script.show', $script));
+        Livewire::test(Detail::class, ['script' => $script])->assertSee('Disk space')->assertSee('v1');
+        Livewire::test(RunDataTable::class, ['scriptId' => $script->id])->assertSee('srv-secret-token')->assertSee('Pending');
         Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])->assertSee('Scripts')->assertSee('Disk space');
     }
 
