@@ -92,7 +92,7 @@ param (
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
 $AgentVersion = '1.8.2'
-$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts')
+$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
     windows = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
@@ -2822,6 +2822,12 @@ function Invoke-DeviceCommand {
             # Only a trigger: the runs are taken, verified and run by the main loop.
             $script:ScriptsRequested = $true
         }
+        'sync' {
+            # Everything collected again now (inventory, disk health) and reported right away; the
+            # main loop does it (it owns the collection jobs) and reports the result.
+            $script:SyncRequest = @{ Id = $Id; Phase = 'requested' }
+            [void](Send-CommandStatus -Id $Id -Status running -Progress 5 -Message 'Collecting the inventory')
+        }
         { $_ -in 'doUpdates', 'installUpdate' } {
             $updateParams = $null
             if ($Command -eq 'installUpdate') {
@@ -3328,8 +3334,16 @@ function Start-Agent {
                     Save-CachedInventory -Data $data
                     $inventory = @{ CollectedAt = Get-Date; Data = $data }
                     $lastReport = [DateTime]::MinValue
+                    if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'collecting') {
+                        $script:SyncRequest.InventoryDone = $true
+                        [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status running -Progress 60 -Message 'Inventory collected')
+                    }
                 } else {
                     Write-AgentLog "Inventory collection failed: $($inventoryJob.ChildJobs[0].JobStateInfo.Reason)"
+                    if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'collecting') {
+                        [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status failed -Message "Inventory collection failed: $($inventoryJob.ChildJobs[0].JobStateInfo.Reason)")
+                        $script:SyncRequest = $null
+                    }
                 }
                 Remove-Job -Job $inventoryJob -Force
                 $inventoryJob = $null
@@ -3359,6 +3373,14 @@ function Start-Agent {
                     $nextInventory = Get-Date
                 }
             }
+            if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'requested') {
+                # Sync: collect everything now. A collection already running is waited for.
+                Write-AgentLog 'Sync requested: collecting the inventory and disk health now'
+                $script:SyncRequest.Phase = 'collecting'
+                $script:SyncRequest.InventoryDone = $false
+                if (-not $inventoryJob) { $nextInventory = Get-Date }
+                if (-not $virtualization -and -not $healthJob) { $nextHealth = Get-Date }
+            }
             if (-not $inventoryJob -and (Get-Date) -ge $nextInventory) {
                 Write-AgentLog 'Inventory collection started'
                 $inventoryJob = Start-InventoryCollection
@@ -3382,14 +3404,29 @@ function Start-Agent {
                 $nextHealth = (Get-Date).AddSeconds($HealthInterval)
             }
 
+            if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'collecting' -and $script:SyncRequest.InventoryDone -and -not $healthJob) {
+                # Collected: the full report goes now.
+                $script:SyncRequest.Phase = 'report'
+                [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status running -Progress 90 -Message 'Sending the report')
+                $lastReport = [DateTime]::MinValue
+            }
+
             if (((Get-Date) - $lastReport).TotalSeconds -ge $ReportInterval) {
                 $lastReport = Get-Date
                 try {
                     Send-Report -Data (Get-Report -Inventory $inventory.Data -Health $health.Data) -Token $Token
+                    if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'report') {
+                        [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status succeeded -Progress 100 -Message 'Synced')
+                        $script:SyncRequest = $null
+                    }
                 }
                 catch {
                     # HTTP problems must not tear down the WebSocket connection.
                     Write-AgentLog "Report failed: $($_.Exception.Message)"
+                    if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'report') {
+                        [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status failed -Message "Report failed: $($_.Exception.Message)")
+                        $script:SyncRequest = $null
+                    }
                 }
                 if ($Once) {
                     return
