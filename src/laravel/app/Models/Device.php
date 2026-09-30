@@ -20,6 +20,9 @@ class Device extends Model
     /** Agents from this version report the progress and the result of their commands. */
     public const TRACKING_VERSION = '1.8.0';
 
+    /** Agents from this version update PowerShell 7 from its GitHub release (installUpdate "pwsh"). */
+    public const PWSH_UPDATE_VERSION = '1.8.1';
+
     public const TYPE_ICONS = [
         'server' => 'fas fa-server',
         'laptop' => 'fas fa-laptop',
@@ -275,6 +278,7 @@ class Device extends Model
             ! $this->signsRequests && ! in_array($command, self::LEGACY_COMMANDS, true) => __('The agent does not sign its communication'),
             DeviceCommand::sanitizeParams($command, $params) === null => __('Invalid parameters'),
             $command === 'installUpdate' && ! $this->commandTracking => __('The agent is too old for this command'),
+            $command === 'installUpdate' && ($params['kind'] ?? null) === 'pwsh' && version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') => __('The agent is too old for this command'),
             default => null,
         };
     }
@@ -583,7 +587,7 @@ class Device extends Model
                 str_starts_with((string) ($row['Source'] ?? ''), 'flatpak') => ['kind' => 'flatpak', 'id' => (string) ($row['Id'] ?? ''), 'user' => preg_match('/^flatpak \((.+)\)$/', $row['Source'], $m) ? $m[1] : null],
                 ($row['Source'] ?? null) === 'snap' => ['kind' => 'snap', 'id' => (string) ($row['Id'] ?? '')],
                 // Installed from the GitHub release, the agent installs the newer one from there.
-                ($row['Source'] ?? null) === 'github.com/PowerShell' => ['kind' => 'pwsh', 'id' => (string) ($row['Avaliable'] ?? ''), 'title' => 'PowerShell '.($row['Avaliable'] ?? '')],
+                ($row['Source'] ?? null) === 'github.com/PowerShell' => version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') ? null : ['kind' => 'pwsh', 'id' => (string) ($row['Avaliable'] ?? ''), 'title' => 'PowerShell '.($row['Avaliable'] ?? '')],
                 $this->platform === 'windows' => ['kind' => 'winget', 'id' => (string) ($row['Id'] ?? '')],
                 default => null,
             },

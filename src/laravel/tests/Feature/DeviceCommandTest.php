@@ -174,8 +174,12 @@ class DeviceCommandTest extends TestCase
             'module_updates' => [['Name' => 'Pester', 'Version' => '4.10.1', 'Available' => '5.6.1', 'Edition' => 'Windows PowerShell', 'User' => 'alice']],
         ]);
 
-        // PowerShell installed from GitHub is updated from the GitHub release.
-        $this->assertSame(['kind' => 'pwsh', 'id' => '7.6.6', 'title' => 'PowerShell 7.6.6'], $device->updateTarget('app', $device->apps_packages_updates[1]));
+        // PowerShell installed from GitHub is updated from the GitHub release, by agents 1.8.1+.
+        $this->assertNull($device->updateTarget('app', $device->apps_packages_updates[1]));
+        $this->assertNull($device->issueCommand('installUpdate', ['kind' => 'pwsh', 'id' => '7.6.6']));
+        $newer = $this->device('1.8.1', ['packages_updates' => [['Id' => 'PowerShell', 'Version' => '7.6.1', 'Avaliable' => '7.6.6', 'Source' => 'github.com/PowerShell']]], 'newer-token');
+        $this->assertSame(['kind' => 'pwsh', 'id' => '7.6.6', 'title' => 'PowerShell 7.6.6'], $newer->updateTarget('app', $newer->apps_packages_updates[0]));
+        $this->assertNotNull($newer->issueCommand('installUpdate', ['kind' => 'pwsh', 'id' => '7.6.6']));
         // Windows users' own modules cannot be updated by SYSTEM.
         $this->assertNull($device->updateTarget('module', $device->moduleUpdates[0]));
 
