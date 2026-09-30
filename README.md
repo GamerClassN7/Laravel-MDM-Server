@@ -11,6 +11,33 @@ The answer is simple: over the years, the number of computers I take care of (my
 laptop, my work PC, …) kept growing, and it was not always easy to keep track of free disk space
 or whether OS updates were installed.
 
+## Quick start
+
+```yaml
+# docker-compose.yml
+services:
+  mdm:
+    image: ghcr.io/gamerclassn7/laravel-mdm-server:latest
+    container_name: mdm
+    ports:
+      - "8000:8000" # web and agent WebSocket (/app)
+    volumes:
+      - storage:/var/www/storage
+    restart: unless-stopped
+
+volumes:
+  storage:
+```
+
+```bash
+docker compose up -d
+```
+
+Open `http://<server>:8000`, create the first account (it is the system admin) and click
+**Add device**. No `.env` and no database server are needed: SQLite, the keys and the logs are
+kept in the `storage` volume. For access from outside your network put it behind a TLS proxy
+(see [Docker](#docker)).
+
 ## Screenshots
 
 Device detail with status, commands and CPU/memory history:
@@ -44,7 +71,18 @@ php artisan migrate
 npm install && npm run build
 ```
 
-Set `APP_SYSTEM_ADMINS` in `.env` to the IDs of the users who can access the system pages.
+Open the portal and create the first account on the setup page. Without `APP_SYSTEM_ADMINS` the
+first user (ID 1) is the system admin; set `APP_SYSTEM_ADMINS` in `.env` to a comma-separated list of
+user IDs to choose others. Users and new passwords can also be set from the command line:
+
+```bash
+php artisan mdm:user admin@example.com            # asks for the password
+docker exec -it mdm php artisan mdm:user admin@example.com
+```
+
+Installations from before the setup page got a default account (`the-email@example.com` /
+`the-password-of-choice`). Change its e-mail and password in the profile; the portal warns after
+logging in with that password.
 
 Run the scheduler every minute (it removes CPU/RAM history older than 7 days and runs backups;
 the Docker image runs it for you):
@@ -64,10 +102,16 @@ A small Alpine-based image (running as a non-root user) is built by GitHub Actio
 | Reverb | WebSocket server, served by nginx on the same port under `/app` | `REVERB_ENABLED=false` |
 | Scheduler | `php artisan schedule:work` | `SCHEDULER_ENABLED=false` |
 
+`docker-compose.yml` runs the image with SQLite and no settings (see [Quick start](#quick-start)).
+Settings are passed as `environment:` of the service, e.g. `APP_SYSTEM_ADMINS: 1,2`. For MySQL:
+
 ```bash
-cp src/laravel/.env.example src/laravel/.env   # set DB_* and REVERB_HOST/PORT/SCHEME
-docker compose --env-file src/laravel/.env up -d
+cp src/laravel/.env.example src/laravel/.env   # set DB_*
+docker compose -f docker-compose.mysql.yml --env-file src/laravel/.env up -d
 ```
+
+Links are `https` behind a TLS proxy (any domain name). Opened directly by an IP address or
+`localhost` over plain `http` (e.g. `http://192.168.1.10:8000`), they stay `http`.
 
 Only port 8000 is exposed: nginx serves the web and proxies `/app` (agent WebSockets) to Reverb
 inside the container. No Reverb settings are needed: the app publishes to Reverb directly inside the
@@ -81,8 +125,8 @@ and `REVERB_APP_SECRET` are generated on the first start when they are not set, 
 Values set in the environment always take precedence. Uploaded files and logs are stored in the
 `storage` volume.
 
-With `DB_CONNECTION=sqlite` and no `DB_DATABASE`, the database is kept in the `storage` volume
-(`storage/database.sqlite`). A volume mounted over `/var/www/database` keeps working: its
+Without `DB_CONNECTION` (or with `DB_CONNECTION=sqlite`) and no `DB_DATABASE`, the database is SQLite
+in the `storage` volume (`storage/database.sqlite`). A volume mounted over `/var/www/database` keeps working: its
 `database.sqlite` is used, and on every start the migrations in it are replaced with the ones
 from the image, so new migrations are applied after an update.
 

@@ -3,7 +3,6 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
-use App\Models\User;
 
 class CreateUsersTable extends Migration
 {
@@ -24,11 +23,7 @@ class CreateUsersTable extends Migration
             $table->timestamps();
         });
 
-        $user = new User();
-        $user->password = Hash::make('the-password-of-choice');
-        $user->email = 'the-email@example.com';
-        $user->name = 'My Name';
-        $user->save();
+        // No default account: the first user is created on the setup page (/setup).
     }
 
     /**
