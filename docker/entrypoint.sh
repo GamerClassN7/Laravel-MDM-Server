@@ -75,9 +75,18 @@ else
     export BROADCAST_CONNECTION
 fi
 
-# Errors always reach the container output (docker logs), also when .env logs to a file
-# (LOG_CHANNEL=daily from .env.example): that channel is kept and stderr is added next to it.
-case "${LOG_CHANNEL:=stderr}" in
+# Logs go to a file in the storage volume (storage/logs, shown in System > Logs) and to the
+# container output (docker logs). The channel comes from the environment or from a mounted .env
+# (the environment would otherwise hide it), daily files by default; stderr is added next to it.
+# LOG_CHANNEL=stderr logs to the container output only.
+if [ -z "${LOG_CHANNEL:-}" ] && [ -f .env ]; then
+    LOG_CHANNEL=$(sed -n 's/^LOG_CHANNEL=["'"'"']\{0,1\}\([A-Za-z0-9_,-]*\).*/\1/p' .env | tail -n 1)
+    if [ -z "${LOG_STACK:-}" ]; then
+        LOG_STACK=$(sed -n 's/^LOG_STACK=["'"'"']\{0,1\}\([A-Za-z0-9_,-]*\).*/\1/p' .env | tail -n 1)
+        [ -n "$LOG_STACK" ] || unset LOG_STACK
+    fi
+fi
+case "${LOG_CHANNEL:=daily}" in
     stderr) ;;
     stack)
         case ",${LOG_STACK:=single}," in

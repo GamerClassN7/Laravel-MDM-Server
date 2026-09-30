@@ -86,8 +86,10 @@ With `DB_CONNECTION=sqlite` and no `DB_DATABASE`, the database is kept in the `s
 `database.sqlite` is used, and on every start the migrations in it are replaced with the ones
 from the image, so new migrations are applied after an update.
 
-Errors always show up in `docker logs`; when `.env` sets a file channel (e.g. `LOG_CHANNEL=daily`),
-the file log is kept in addition. Database backups from the system pages are not supported in the image (no
+The application logs to daily files in the `storage` volume (`storage/logs`, shown in
+**System → Logs**) and to `docker logs` at the same time. Another file channel in the environment or
+in `.env` (e.g. `LOG_CHANNEL=single`) is used instead of the daily files; `LOG_CHANNEL=stderr` logs
+to `docker logs` only. Database backups from the system pages are not supported in the image (no
 `mysqldump`).
 
 ### Real-time commands (WebSocket)
