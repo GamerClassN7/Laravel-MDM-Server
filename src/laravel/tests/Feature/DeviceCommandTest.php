@@ -198,7 +198,8 @@ class DeviceCommandTest extends TestCase
             ->assertHasNoErrors()
             ->call('runAlert', 'restart')
             ->assertHasErrors('alert.restart')
-            ->assertSee('Waiting for the device');
+            ->assertSeeHtml('title="Waiting for the device"')
+            ->assertSeeHtml('spinner-border');
         $this->assertSame(['restart'], $device->fresh()->queuedCommands);
 
         // A failed command can be tried again from its alert.

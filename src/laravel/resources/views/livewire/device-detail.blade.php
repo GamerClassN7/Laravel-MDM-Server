@@ -118,7 +118,8 @@
     </div>
 
     <div class="mt-4">
-        <ul class="nav nav-tabs flex-nowrap text-nowrap overflow-x-auto overflow-y-hidden" role="tablist">
+        {{-- Scrolls sideways when the tabs do not fit; the active one is kept in view. --}}
+        <ul class="nav nav-tabs flex-nowrap text-nowrap overflow-x-auto overflow-y-hidden" role="tablist" x-init="$nextTick(() => { const tab = $el.querySelector('.nav-link.active'); if (tab) $el.scrollLeft = tab.offsetLeft - $el.clientWidth / 2 + tab.clientWidth / 2 })">
             @if (!empty($selectedDevice->drives))
                 <li class="nav-item" role="presentation">
                     <button aria-controls="drives-tab-pane" aria-selected="{{ $activeTab === 'drives' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'drives' ? 'active' : '' }}" x-on:click="$wire.tab = 'drives'" data-bs-target="#drives-tab-pane" data-bs-toggle="tab" id="drives-tab" role="tab" type="button">
@@ -331,14 +332,29 @@
                 <div aria-labelledby="networks-tab" class="tab-pane fade {{ $activeTab === 'networks' ? 'show active' : '' }}" id="networks-tab-pane" role="tabpanel" tabindex="0">
                     <ul class="list-group">
                         @foreach ($selectedDevice->networks as $network)
-                            <li class="list-group-item">
-                                <div class="d-flex justify-content-between">
-                                    <span class="fw-semibold">{{ $network->Name }}</span>
-                                    <x-badge color="{{ $network->Status === 'Up' ? 'success' : 'secondary' }}" variant="subtle">{{ $network->Status }}</x-badge>
+                            @php $type = \App\Models\Device::NETWORK_TYPES[$network['Type']]; @endphp
+                            <li class="list-group-item d-flex align-items-start gap-3 {{ $network['Connected'] ? '' : 'text-body-secondary' }}" wire:key="network-{{ $loop->index }}">
+                                <i class="{{ $type['icon'] }} fa-fw fs-5 mt-1 {{ $network['Connected'] ? 'text-primary' : 'text-body-tertiary' }}" title="{{ __($type['label']) }}"></i>
+                                <div class="flex-grow-1 min-w-0">
+                                    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                                        <span>
+                                            <span class="fw-semibold text-break">{{ $network['Name'] }}</span>
+                                            <x-badge class="ms-1" color="secondary" size="sm" variant="subtle">{{ __($type['label']) }}</x-badge>
+                                        </span>
+                                        <x-badge :color="$network['Connected'] ? 'success' : 'secondary'" :icon="$network['Connected'] ? 'fas fa-check-circle' : 'fas fa-times-circle'" title="{{ $network['Status'] }}" variant="subtle">
+                                            {{ $network['Connected'] ? __('Connected') : __('Disconnected') }}
+                                        </x-badge>
+                                    </div>
+                                    @if ($network['Description'] && $network['Description'] !== $network['Name'])
+                                        <div class="small text-muted text-break">{{ $network['Description'] }}</div>
+                                    @endif
+                                    @foreach ($network['IPAddresses'] as $ipAddress)
+                                        <div class="small text-muted font-monospace">{{ $ipAddress }}</div>
+                                    @endforeach
+                                    @if ($network['Mac'])
+                                        <div class="small text-body-tertiary font-monospace" title="{{ __('MAC address') }}">{{ $network['Mac'] }}</div>
+                                    @endif
                                 </div>
-                                @foreach ($network->IPAddresses as $ipAddress)
-                                    <div class="small text-muted">{{ $ipAddress }}</div>
-                                @endforeach
                             </li>
                         @endforeach
                     </ul>

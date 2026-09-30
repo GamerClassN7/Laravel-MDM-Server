@@ -141,13 +141,23 @@ function Get-MachineInfo {
                 "DriveType"     = $_.DriveType
             }
         }
-        Networks        = @(Get-NetAdapter | Where-Object -Property Status -Value 'Disabled' -NotLike | Where-Object -Property Status -Value 'Disconnected' -NotLike | Where-Object -Property ConnectorPresent -Value 'False' -NotLike | ForEach-Object {
-                $address = Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex
+        # Every adapter that is not disabled, also disconnected ones (shown as such in the portal).
+        Networks        = @(Get-NetAdapter | Where-Object { $_.Status -ne 'Disabled' -and -not $_.Hidden } | ForEach-Object {
+                $address = @(Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue)
+                $text = "$($_.Name) $($_.InterfaceDescription)"
                 [PSCustomObject]@{
                     "Name"                 = $_.Name
                     "InterfaceDescription" = $_.InterfaceDescription
-                    "Status"               = $_.Status
-                    "IPAddresses"          = $address.IPAddress
+                    "Status"               = "$($_.Status)"
+                    "Connected"            = "$($_.Status)" -eq 'Up'
+                    "Type"                 = if ($_.PhysicalMediaType -match '802\.11|Wireless' -or $text -match 'Wi-?Fi|Wireless|WLAN') { 'wifi' }
+                                             elseif ($text -match 'VPN|WireGuard|TAP-|OpenVPN|Tailscale|ZeroTier|Fortinet|AnyConnect|GlobalProtect|WAN Miniport') { 'vpn' }
+                                             elseif ($text -match 'Bluetooth') { 'bluetooth' }
+                                             elseif ($text -match 'Mobile Broadband|Cellular|WWAN|LTE') { 'cellular' }
+                                             elseif ($text -match 'Hyper-V|vEthernet|VirtualBox|VMware|Loopback') { 'virtual' }
+                                             else { 'lan' }
+                    "Mac"                  = $_.MacAddress
+                    "IPAddresses"          = @($address.IPAddress)
                 }
             })
     }
@@ -816,15 +826,29 @@ function Get-LinuxDrives {
 }
 
 function Get-LinuxNetworks {
+    # Every interface except loopback and container ends (veth), also the ones that are down.
     $interfaces = ip -j addr show 2>$null | ConvertFrom-Json
     foreach ($interface in $interfaces) {
-        if ($interface.ifname -eq 'lo' -or $interface.ifname -like 'veth*' -or $interface.operstate -eq 'DOWN') {
+        $name = "$($interface.ifname)"
+        if ($name -eq 'lo' -or $name -like 'veth*') {
             continue
         }
+        $addresses = @($interface.addr_info | ForEach-Object { $_.local })
+        $type = if ((Test-Path -Path "/sys/class/net/$name/wireless") -or $name -match "^wl") { 'wifi' }
+            elseif ($name -match '^(docker|br-)') { 'docker' }
+            elseif ($name -match '^(tun|tap|wg|tailscale|zt|ppp|vpn|ipsec|nordlynx)') { 'vpn' }
+            elseif ($name -match '^(wwan|ww)') { 'cellular' }
+            elseif ($name -match '^(virbr|vnet|lxc|lxd|incus|cni|flannel|cali|podman)') { 'virtual' }
+            elseif ($name -match '^(br|bond)') { 'bridge' }
+            else { 'lan' }
         [PSCustomObject]@{
-            Name        = $interface.ifname
-            Status      = if ($interface.operstate -eq 'UP') { 'Up' } else { $interface.operstate }
-            IPAddresses = @($interface.addr_info | ForEach-Object { $_.local })
+            Name        = $name
+            Status      = if ($interface.operstate -eq 'UP') { 'Up' } else { "$($interface.operstate)" }
+            # Tunnels (WireGuard, tun) report UNKNOWN: connected when they have an address.
+            Connected   = $interface.operstate -eq 'UP' -or ($interface.operstate -eq 'UNKNOWN' -and $addresses.Count -gt 0)
+            Type        = $type
+            Mac         = $interface.address
+            IPAddresses = $addresses
         }
     }
 }

@@ -599,12 +599,61 @@ class Device extends Model
         return DeviceCommand::sanitizeParams('installUpdate', $params);
     }
 
-    public function getNetworksAttribute()
+    /** Interface types with their icon and label (the agent reports Type from 1.8.0 on). */
+    public const NETWORK_TYPES = [
+        'lan' => ['icon' => 'fas fa-ethernet', 'label' => 'LAN'],
+        'wifi' => ['icon' => 'fas fa-wifi', 'label' => 'Wi-Fi'],
+        'vpn' => ['icon' => 'fas fa-shield-alt', 'label' => 'VPN'],
+        'docker' => ['icon' => 'fab fa-docker', 'label' => 'Docker'],
+        'bridge' => ['icon' => 'fas fa-project-diagram', 'label' => 'Bridge'],
+        'virtual' => ['icon' => 'fas fa-clone', 'label' => 'Virtual'],
+        'cellular' => ['icon' => 'fas fa-signal', 'label' => 'Mobile'],
+        'bluetooth' => ['icon' => 'fab fa-bluetooth-b', 'label' => 'Bluetooth'],
+    ];
+
+    /**
+     * Network interfaces, connected first: Name, Description, Type (see NETWORK_TYPES, guessed
+     * from the name for older agents), Connected, Status, Mac, IPAddresses.
+     */
+    public function getNetworksAttribute(): array
     {
-        if (isset($this->data->machine->Networks)) {
-            return (array) $this->data->machine->Networks;
+        $networks = [];
+        foreach (self::listOf(json_decode(json_encode($this->data->machine->Networks ?? []), true)) as $network) {
+            $name = (string) ($network['Name'] ?? '');
+            $description = (string) ($network['InterfaceDescription'] ?? '');
+            $status = (string) ($network['Status'] ?? '');
+            $addresses = array_values(array_filter((array) ($network['IPAddresses'] ?? []), 'is_string'));
+            $type = $network['Type'] ?? null;
+            $networks[] = [
+                'Name' => $name,
+                'Description' => $description,
+                'Type' => isset(self::NETWORK_TYPES[$type]) ? $type : self::guessNetworkType($name, $description),
+                'Connected' => isset($network['Connected']) ? (bool) $network['Connected'] : in_array(strtolower($status), ['up', 'connected'], true),
+                'Status' => $status,
+                'Mac' => $network['Mac'] ?? null,
+                'IPAddresses' => $addresses,
+            ];
         }
-        return [];
+        usort($networks, fn ($a, $b) => [! $a['Connected'], strtolower($a['Name'])] <=> [! $b['Connected'], strtolower($b['Name'])]);
+
+        return $networks;
+    }
+
+    /** The interface type from its name and description (agents before 1.8.0 do not report it). */
+    public static function guessNetworkType(string $name, string $description = ''): string
+    {
+        $text = $name.' '.$description;
+
+        return match (true) {
+            (bool) preg_match('/^wl|wi-?fi|wireless|wlan|802\.11/i', $text) => 'wifi',
+            (bool) preg_match('/^(docker|br-)/i', $name) => 'docker',
+            (bool) preg_match('/^(tun|tap|wg|tailscale|zt|ppp|vpn|ipsec|nordlynx)|vpn|wireguard|tap-|openvpn|tailscale|zerotier|fortinet|anyconnect|globalprotect|wan miniport/i', $text) => 'vpn',
+            (bool) preg_match('/bluetooth/i', $text) => 'bluetooth',
+            (bool) preg_match('/^(wwan|ww)|mobile broadband|cellular|lte/i', $text) => 'cellular',
+            (bool) preg_match('/^(virbr|vnet|lxc|lxd|incus|cni|flannel|cali|podman)|hyper-v|vethernet|virtualbox|vmware/i', $text) => 'virtual',
+            (bool) preg_match('/^(br|bond)/i', $name) => 'bridge',
+            default => 'lan',
+        };
     }
 
     /** Running services and the ones that failed or should run but do not, failed first. */
