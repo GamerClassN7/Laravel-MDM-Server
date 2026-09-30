@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.8.1'
+$AgentVersion = '1.8.2'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -381,12 +381,19 @@ function Install-PowerShellRelease {
         $file = Join-Path $temp $asset
         $ProgressPreference = 'SilentlyContinue'
         Invoke-WebRequest -Uri "$base/$asset" -OutFile $file -UseBasicParsing -TimeoutSec 600
-        $hashes = (Invoke-WebRequest -Uri "$base/hashes.sha256" -UseBasicParsing -TimeoutSec 60).Content
-        if ($hashes -is [byte[]]) { $hashes = [System.Text.Encoding]::UTF8.GetString($hashes) }
-        $expected = foreach ($line in ("$hashes" -split "`n")) { if ($line -match "^([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($asset))\s*$") { $Matches[1] } }
+        # The list is UTF-16 in some releases (7.6), ASCII in others: read it by its byte order mark.
+        $hashFile = Join-Path $temp 'hashes.sha256'
+        Invoke-WebRequest -Uri "$base/hashes.sha256" -OutFile $hashFile -UseBasicParsing -TimeoutSec 60
+        $reader = New-Object System.IO.StreamReader($hashFile, [System.Text.Encoding]::UTF8, $true)
+        try { $hashes = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        $expected = foreach ($line in ($hashes -split "`r?`n")) { if ($line.Trim() -match "^([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($asset))$") { $Matches[1] } }
+        if (-not $expected) {
+            [void]$State.Failures.Add("PowerShell ${Version}: $asset is not listed in the release hashes")
+            return
+        }
         $actual = (Get-FileHash -Path $file -Algorithm SHA256).Hash
-        if (-not $expected -or $actual -ne "$expected".ToUpperInvariant()) {
-            [void]$State.Failures.Add("PowerShell ${Version}: $asset does not match the release hashes")
+        if ($actual -ne "$(@($expected)[0])".ToUpperInvariant()) {
+            [void]$State.Failures.Add("PowerShell ${Version}: $asset does not match the release hashes (SHA-256 $actual)")
             return
         }
         "PowerShell ${Version}: $asset downloaded, SHA-256 verified"

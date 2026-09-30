@@ -21,7 +21,7 @@ class Device extends Model
     public const TRACKING_VERSION = '1.8.0';
 
     /** Agents from this version update PowerShell 7 from its GitHub release (installUpdate "pwsh"). */
-    public const PWSH_UPDATE_VERSION = '1.8.1';
+    public const PWSH_UPDATE_VERSION = '1.8.2';
 
     public const TYPE_ICONS = [
         'server' => 'fas fa-server',
