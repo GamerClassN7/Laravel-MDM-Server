@@ -30,7 +30,6 @@ class DeviceLiveStateTest extends TestCase
     {
         $device = new Device();
         $device->token = hash('sha256', 'secret-token');
-        $device->commands = [];
         $device->save();
 
         return $device;

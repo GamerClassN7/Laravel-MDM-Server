@@ -74,7 +74,7 @@ class DeviceFlowTest extends TestCase
 
         Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $device->id])
             ->call('sendCommandToDevice', 'restart');
-        $this->assertSame(['restart'], $device->fresh()->commands);
+        $this->assertSame(['restart'], $device->fresh()->queuedCommands);
 
         Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
             ->set('friendlyName', 'My PC')
@@ -82,7 +82,7 @@ class DeviceFlowTest extends TestCase
             ->assertSee('My PC');
 
         $this->signedJson('POST', '/api/device/commands/take', [], $token)
-            ->assertExactJson(['commands' => ['restart']]);
+            ->assertExactJson(['commands' => ['restart'], 'tasks' => [['id' => $device->commands()->value('id'), 'command' => 'restart', 'params' => []]]]);
         $this->signedJson('POST', '/api/device', $this->payload, $token)
             ->assertJson(['commands' => []]);
     }

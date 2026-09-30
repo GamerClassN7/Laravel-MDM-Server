@@ -18,7 +18,6 @@ class DeviceServicesTest extends TestCase
     {
         $device = new Device();
         $device->token = hash('sha256', 'secret-token');
-        $device->commands = [];
         $device->save();
 
         $this->withToken('secret-token')->postJson('/api/device', [
@@ -179,7 +178,8 @@ class DeviceServicesTest extends TestCase
             ->assertSee('Held back')
             ->assertSeeHtml('fa-hourglass-half')
             ->assertSeeHtml('fa-pause-circle')
-            ->assertSeeHtml('text-warning me-2" title="Updates available"');
+            // One installable update: counted on the tab.
+            ->assertSeeHtml('title="Installable updates"');
     }
 
     public function test_only_deferred_updates_raise_no_warning(): void
@@ -189,7 +189,7 @@ class DeviceServicesTest extends TestCase
 
         Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
             ->assertSee('drkonqi 6.6.6')
-            ->assertDontSeeHtml('title="Updates available"');
+            ->assertDontSeeHtml('title="Installable updates"');
 
         // Windows and older agents send no status: installable.
         $this->withToken('secret-token')->postJson('/api/device', [

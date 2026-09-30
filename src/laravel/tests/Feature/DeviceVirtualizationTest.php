@@ -18,7 +18,6 @@ class DeviceVirtualizationTest extends TestCase
     {
         $device = new Device();
         $device->token = hash('sha256', 'token');
-        $device->commands = [];
         $device->data = json_encode([
             'machine' => ['Hostname' => 'vm1', 'RestartRequired' => false, 'Drives' => [], 'Virtualization' => $virtualization],
             'disk_health' => ['disks' => $disks],
@@ -34,12 +33,14 @@ class DeviceVirtualizationTest extends TestCase
         $device = $this->createDevice(['Type' => 'vm', 'Name' => 'microsoft'], []);
 
         $this->assertSame(['type' => 'vm', 'name' => 'microsoft', 'label' => 'Hyper-V'], $device->virtualization);
-        Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $device->id])
-            ->assertSee('Virtual machine · Hyper-V');
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('Hyper-V')
+            ->assertSeeHtml('title="Runs in a virtual machine"');
 
         $container = $this->createDevice(['Type' => 'container', 'Name' => 'lxc'], []);
-        Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $container->id])
-            ->assertSee('Container · LXC');
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $container->id])
+            ->assertSee('LXC')
+            ->assertSeeHtml('title="Runs in a container"');
     }
 
     public function test_disk_health_is_hidden_for_virtual_disks(): void

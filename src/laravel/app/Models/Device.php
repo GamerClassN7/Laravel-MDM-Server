@@ -5,6 +5,8 @@ namespace App\Models;
 use App\Support\AgentScript;
 use Carbon\CarbonInterval;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
@@ -13,7 +15,10 @@ class Device extends Model
 {
     use HasFactory;
 
-    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'updateAgent', 'runScripts'];
+    public const COMMANDS = DeviceCommand::COMMANDS;
+
+    /** Agents from this version report the progress and the result of their commands. */
+    public const TRACKING_VERSION = '1.8.0';
 
     public const TYPE_ICONS = [
         'server' => 'fas fa-server',
@@ -124,45 +129,87 @@ class Device extends Model
     }
 
     /**
-     * Removes and returns the queued commands atomically: a command queued at the same time is
-     * either returned now or stays queued for the next report, it is never lost.
+     * Hands the queued commands to the agent: each one only once, also when two requests take
+     * them at the same time. Agents that do not sign (before 1.7.0) only get the agent update,
+     * agents before 1.8.0 no single updates (they would install all of them).
+     *
+     * @return Collection<int, DeviceCommand>
      */
-    public static function takeCommands(int $id): array
+    public static function takeQueuedCommands(int $id): Collection
     {
-        $taken = [];
-        self::swapCommands($id, function (array $commands) use (&$taken) {
-            $taken = $commands;
+        $device = static::query()->find($id);
+        if ($device === null) {
+            return collect();
+        }
+        DeviceCommand::expireStale($id);
 
-            return [];
-        });
-
-        // Commands queued before the device lost its key (or before this server version) are
-        // dropped for agents that do not sign, only the update to a signing agent is delivered.
-        if (! static::query()->whereKey($id)->whereNotNull('public_key')->exists()) {
-            $taken = array_values(array_intersect($taken, self::LEGACY_COMMANDS));
+        $taken = collect();
+        foreach ($device->commands()->where('status', 'queued')->orderBy('id')->get() as $command) {
+            $refused = match (true) {
+                ! $device->signsRequests && ! in_array($command->command, self::LEGACY_COMMANDS, true) => __('The agent does not sign its communication'),
+                $command->params && ! $device->commandTracking => __('The agent is too old for this command'),
+                default => null,
+            };
+            // Tracked commands wait for the agent's result, the others are done with the delivery.
+            $status = $refused ? 'failed' : ($device->commandTracking && ! in_array($command->command, DeviceCommand::UNTRACKED, true) ? 'sent' : 'delivered');
+            $values = ['status' => $status, 'sent_at' => now(), 'updated_at' => now()];
+            if ($status !== 'sent') {
+                $values += ['finished_at' => now(), 'message' => $refused];
+            }
+            // Only the request that changes it from queued hands it over.
+            if (DeviceCommand::query()->whereKey($command->id)->where('status', 'queued')->toBase()->update($values) === 1 && ! $refused) {
+                $taken->push($command->fill($values));
+            }
         }
 
         return $taken;
     }
 
-    /** Compare-and-swap on the commands column, retried when another request changed it meanwhile. */
-    private static function swapCommands(int $id, callable $change): bool
+    /** Names of the commands handed to the agent now (used by tests and older callers). */
+    public static function takeCommands(int $id): array
     {
-        for ($attempt = 0; $attempt < 10; $attempt++) {
-            $current = static::query()->whereKey($id)->toBase()->value('commands');
-            $next = json_encode(array_values($change((array) (json_decode((string) $current, true) ?? []))));
-            if ($next === $current) {
-                return true;
-            }
+        return self::takeQueuedCommands($id)->pluck('command')->all();
+    }
 
-            $query = static::query()->whereKey($id)->toBase();
-            $current === null ? $query->whereNull('commands') : $query->where('commands', $current);
-            if ($query->update(['commands' => $next]) === 1) {
-                return true;
-            }
-        }
+    /**
+     * The commands in an agent response: "commands" (names, agents before 1.8.0 run these; commands
+     * with parameters are left out) and "tasks" with the id each result is reported with.
+     */
+    public static function commandResponse(int $id): array
+    {
+        $taken = self::takeQueuedCommands($id);
 
-        return false;
+        return [
+            'commands' => $taken->filter(fn (DeviceCommand $command) => ! $command->params)->pluck('command')->values()->all(),
+            'tasks' => $taken->map->toTask()->values()->all(),
+        ];
+    }
+
+    public function commands(): HasMany
+    {
+        return $this->hasMany(DeviceCommand::class);
+    }
+
+    /** Names of the commands waiting for the agent. */
+    public function getQueuedCommandsAttribute(): array
+    {
+        return $this->commands()->where('status', 'queued')->orderBy('id')->pluck('command')->all();
+    }
+
+    /** Commands not finished yet, oldest first. */
+    public function activeCommands(): Collection
+    {
+        DeviceCommand::expireStale($this->id);
+
+        return $this->commands()->active()->orderBy('id')->get();
+    }
+
+    /** The active command for the command name (and target), if any. */
+    public static function findActive(Collection $commands, string $command, ?array $params = null): ?DeviceCommand
+    {
+        $target = $params ? DeviceCommand::targetOf($command, $params) : null;
+
+        return $commands->first(fn (DeviceCommand $active) => $active->command === $command && ($target === null || $active->target === $target));
     }
 
     public function metrics(): HasMany
@@ -171,33 +218,92 @@ class Device extends Model
     }
 
     /**
-     * Queues a command for the agent and pushes it over the WebSocket; returns false when it is not accepted.
+     * Queues a command for the agent and pushes it over the WebSocket; returns false when it is not
+     * accepted (unknown, the device is offline, or the same command is already on its way).
      */
-    public function queueCommand(string $command): bool
+    public function queueCommand(string $command, array $params = [], ?User $user = null): bool
     {
-        if (! in_array($command, self::COMMANDS, true) || $this->offline) {
-            return false;
-        }
-        if (! $this->signsRequests && ! in_array($command, self::LEGACY_COMMANDS, true)) {
-            return false;
-        }
+        return $this->issueCommand($command, $params, $user) !== null;
+    }
 
-        $queued = false;
-        self::swapCommands($this->id, function (array $commands) use ($command, &$queued) {
-            $queued = ! in_array($command, $commands, true);
+    /**
+     * Like queueCommand, returns the new command. A command that is already active (queued, taken
+     * or running) is not queued again: clicking twice, two users or a bulk action on many devices
+     * never runs it twice.
+     */
+    public function issueCommand(string $command, array $params = [], ?User $user = null): ?DeviceCommand
+    {
+        if ($this->commandRefusal($command, $params) !== null) {
+            return null;
+        }
+        $params = DeviceCommand::sanitizeParams($command, $params);
+        $target = DeviceCommand::targetOf($command, $params);
+        DeviceCommand::expireStale($this->id);
 
-            return $queued ? [...$commands, $command] : $commands;
+        // The device row is locked, so two requests cannot both find no active command.
+        $issued = DB::transaction(function () use ($command, $params, $target, $user) {
+            static::query()->whereKey($this->id)->lockForUpdate()->value('id');
+            $active = $this->commands()->active()->get();
+            if ($this->conflictsWith($active, $command, $target)) {
+                return null;
+            }
+
+            return $this->commands()->create([
+                'command' => $command,
+                'status' => 'queued',
+                'params' => $params ?: null,
+                'target' => $target,
+                'issued_by' => $user?->id ?? (auth()->user() instanceof User ? auth()->user()->id : null),
+            ]);
         });
-        if (! $queued) {
-            return false;
+        if ($issued === null) {
+            return null;
         }
-        $this->commands = self::query()->whereKey($this->id)->value('commands');
-        $this->syncOriginalAttribute('commands');
 
         // Instant delivery over WebSocket; the command stays queued for the HTTP report as a fallback.
         rescue(fn () => \App\Events\DeviceCommandIssued::dispatch($this, $command));
 
-        return true;
+        return $issued;
+    }
+
+    /** Why the command cannot be sent to this device, or null when it can (duplicates aside). */
+    public function commandRefusal(string $command, array $params = []): ?string
+    {
+        return match (true) {
+            ! in_array($command, self::COMMANDS, true) => __('Unknown command'),
+            $this->offline => __('The device is offline'),
+            ! $this->signsRequests && ! in_array($command, self::LEGACY_COMMANDS, true) => __('The agent does not sign its communication'),
+            DeviceCommand::sanitizeParams($command, $params) === null => __('Invalid parameters'),
+            $command === 'installUpdate' && ! $this->commandTracking => __('The agent is too old for this command'),
+            default => null,
+        };
+    }
+
+    /** Whether an active command makes the new one a duplicate. */
+    private function conflictsWith(Collection $active, string $command, ?string $target): bool
+    {
+        foreach ($active as $other) {
+            if ($other->command === $command && $other->target === $target) {
+                return true;
+            }
+            // All updates are being installed already, including this one.
+            if ($command === 'installUpdate' && $other->command === 'doUpdates') {
+                return true;
+            }
+            foreach (DeviceCommand::EXCLUSIVE as $group) {
+                if (in_array($command, $group, true) && in_array($other->command, $group, true)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /** Agents 1.8.0+ report progress and results; older ones only take their commands. */
+    public function getCommandTrackingAttribute(): bool
+    {
+        return $this->agent_version !== null && version_compare($this->agent_version, self::TRACKING_VERSION, '>=');
     }
 
     /** server, laptop or desktop, as detected by the agent. */
@@ -283,14 +389,14 @@ class Device extends Model
             return [];
         }
 
-        $drives = json_decode(json_encode($this->data->machine), true)["Drives"];
+        $drives = self::listOf(json_decode(json_encode($this->data->machine ?? []), true)['Drives'] ?? []);
         foreach ( $drives  as $key => $drive) {
             $drive = (array)$drive;
-            if ($drive['Size'] <= 0) {
+            if (($drive['Size'] ?? 0) <= 0) {
                 continue;
             }
 
-            $usedSpace = (int) $drive['Size'] - (int) $drive['SizeRemaining'];
+            $usedSpace = (int) $drive['Size'] - (int) ($drive['SizeRemaining'] ?? 0);
             $drives[$key]['PercentUsed'] = round($usedSpace / ((int) $drive['Size'] / 100));
         }
 
@@ -300,16 +406,6 @@ class Device extends Model
     public function setDrivesAttribute($value)
     {
         $this->attributes['drives'] = json_encode($value);
-    }
-
-    public function getCommandsAttribute($value)
-    {
-        return json_decode($value);
-    }
-
-    public function setCommandsAttribute($value)
-    {
-        $this->attributes['commands'] = json_encode((array) $value);
     }
 
     public function getDisplayNameAttribute()
@@ -466,6 +562,41 @@ class Device extends Model
     public function getInstallableUpdatesAttribute(): array
     {
         return array_values(array_filter($this->updates, fn ($update) => $update['Status'] === 'installable'));
+    }
+
+    /**
+     * The installUpdate parameters for one row of the update lists ('os', 'app' or 'module'), or
+     * null when that update cannot be installed on its own (older agents, phased or held back
+     * packages, the PowerShell release from GitHub, modules in a Windows user profile).
+     */
+    public function updateTarget(string $section, array $row): ?array
+    {
+        if (! $this->commandTracking) {
+            return null;
+        }
+
+        $params = match ($section) {
+            'os' => $this->platform === 'linux'
+                ? (($row['Status'] ?? 'installable') === 'installable' ? ['kind' => 'apt', 'id' => strtok((string) ($row['Title'] ?? ''), ' ') ?: '', 'title' => $row['Title'] ?? null] : null)
+                : (! empty($row['Id']) ? ['kind' => 'windows', 'id' => (string) $row['Id'], 'title' => $row['Title'] ?? null] : null),
+            'app' => match (true) {
+                str_starts_with((string) ($row['Source'] ?? ''), 'flatpak') => ['kind' => 'flatpak', 'id' => (string) ($row['Id'] ?? ''), 'user' => preg_match('/^flatpak \((.+)\)$/', $row['Source'], $m) ? $m[1] : null],
+                ($row['Source'] ?? null) === 'snap' => ['kind' => 'snap', 'id' => (string) ($row['Id'] ?? '')],
+                $this->platform === 'windows' && ($row['Source'] ?? null) !== 'github.com/PowerShell' => ['kind' => 'winget', 'id' => (string) ($row['Id'] ?? '')],
+                default => null,
+            },
+            'module' => $this->platform === 'windows' && ! empty($row['User'])
+                ? null
+                : ['kind' => 'module', 'id' => (string) ($row['Name'] ?? ''), 'edition' => $row['Edition'] ?? null, 'version' => $row['Available'] ?? null, 'user' => $row['User'] ?: null],
+            default => null,
+        };
+        if ($params === null) {
+            return null;
+        }
+        $params = array_filter($params, fn ($value) => $value !== null);
+        $params['title'] ??= $params['id'];
+
+        return DeviceCommand::sanitizeParams('installUpdate', $params);
     }
 
     public function getNetworksAttribute()

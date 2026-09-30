@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Events\DeviceCommandIssued;
 use App\Livewire\DeviceAlerts;
+use App\Livewire\DeviceDetail;
 use App\Models\Device;
 use App\Models\User;
 use App\Support\AgentScript;
@@ -20,7 +21,6 @@ class DeviceAgentStatusTest extends TestCase
     {
         $device = new Device();
         $device->token = hash('sha256', $token);
-        $device->commands = [];
         $device->data = json_encode(['machine' => $machine + ['RestartRequired' => 'false']]);
         $device->save();
 
@@ -93,13 +93,14 @@ class DeviceAgentStatusTest extends TestCase
         Device::recordHeartbeat($device->id);
 
         Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $device->id])
-            ->assertSee('A newer agent is available (0.9.0 → '.AgentScript::version().').')
+            ->assertSee('A newer agent is available')
+            ->assertSee('0.9.0 → '.AgentScript::version())
             ->assertSee('Update agent')
-            ->assertSee('WebSocket')
-            ->assertSee('REST API')
-            ->call('updateAgent');
+            ->call('runAlert', 'agent')
+            // Already on its way: a second click does not queue it again.
+            ->call('runAlert', 'agent');
 
-        $this->assertSame(['updateAgent'], $device->fresh()->commands);
+        $this->assertSame(['updateAgent'], $device->fresh()->queuedCommands);
         Event::assertDispatched(DeviceCommandIssued::class, fn ($event) => $event->command === 'updateAgent');
     }
 
@@ -109,7 +110,7 @@ class DeviceAgentStatusTest extends TestCase
         $device = $this->createDevice();
 
         Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $device->id])
-            ->assertSee('Agent unknown')
+            ->assertSee('unknown → '.AgentScript::version())
             ->assertSee('reinstall it with the command from Add device')
             ->assertDontSee('Update agent');
     }
@@ -141,7 +142,7 @@ class DeviceAgentStatusTest extends TestCase
         $device = $this->createDevice(['AgentVersion' => '0.9.0', 'Platform' => 'linux']);
 
         Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $device->id])
-            ->assertSee('Or run on the device (sudo pwsh):')
+            ->assertSee('Or run on the device (sudo pwsh)')
             ->assertSee(\App\Support\InstallCommands::update($device));
     }
 
@@ -151,11 +152,14 @@ class DeviceAgentStatusTest extends TestCase
         $current = $this->createDevice(['AgentVersion' => AgentScript::version()]);
         $old = $this->createDevice(['AgentVersion' => '0.9.0']);
 
-        Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $current->id])
-            ->assertSeeHtml('bg-success-subtle')
-            ->assertSee('The agent is up to date');
+        // The agent tab of the detail: version, connections.
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $current->id])
+            ->assertSee('Up to date')
+            ->assertSee('WebSocket')
+            ->assertSee('REST API');
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $old->id])
+            ->assertSee('Newer: '.AgentScript::version());
         Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $old->id])
-            ->assertSeeHtml('bg-warning-subtle')
             ->assertSee('A newer agent is available');
     }
 }
