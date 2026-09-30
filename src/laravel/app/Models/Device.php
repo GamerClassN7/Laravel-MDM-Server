@@ -567,7 +567,7 @@ class Device extends Model
     /**
      * The installUpdate parameters for one row of the update lists ('os', 'app' or 'module'), or
      * null when that update cannot be installed on its own (older agents, phased or held back
-     * packages, the PowerShell release from GitHub, modules in a Windows user profile).
+     * packages, modules in a Windows user profile).
      */
     public function updateTarget(string $section, array $row): ?array
     {
@@ -582,7 +582,9 @@ class Device extends Model
             'app' => match (true) {
                 str_starts_with((string) ($row['Source'] ?? ''), 'flatpak') => ['kind' => 'flatpak', 'id' => (string) ($row['Id'] ?? ''), 'user' => preg_match('/^flatpak \((.+)\)$/', $row['Source'], $m) ? $m[1] : null],
                 ($row['Source'] ?? null) === 'snap' => ['kind' => 'snap', 'id' => (string) ($row['Id'] ?? '')],
-                $this->platform === 'windows' && ($row['Source'] ?? null) !== 'github.com/PowerShell' => ['kind' => 'winget', 'id' => (string) ($row['Id'] ?? '')],
+                // Installed from the GitHub release, the agent installs the newer one from there.
+                ($row['Source'] ?? null) === 'github.com/PowerShell' => ['kind' => 'pwsh', 'id' => (string) ($row['Avaliable'] ?? ''), 'title' => 'PowerShell '.($row['Avaliable'] ?? '')],
+                $this->platform === 'windows' => ['kind' => 'winget', 'id' => (string) ($row['Id'] ?? '')],
                 default => null,
             },
             'module' => $this->platform === 'windows' && ! empty($row['User'])

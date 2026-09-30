@@ -101,6 +101,8 @@ $UpdateKinds = @{
     flatpak = '^[A-Za-z0-9_\-]+(\.[A-Za-z0-9_\-]+)+$'
     snap    = '^[a-z0-9][a-z0-9\-]*$'
     module  = '^[A-Za-z0-9][A-Za-z0-9._\-]*$'
+    # A PowerShell 7 release from GitHub, by its version.
+    pwsh    = '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}$'
 }
 # The server's public key ("n:e", base64), filled in by the server when it serves this script.
 # The agent pins it on the first start and then trusts only what is signed with it.
@@ -331,6 +333,100 @@ function Install-WindowsUpdate {
     }
     & $OnProgress 100 'Windows Update: done'
     "Windows Update: install finished$(if ($reboot) { ', restart required' })"
+}
+
+function Install-PowerShellRelease {
+    # Installs a PowerShell 7 release from GitHub (installations no package manager knows about).
+    # The download is checked against the release's hashes.sha256. Linux: the .deb when the
+    # powershell package is installed (amd64), otherwise the tar.gz replaces the directory of
+    # the installed pwsh. Windows: the MSI. Returns log lines; failures go to $State.Failures.
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Version,
+        [bool]
+        $OnLinux,
+        [hashtable]
+        $State = @{ Failures = [System.Collections.ArrayList]@() }
+    )
+
+    if ($Version -notmatch '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}$') {
+        [void]$State.Failures.Add("PowerShell: invalid version '$Version'")
+        return
+    }
+    $pwsh = @(Get-PowerShellHosts -OnLinux $OnLinux | Where-Object { $_.Edition -eq 'PowerShell 7' }) | Select-Object -First 1
+    if (-not $pwsh) {
+        [void]$State.Failures.Add('PowerShell 7 is not installed')
+        return
+    }
+    $base = "https://github.com/PowerShell/PowerShell/releases/download/v$Version"
+    $machine = if ($OnLinux) { "$(uname -m)" } else { "$env:PROCESSOR_ARCHITECTURE" }
+    $arch = switch -Regex ($machine) { '^(x86_64|AMD64)$' { 'x64' } '^(aarch64|arm64|ARM64)$' { 'arm64' } default { $null } }
+    if (-not $arch) {
+        [void]$State.Failures.Add("PowerShell: architecture '$machine' is not supported")
+        return
+    }
+    $realPath = if ($OnLinux) { "$(readlink -f $pwsh.Path)" } else { $pwsh.Path }
+    $dir = Split-Path -Path $realPath -Parent
+    $asset = if ($OnLinux) {
+        $deb = if ($arch -eq 'x64' -and (Get-Command -Name dpkg-query -ErrorAction SilentlyContinue)) { "$(dpkg-query -W -f='${Status}' powershell 2>$null)" -match 'install ok installed' }
+        if ($deb) { "powershell_$Version-1.deb_amd64.deb" } else { "powershell-$Version-linux-$arch.tar.gz" }
+    } else {
+        "PowerShell-$Version-win-$arch.msi"
+    }
+
+    $temp = Join-Path ([System.IO.Path]::GetTempPath()) "mdm-pwsh-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $temp -Force | Out-Null
+    try {
+        $file = Join-Path $temp $asset
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri "$base/$asset" -OutFile $file -UseBasicParsing -TimeoutSec 600
+        $hashes = (Invoke-WebRequest -Uri "$base/hashes.sha256" -UseBasicParsing -TimeoutSec 60).Content
+        if ($hashes -is [byte[]]) { $hashes = [System.Text.Encoding]::UTF8.GetString($hashes) }
+        $expected = foreach ($line in ("$hashes" -split "`n")) { if ($line -match "^([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($asset))\s*$") { $Matches[1] } }
+        $actual = (Get-FileHash -Path $file -Algorithm SHA256).Hash
+        if (-not $expected -or $actual -ne "$expected".ToUpperInvariant()) {
+            [void]$State.Failures.Add("PowerShell ${Version}: $asset does not match the release hashes")
+            return
+        }
+        "PowerShell ${Version}: $asset downloaded, SHA-256 verified"
+
+        if ($asset -like '*.deb') {
+            $env:DEBIAN_FRONTEND = 'noninteractive'
+            $output = @(apt-get -o DPkg::Lock::Timeout=600 -y -q install $file 2>&1 | ForEach-Object { "$_" })
+            if ($LASTEXITCODE) { [void]$State.Failures.Add("PowerShell ${Version}: apt-get install exit $LASTEXITCODE, $((@($output) | Select-Object -Last 2) -join ' | ')") ; return }
+        } elseif ($asset -like '*.tar.gz') {
+            # Unpacked next to the installation, then swapped in: running pwsh processes keep
+            # their open files.
+            $new = "$dir.mdm-new"
+            Remove-Item -Path $new, "$dir.mdm-old" -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Path $new -Force | Out-Null
+            tar -xzf $file -C $new
+            if ($LASTEXITCODE -or -not (Test-Path -Path "$new/pwsh")) { [void]$State.Failures.Add("PowerShell ${Version}: unpacking failed"); return }
+            chmod +x "$new/pwsh"
+            Move-Item -Path $dir -Destination "$dir.mdm-old"
+            Move-Item -Path $new -Destination $dir
+            Remove-Item -Path "$dir.mdm-old" -Recurse -Force -ErrorAction SilentlyContinue
+        } else {
+            $process = Start-Process -FilePath msiexec.exe -ArgumentList @('/i', "`"$file`"", '/quiet', '/norestart') -Wait -PassThru
+            # 3010: installed, a restart completes it.
+            if ($process.ExitCode -notin 0, 3010) { [void]$State.Failures.Add("PowerShell ${Version}: msiexec exit $($process.ExitCode)"); return }
+        }
+
+        $installed = "$(& $pwsh.Path -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()' 2>$null)".Trim()
+        if ($installed -ne $Version) {
+            [void]$State.Failures.Add("PowerShell: version $installed after installing $Version")
+            return
+        }
+        "PowerShell: updated to $Version"
+        $State.RestartAgent = $PSVersionTable.PSEdition -eq 'Core'
+    }
+    catch {
+        [void]$State.Failures.Add("PowerShell ${Version}: $($_.Exception.Message)")
+    }
+    finally {
+        Remove-Item -Path $temp -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Test-PendingReboot {
@@ -2257,7 +2353,7 @@ function Start-UpdateJob {
     $progressFile = "$AgentDir/update-progress.json"
     Remove-Item -Path $progressFile -Force -ErrorAction SilentlyContinue
     [void](Send-CommandStatus -Id $CommandId -Status running -Progress 0 -Message 'Starting')
-    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log", $progressFile, $Params -ScriptBlock {
+    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Install-PowerShellRelease', 'Get-PowerShellReleaseUpdate', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log", $progressFile, $Params -ScriptBlock {
         param ($OnLinux, $OutputLog, $ProgressFile, $Params)
 
         if ((Test-Path -Path $OutputLog) -and (Get-Item -Path $OutputLog).Length -gt 2MB) {
@@ -2357,6 +2453,10 @@ function Start-UpdateJob {
                     "snap refresh ${id}: exit $LASTEXITCODE"
                     Add-Result "snap refresh $id" $LASTEXITCODE $output
                 }
+                'pwsh' {
+                    Set-Progress 10 "PowerShell $id"
+                    Install-PowerShellRelease -Version $id -OnLinux $OnLinux -State $state
+                }
                 'module' {
                     Set-Progress 10 "Update-Module $id"
                     if (-not @(Get-PowerShellHosts -OnLinux $OnLinux | Where-Object { $_.Edition -eq $Params.edition })) { [void]$state.Failures.Add("$($Params.edition) is not installed"); break }
@@ -2429,6 +2529,18 @@ function Start-UpdateJob {
         }
 
         if (-not $Params) {
+            # A PowerShell 7 release no package manager updated (winget / apt do it themselves).
+            Enter-Step 88 90 'PowerShell 7'
+            try {
+                $release = Get-PowerShellReleaseUpdate -OnLinux $OnLinux -Known @()
+                # Package managers ran first: still outdated means none of them manages PowerShell.
+                if ($release) {
+                    Install-PowerShellRelease -Version $release.Avaliable -OnLinux $OnLinux -State $state
+                }
+            }
+            catch {
+                "PowerShell 7: $($_.Exception.Message)"
+            }
             Enter-Step 90 100 'PowerShell modules'
             try {
                 $failed = @(Invoke-PowerShellModules -OnLinux $OnLinux -Update)
@@ -2449,7 +2561,7 @@ function Start-UpdateJob {
         if ($restart) { 'Restart required' }
 
         # The result for the portal, after the log lines.
-        [pscustomobject]@{ UpdateResult = $true; Failures = @($state.Failures); Restart = $restart }
+        [pscustomobject]@{ UpdateResult = $true; Failures = @($state.Failures); Restart = $restart; RestartAgent = [bool]$state.RestartAgent }
     }
     Write-AgentLog "Installing updates started$(if ($Params) { " ($($Params.kind) $($Params.id))" }) (details in updates.log)"
 }
@@ -2506,6 +2618,14 @@ function Complete-UpdateJob {
         [void](Send-CommandStatus -Id $script:UpdateCommandId -Status succeeded -Progress 100 -Message "Done$restart")
     }
     $script:UpdateCommandId = $null
+    if ($result -and $result.RestartAgent) {
+        # The agent runs in the PowerShell that was just replaced: start it again in the new one.
+        Write-AgentLog 'PowerShell updated, restarting the agent'
+        if (-not $OnLinux) {
+            Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile -Command "Start-Sleep -Seconds 5; Start-ScheduledTask -TaskName Laravel-MDM-Agent"'
+        }
+        exit 0
+    }
     Start-NextUpdate
 
     return $true

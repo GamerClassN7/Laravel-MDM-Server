@@ -8,6 +8,7 @@
     $active = $alert['active'];
     $tone = $alert['severity'];
     $call = ($deviceArgument ?? false) ? "runAlert({$device->id}, '{$alert['key']}')" : "runAlert('{$alert['key']}')";
+    $dismiss = ($deviceArgument ?? false) ? "dismiss({$device->id}, '{$alert['key']}')" : "dismiss('{$alert['key']}')";
     // $asAlert: a standalone Bootstrap alert (device detail), otherwise a list row (widget).
     $asAlert = $asAlert ?? false;
 @endphp
@@ -43,9 +44,6 @@
         @endif
     </div>
     <div class="d-flex flex-wrap justify-content-end gap-2 flex-shrink-0 ms-auto">
-        @if ($alert['tab'] && ! ($showDevice ?? false))
-            <button class="btn btn-sm text-body-secondary" type="button" x-on:click="$dispatch('show-device-tab', { tab: @js($alert['tab']) })">{{ __('Details') }}</button>
-        @endif
         @if ($action)
             <button class="btn btn-sm btn-light text-nowrap" type="button"
                 wire:click="{{ $call }}"
@@ -63,6 +61,11 @@
                 {{ $action['label'] }}
             </button>
         @endif
+        {{-- Hidden until the alert changes, or goes away and comes back. --}}
+        <button class="btn btn-sm btn-sq text-body-secondary" type="button" title="{{ __('Dismiss') }}" aria-label="{{ __('Dismiss') }}"
+            wire:click="{{ $dismiss }}" wire:loading.attr="disabled" wire:target="{{ $dismiss }}">
+            <i class="fas fa-times"></i>
+        </button>
     </div>
 </div>
 </div>

@@ -148,8 +148,9 @@ way is never queued again: double clicks, two users or an action for all devices
 
 **Smart alerts** show what needs attention on a device (restart required, a newer agent, updates,
 low disk space, disk health, failed services and remediations, failed commands) with the action
-that fixes it. The **Smart alerts** dashboard widget lists them for all devices, with one button per
-alert for all devices that can take the action now.
+that fixes it. An alert can be dismissed: it stays hidden until it says something else (e.g. more
+updates) or goes away and comes back. The **Smart alerts** dashboard widget lists them for all
+devices, with one button per alert for all devices that can take the action now.
 A device without a heartbeat for 90 seconds is shown as offline.
 
 The agent is designed to stay out of the way:
@@ -190,10 +191,10 @@ The agent is designed to stay out of the way:
 | Applications | ✅ winget | ✅ flatpak, snap |
 | PowerShell modules (PowerShell Gallery) | ✅ Windows PowerShell and 7 | ✅ PowerShell 7 |
 | Users' own PowerShell modules | ⚠️ listed only | ✅ updated as the user |
-| Newer PowerShell 7 release | ✅ | ✅ |
+| Newer PowerShell 7 release | ✅ installed from GitHub (MSI, SHA-256 checked) | ✅ installed from GitHub (.deb or tar.gz, SHA-256 checked) |
 | **Commands** | | |
 | Install updates | ✅ Windows Update, winget, modules | ✅ apt, flatpak, snap, modules |
-| Install a single update (agent 1.8.0+) | ✅ Windows Update, winget, modules | ✅ apt, flatpak, snap, modules |
+| Install a single update (agent 1.8.0+) | ✅ Windows Update, winget, modules, PowerShell 7 | ✅ apt, flatpak, snap, modules, PowerShell 7 |
 | Progress and result of commands (agent 1.8.0+) | ✅ | ✅ |
 | Restart / Turn off | ✅ | ✅ |
 

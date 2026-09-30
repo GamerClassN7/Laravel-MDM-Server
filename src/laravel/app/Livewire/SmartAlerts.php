@@ -30,6 +30,13 @@ class SmartAlerts extends Component
         }
     }
 
+    public function dismiss(int $deviceId, string $key): void
+    {
+        if ($device = Device::find($deviceId)) {
+            Alerts::dismiss($device, $key, auth()->user());
+        }
+    }
+
     /**
      * Runs the action of an alert on every device that has it now and can take it. Devices where
      * it is already on its way are skipped, so it never runs twice.

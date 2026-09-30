@@ -166,12 +166,13 @@ class DeviceCommandTest extends TestCase
             'os_updates' => [['Id' => '6f0a4b2e-1c3d-4e5f-8a9b-0c1d2e3f4a5b', 'Title' => 'KB5031455']],
             'packages_updates' => [
                 ['Id' => 'Git.Git', 'Version' => '2.40', 'Avaliable' => '2.44', 'Source' => 'winget'],
-                ['Id' => 'PowerShell', 'Version' => '7.3', 'Avaliable' => '7.4', 'Source' => 'github.com/PowerShell'],
+                ['Id' => 'PowerShell', 'Version' => '7.6.1', 'Avaliable' => '7.6.6', 'Source' => 'github.com/PowerShell'],
             ],
             'module_updates' => [['Name' => 'Pester', 'Version' => '4.10.1', 'Available' => '5.6.1', 'Edition' => 'Windows PowerShell', 'User' => 'alice']],
         ]);
 
-        $this->assertNull($device->updateTarget('app', $device->apps_packages_updates[1]));
+        // PowerShell installed from GitHub is updated from the GitHub release.
+        $this->assertSame(['kind' => 'pwsh', 'id' => '7.6.6', 'title' => 'PowerShell 7.6.6'], $device->updateTarget('app', $device->apps_packages_updates[1]));
         // Windows users' own modules cannot be updated by SYSTEM.
         $this->assertNull($device->updateTarget('module', $device->moduleUpdates[0]));
 
@@ -235,5 +236,39 @@ class DeviceCommandTest extends TestCase
 
         $html = Blade::render('<x-widgets.SmartAlerts :config="$config" />', ['config' => ['severity' => 'danger']]);
         $this->assertStringContainsString('Smart alerts', $html);
+    }
+
+    public function test_dismissed_alerts_stay_hidden_until_they_change(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $device = $this->device(AgentScript::version(), ['packages_updates' => [['Id' => 'Git.Git', 'Version' => '1', 'Avaliable' => '2', 'Source' => 'winget']]]);
+
+        Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('1 update available')
+            ->call('dismiss', 'updates')
+            ->assertDontSee('1 update available');
+        // The widget hides it too, and its action cannot run.
+        Livewire::test(SmartAlerts::class, ['minSeverity' => 'info'])->assertDontSee('1 update available');
+        Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $device->id])->call('runAlert', 'updates')->assertHasErrors('alert.updates');
+
+        // Another update: the alert says something new and shows again.
+        $data = json_decode($device->getRawOriginal('data'), true);
+        $data['packages_updates'][] = ['Id' => '7zip.7zip', 'Version' => '1', 'Avaliable' => '2', 'Source' => 'winget'];
+        $device->forceFill(['data' => json_encode($data)])->saveQuietly();
+        Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $device->id])->assertSee('2 updates available');
+        $this->assertSame(0, \Illuminate\Support\Facades\DB::table('device_alert_dismissals')->count());
+    }
+
+    public function test_device_menu_renames_and_has_no_agent_update(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $device = $this->device('1.7.3');
+
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('Rename')
+            ->assertDontSee('Update agent');
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->dispatch('rename-device')
+            ->assertSet('editMode', true);
     }
 }

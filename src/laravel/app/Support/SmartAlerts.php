@@ -7,6 +7,7 @@ use App\Models\DeviceCommand;
 use App\Models\ScriptRun;
 use App\Models\User;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 /**
  * What needs attention on a device, most severe first, each with the action that fixes it where
@@ -187,10 +188,53 @@ class SmartAlerts
         }
         unset($alert);
 
+        $alerts = self::withoutDismissed($device, $alerts);
+
         // Offline first: it is why no action can run now. Then the most severe.
         usort($alerts, fn ($a, $b) => [$a['key'] !== 'offline', self::SEVERITIES[$a['severity']]] <=> [$b['key'] !== 'offline', self::SEVERITIES[$b['severity']]]);
 
         return $alerts;
+    }
+
+    /** What the alert says: a dismissal holds until this changes (e.g. "5 updates" → "6 updates"). */
+    public static function signature(array $alert): string
+    {
+        return hash('sha256', $alert['key'].'|'.$alert['title']);
+    }
+
+    /**
+     * Drops the dismissed alerts. Dismissals of alerts that are gone or say something else now
+     * are removed, so the alert shows again the next time it comes up.
+     */
+    private static function withoutDismissed(Device $device, array $alerts): array
+    {
+        $dismissed = DB::table('device_alert_dismissals')->where('device_id', $device->id)->pluck('signature', 'key');
+        if ($dismissed->isEmpty()) {
+            return $alerts;
+        }
+
+        $current = collect($alerts)->mapWithKeys(fn ($alert) => [$alert['key'] => self::signature($alert)]);
+        $stale = $dismissed->filter(fn ($signature, $key) => ($current[$key] ?? null) !== $signature)->keys();
+        if ($stale->isNotEmpty()) {
+            DB::table('device_alert_dismissals')->where('device_id', $device->id)->whereIn('key', $stale)->delete();
+        }
+
+        return array_values(array_filter($alerts, fn ($alert) => ($dismissed[$alert['key']] ?? null) !== $current[$alert['key']]));
+    }
+
+    /** Hides the device's alert until it changes or goes away and comes back. */
+    public static function dismiss(Device $device, string $key, ?User $user = null): bool
+    {
+        $alert = collect(self::for($device))->firstWhere('key', $key);
+        if ($alert === null) {
+            return false;
+        }
+        DB::table('device_alert_dismissals')->updateOrInsert(
+            ['device_id' => $device->id, 'key' => $key],
+            ['signature' => self::signature($alert), 'dismissed_by' => $user?->id, 'created_at' => now(), 'updated_at' => now()],
+        );
+
+        return true;
     }
 
     /** The device's commands of the last day (active ones are never older). */

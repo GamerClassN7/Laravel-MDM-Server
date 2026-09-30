@@ -39,14 +39,13 @@
                 <i class="fas fa-ellipsis-h"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
-                @if ($hasData && $selectedDevice->agentUpdatable && $selectedDevice->agentOutdated)
-                    <li>
-                        <button class="dropdown-item" type="button" wire:click="sendCommandToDevice('updateAgent')" @disabled(\App\Models\Device::findActive($active, 'updateAgent') || $selectedDevice->commandRefusal('updateAgent') || ! \App\Support\SmartAlerts::remoteUpdateAvailable())>
-                            <i class="dropdown-ico fas fa-robot fa-fw"></i>{{ __('Update agent') }}
-                        </button>
-                    </li>
-                    <li><hr class="dropdown-divider"></li>
-                @endif
+                {{-- The agent update is in the "newer agent" alert, not repeated here. --}}
+                <li>
+                    <button class="dropdown-item" type="button" wire:click="$dispatch('rename-device')">
+                        <i class="dropdown-ico fas fa-pen fa-fw"></i>{{ __('Rename') }}
+                    </button>
+                </li>
+                <li><hr class="dropdown-divider"></li>
                 <li>
                     <button class="dropdown-item text-danger" type="button" wire:click.prevent="deleteDevice()" wire:confirm="{{ __('Do you really want to delete this device?') }}">
                         <i class="dropdown-ico fas fa-trash fa-fw text-danger"></i>{{ __('Delete device') }}
