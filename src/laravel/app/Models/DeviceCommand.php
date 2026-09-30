@@ -19,7 +19,7 @@ class DeviceCommand extends Model
     /** Finished commands are kept this many days (the device history). */
     public const KEEP_DAYS = 90;
 
-    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts'];
+    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'wake'];
 
     public const STATUSES = ['queued', 'sent', 'running', 'succeeded', 'failed', 'delivered', 'expired', 'cancelled'];
 
@@ -45,7 +45,11 @@ class DeviceCommand extends Model
         'installUpdate' => 7200,
         'updateAgent' => 1800,
         'runScripts' => 600,
+        'wake' => 300,
     ];
+
+    /** A MAC address as the agents report it (Windows AA-BB-..., Linux aa:bb:...). */
+    public const MAC_PATTERN = '/^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$/';
 
     /** Kinds of single updates the agent can install (installUpdate), with the pattern of their id. */
     public const UPDATE_KINDS = [
@@ -97,6 +101,9 @@ class DeviceCommand extends Model
      */
     public static function sanitizeParams(string $command, array $params): ?array
     {
+        if ($command === 'wake') {
+            return self::sanitizeWakeParams($params);
+        }
         if ($command !== 'installUpdate') {
             return $params === [] ? [] : null;
         }
@@ -132,9 +139,35 @@ class DeviceCommand extends Model
         return $clean;
     }
 
+    /**
+     * wake (sent to a relay agent in the network of the sleeping device): the MAC addresses to wake,
+     * the broadcast addresses to send the magic packet to, the device it wakes and its name.
+     */
+    private static function sanitizeWakeParams(array $params): ?array
+    {
+        $macs = array_values(array_unique(array_map(
+            fn ($mac) => strtoupper(str_replace('-', ':', (string) $mac)),
+            array_filter((array) ($params['macs'] ?? []), fn ($mac) => is_string($mac) && preg_match(self::MAC_PATTERN, $mac)),
+        )));
+        $broadcasts = array_values(array_unique(array_filter((array) ($params['broadcasts'] ?? []), fn ($ip) => is_string($ip) && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4))));
+        $device = $params['device'] ?? null;
+        if ($macs === [] || count($macs) > 8 || $broadcasts === [] || count($broadcasts) > 4 || ! is_int($device) || $device < 1) {
+            return null;
+        }
+        $clean = ['macs' => $macs, 'broadcasts' => $broadcasts, 'device' => $device];
+        if (isset($params['title']) && is_string($params['title'])) {
+            $clean['title'] = mb_substr($params['title'], 0, 200);
+        }
+
+        return $clean;
+    }
+
     /** What the command works on, the same for duplicates: "winget:Git.Git", "module:PowerShell 7:Az:". */
     public static function targetOf(string $command, array $params): ?string
     {
+        if ($command === 'wake') {
+            return 'device:'.$params['device'];
+        }
         if ($command !== 'installUpdate') {
             return null;
         }
@@ -177,6 +210,7 @@ class DeviceCommand extends Model
             'installUpdate' => __('Update :name', ['name' => $this->params['title'] ?? $this->params['id'] ?? '?']),
             'updateAgent' => __('Update agent'),
             'runScripts' => __('Run scripts'),
+            'wake' => __('Wake :name', ['name' => $this->params['title'] ?? '?']),
             default => $this->command,
         };
     }
@@ -189,6 +223,7 @@ class DeviceCommand extends Model
             'doUpdates', 'installUpdate' => 'fas fa-sync',
             'updateAgent' => 'fas fa-robot',
             'runScripts' => 'fas fa-scroll',
+            'wake' => 'fas fa-sun',
             default => 'fas fa-terminal',
         };
     }

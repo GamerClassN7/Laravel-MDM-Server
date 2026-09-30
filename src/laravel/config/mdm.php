@@ -14,6 +14,9 @@ return [
     // updated remotely then, only reinstalled.
     'require_signed_agents' => (bool) env('MDM_REQUIRE_SIGNED_AGENTS', false),
 
+    // Time zone of the script schedules (cron expressions), e.g. Europe/Prague.
+    'timezone' => env('APP_TIMEZONE', 'UTC'),
+
     // Seconds a signed message may differ from the server clock.
     'signature_max_skew' => 300,
 

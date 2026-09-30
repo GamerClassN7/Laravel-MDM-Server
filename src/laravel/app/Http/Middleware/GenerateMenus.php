@@ -30,6 +30,10 @@ class GenerateMenus
                 'fas fa-desktop',
                 'devices',
             ],
+            'Notifications' => [
+                'fas fa-bell',
+                'notifications',
+            ],
         ];
 
         if (\Illuminate\Support\Facades\Gate::allows('is-system-admin')) {

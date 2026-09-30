@@ -96,6 +96,7 @@ Route::middleware('guest')->group(function () {
 Route::middleware('auth')->group(function () {
     Route::redirect('/', '/devices');
     Route::get('/devices', ShowDevices::class)->name('devices');
+    Route::get('/notifications', App\Livewire\Notifications\Page::class)->name('notifications');
 });
 
 // Remediation scripts: system admins only (they run as SYSTEM / root on the devices).

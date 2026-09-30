@@ -7,6 +7,9 @@
                     <x-badge color="secondary" size="sm" variant="subtle" :icon="match ($script->platform) { 'windows' => 'fab fa-windows', 'linux' => 'fab fa-linux', default => 'fas fa-desktop' }">{{ __(\App\Models\Script::PLATFORMS[$script->platform]) }}</x-badge>
                     <x-badge color="primary" size="sm" variant="subtle">v{{ $script->version }}</x-badge>
                     <span title="{{ $script->updated_at }}"><i class="far fa-clock me-1"></i>{{ __('Changed :time', ['time' => $script->updated_at->diffForHumans()]) }}</span>
+                    @if ($script->scheduled)
+                        <span title="{{ \App\Models\Device::describeTarget($script->schedule_target ?? []) }}"><i class="fas fa-calendar-alt me-1"></i><code>{{ $script->schedule }}</code> · {{ __('next :time', ['time' => $script->nextScheduledRun()?->diffForHumans()]) }} · {{ \App\Models\Device::describeTarget($script->schedule_target ?? []) }}</span>
+                    @endif
                     @if ($lastRun)
                         <span title="{{ $lastRun }}"><i class="fas fa-play me-1"></i>{{ __('Last run :time', ['time' => \Illuminate\Support\Carbon::parse($lastRun)->diffForHumans()]) }}</span>
                     @endif
@@ -17,6 +20,9 @@
             </a>
             <button class="btn btn-light" type="button" wire:click="edit">
                 <i class="me-2 fas fa-pen"></i><span>{{ __('Edit') }}</span>
+            </button>
+            <button class="btn btn-light" type="button" wire:click="schedule">
+                <i class="me-2 fas fa-calendar-alt"></i><span>{{ __('Schedule') }}</span>
             </button>
             <button class="btn btn-primary" type="button" wire:click="run">
                 <i class="me-2 fas fa-play"></i><span>{{ __('Run') }}</span>

@@ -241,6 +241,7 @@ The agent is designed to stay out of the way:
 | Install a single update (agent 1.8.0+, PowerShell 7 from GitHub 1.8.1+) | ✅ Windows Update, winget, modules, PowerShell 7 | ✅ apt, flatpak, snap, modules, PowerShell 7 |
 | Progress and result of commands (agent 1.8.0+) | ✅ | ✅ |
 | Restart / Turn off | ✅ | ✅ |
+| Wake-on-LAN through another agent in the network (agent 1.9.0+) | ✅ sends and is woken | ✅ sends and is woken |
 
 Notes:
 
@@ -334,6 +335,14 @@ again, the list has the devices of the last run selected. Offline devices run th
 come back within 24 hours. The results are shown under the script and in the **Scripts** tab of
 the device: status, exit codes and up to 16 kB of output.
 
+**Schedule** on the script page runs it again and again, like an Intune remediation: a cron expression
+(`minute hour day month weekday`, e.g. `0 3 * * *` every day at 3:00, presets in the picker, the next
+runs are shown) in the time zone of the server (`APP_TIMEZONE`, UTC by default), and the devices:
+all of them (also the ones enrolled later), the ones with any of the chosen [tags](#tags), and picked
+ones. Tags are resolved at every run. The scheduler (`schedule:run`, in the Docker image
+`schedule:work`) starts each due minute once; a waiting run of the same script on an offline
+device is replaced by the new one. Changing the schedule is not a new version of the script.
+
 Security:
 
 - **Only a trigger:** `runScripts` carries no data. The agent takes its runs over the signed API.
@@ -359,6 +368,74 @@ Security:
   in `config.json`) turns scripts off on the device. The server cannot change it.
 - **Audit:** creating, changing, removing and running a script (with its fingerprint and devices)
   is written to the audit log.
+
+### Tags
+
+Devices get tags (**Edit tags** in the device menu, comma-separated, e.g. `servers, family`). The
+device list shows them and filters by a tag with one click. Scheduled scripts and alerts target
+tags, so a newly tagged device is included without changing them.
+
+### Notifications and alerts
+
+**Notifications** in the main menu, per user and in the style of
+[Beszel](https://beszel.dev/guide/notifications/):
+
+- **Where to send:** e-mail addresses (the server's `MAIL_*` settings) and push / webhook URLs in
+  the [Shoutrrr](https://containrrr.dev/shoutrrr/) format, each with a **Test** button:
+
+  | Service | URL |
+  |---|---|
+  | ntfy | `ntfy://ntfy.sh/topic`, `ntfy://user:password@ntfy.example.com/topic`, `ntfy://:token@host/topic` (`?priority=high&tags=warning`) |
+  | Discord | `discord://token@webhookid` (from `https://discord.com/api/webhooks/webhookid/token`) |
+  | Telegram | `telegram://bottoken@telegram?chats=@channel,123456789` |
+  | Gotify | `gotify://gotify.example.com/AppToken` |
+  | Slack | `slack://hook:T000-B000-XXXX@webhook` |
+  | Pushover | `pushover://shoutrrr:apiToken@userKey` |
+  | Webhook | `generic://example.com/hook` (JSON POST `{"title", "message"}`), `generic+http://` without TLS |
+
+  `?disabletls=yes` sends over plain http (self-hosted ntfy, Gotify or webhooks in your network).
+
+- **Alerts:** a rule is a condition on devices (all, [tags](#tags) or picked ones):
+
+  | Alert | When |
+  |---|---|
+  | Status | the device is offline for at least *n* minutes |
+  | CPU usage / Memory usage | the average over the last *n* minutes is above the threshold (%) |
+  | Disk usage | a drive is fuller than the threshold (%) |
+  | Disk health | a disk reports a S.M.A.R.T. warning or failure |
+  | Services | a service failed, or a container is unhealthy, dead or restarting |
+  | Remediations | the latest run of a remediation script failed |
+
+  The bell on a device switches the alerts for just that device, with a slider for the threshold
+  and the minutes (like the bell of a system in Beszel).
+
+The scheduler checks the rules every minute. When a rule starts to hold on a device, the user gets
+one notification (🔴) and the alert is shown under **Recent alerts**; when it stops holding, a second
+one (✅, with how long it lasted). Nothing is sent again in between. An offline device keeps its CPU
+and memory alerts as they are until it reports again.
+
+### Wake-on-LAN
+
+A magic packet is a broadcast in the local network, so the server (usually somewhere else) cannot
+send it. **Wake** on an offline device asks another agent in the same network to send it, e.g. the
+NAS or Raspberry Pi that is always on:
+
+1. The agents (1.9.0+) report the prefix length of their addresses, so the server knows their
+   networks. The sleeping device's MAC addresses (wired first, then Wi-Fi) are kept from its last
+   report.
+2. The relay is an online, signing agent 1.9.0+ with an interface in the same IPv4 network. When
+   both reported through the same public address, it has to be the same one (the address the
+   server sees, the first `X-Forwarded-For` hop behind a proxy).
+3. The relay gets a `wake` command with the MAC addresses and the broadcast addresses (the network's
+   own one and `255.255.255.255`) in its signed command response. It checks them again and sends the
+   packet to UDP ports 9 and 7. The command is the relay's (its history shows it); the woken device
+   shows the progress until it is back.
+
+The button says why it cannot wake a device (no known network card, no relay in the network). The
+device has to allow it: Wake-on-LAN enabled in the BIOS / UEFI and for the network card (on Windows
+in the adapter's *Power Management* and *Advanced* settings), usually only over a cable. On
+Windows, *Fast Startup* often prevents waking after **Turn off**. It does not cross VLANs or
+routers.
 
 ### Dashboard
 
@@ -434,7 +511,7 @@ Agents older than 1.1.0 cannot update themselves and have to be reinstalled via 
 
 The token is stored next to the script (`Token.xml` on Windows, `token` readable by root only on
 Linux) and logs are written to `agent.log`. The agent only executes the commands `turnOff`, `restart`,
-`doUpdates` and `updateAgent`.
+`doUpdates`, `installUpdate`, `updateAgent`, `runScripts` and `wake`.
 
 ### Checking the agent
 

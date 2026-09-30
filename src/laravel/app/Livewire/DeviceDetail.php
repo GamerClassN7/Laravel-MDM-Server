@@ -20,6 +20,10 @@ class DeviceDetail extends Component
     public $editMode = false;
     public $friendlyName = "";
 
+    public bool $editTags = false;
+
+    public string $tagsText = '';
+
     public function saveFriendlyName()
     {
         $device = Device::find($this->selectedDeviceId);
@@ -38,6 +42,28 @@ class DeviceDetail extends Component
     public function rename(): void
     {
         $this->editMode = true;
+    }
+
+    /** Tags from the device menu or the tag row. */
+    #[On('edit-device-tags')]
+    public function startEditTags(): void
+    {
+        $this->tagsText = implode(', ', Device::find($this->selectedDeviceId)?->tagList ?? []);
+        $this->editTags = true;
+    }
+
+    public function saveTags(): void
+    {
+        $device = Device::find($this->selectedDeviceId);
+        if ($device === null) {
+            return;
+        }
+        $tags = Device::normalizeTags($this->tagsText);
+        $device->tags = $tags === [] ? null : $tags;
+        $device->save();
+        $this->editTags = false;
+        // The device list shows the tags and filters by them.
+        $this->dispatch('device-tags-changed');
     }
 
     /**

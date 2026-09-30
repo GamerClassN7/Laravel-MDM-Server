@@ -80,6 +80,31 @@
                             </span>
                         @endif
                     </div>
+
+                    @if ($editTags)
+                        <div class="d-flex gap-2 mt-2">
+                            <input class="form-control form-control-sm" list="device-tag-options" placeholder="{{ __('servers, family, …') }}" type="text" wire:model="tagsText" wire:keydown.enter="saveTags" wire:keydown.escape="$set('editTags', false)" autofocus>
+                            <datalist id="device-tag-options">
+                                @foreach (\App\Models\Device::allTags() as $tagOption)
+                                    <option value="{{ $tagOption }}"></option>
+                                @endforeach
+                            </datalist>
+                            <button class="btn btn-sm btn-primary" type="button" wire:click="saveTags">{{ __('Save') }}</button>
+                            <button class="btn btn-sm btn-light" type="button" wire:click="$set('editTags', false)">{{ __('Cancel') }}</button>
+                        </div>
+                        <div class="form-text">{{ __('Separate tags with commas.') }}</div>
+                    @elseif ($selectedDevice->tagList !== [])
+                        <div class="d-flex flex-wrap align-items-center gap-1 mt-2">
+                            @foreach ($selectedDevice->tagList as $tag)
+                                <a href="{{ route('devices', ['tag' => $tag]) }}" class="text-decoration-none">
+                                    <x-badge color="primary" size="sm" variant="subtle"><i class="fas fa-tag me-1"></i>{{ $tag }}</x-badge>
+                                </a>
+                            @endforeach
+                            <button class="btn btn-sm btn-sq py-0" type="button" title="{{ __('Edit tags') }}" wire:click="startEditTags">
+                                <i class="fas fa-pen small"></i>
+                            </button>
+                        </div>
+                    @endif
                 </div>
 
                 @if (!$selectedDevice->offline)

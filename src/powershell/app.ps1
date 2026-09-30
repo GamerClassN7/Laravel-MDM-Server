@@ -91,8 +91,8 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.8.1'
-$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts')
+$AgentVersion = '1.9.0'
+$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'wake')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
     windows = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
@@ -160,6 +160,8 @@ function Get-MachineInfo {
                                              else { 'lan' }
                     "Mac"                  = $_.MacAddress
                     "IPAddresses"          = @($address.IPAddress)
+                    # With the prefix length, so the server knows which devices share a network (Wake-on-LAN).
+                    "Addresses"            = @($address | ForEach-Object { @{ Address = "$($_.IPAddress)"; PrefixLength = [int]$_.PrefixLength } })
                 }
             })
     }
@@ -975,6 +977,7 @@ function Get-LinuxNetworks {
             continue
         }
         $addresses = @($interface.addr_info | ForEach-Object { $_.local })
+        $prefixed = @($interface.addr_info | Where-Object { $_.local } | ForEach-Object { @{ Address = "$($_.local)"; PrefixLength = [int]$_.prefixlen } })
         $type = if ((Test-Path -Path "/sys/class/net/$name/wireless") -or $name -match "^wl") { 'wifi' }
             elseif ($name -match '^(docker|br-)') { 'docker' }
             elseif ($name -match '^(tun|tap|wg|tailscale|zt|ppp|vpn|ipsec|nordlynx)') { 'vpn' }
@@ -990,6 +993,7 @@ function Get-LinuxNetworks {
             Type        = $type
             Mac         = $interface.address
             IPAddresses = $addresses
+            Addresses   = $prefixed
         }
     }
 }
@@ -2382,6 +2386,50 @@ function Test-UpdateParams {
     return @{ kind = $kind; id = "$($Params.id)"; user = "$($Params.user)"; edition = "$($Params.edition)"; version = "$($Params.version)" }
 }
 
+function Test-WakeParams {
+    # wake parameters, checked again on the device: MAC addresses and IPv4 broadcast addresses only.
+    param ($Params)
+
+    $macs = @($Params.macs | ForEach-Object { "$_" } | Where-Object { $_ -match '^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$' })
+    $broadcasts = @($Params.broadcasts | ForEach-Object {
+            $address = $null
+            if ([System.Net.IPAddress]::TryParse("$_", [ref]$address) -and $address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $address }
+        })
+    if ($macs.Count -eq 0 -or $macs.Count -gt 8 -or $broadcasts.Count -eq 0 -or $broadcasts.Count -gt 4) {
+        throw 'invalid MAC or broadcast addresses'
+    }
+
+    return @{ Macs = $macs; Broadcasts = $broadcasts }
+}
+
+function Send-MagicPacket {
+    # Wake-on-LAN for a device in this network: 6 x 0xFF and 16 x its MAC, as UDP broadcast to
+    # ports 9 and 7 of each broadcast address (the network's own one leaves on the right interface).
+    param (
+        [string[]]
+        $Macs,
+        [System.Net.IPAddress[]]
+        $Broadcasts
+    )
+
+    $client = New-Object System.Net.Sockets.UdpClient
+    try {
+        $client.EnableBroadcast = $true
+        foreach ($mac in $Macs) {
+            $bytes = [byte[]]($mac -split '[:-]' | ForEach-Object { [Convert]::ToByte($_, 16) })
+            $packet = [byte[]](@(0xFF) * 6 + ($bytes * 16))
+            foreach ($broadcast in $Broadcasts) {
+                foreach ($port in 9, 7) {
+                    [void]$client.Send($packet, $packet.Length, (New-Object System.Net.IPEndPoint($broadcast, $port)))
+                }
+            }
+        }
+    }
+    finally {
+        $client.Close()
+    }
+}
+
 function Save-CommandState {
     # The update being installed, the ones waiting and a waiting agent update, so they go on
     # after the agent restarts (it restarts itself when an update replaced its PowerShell).
@@ -2838,6 +2886,18 @@ function Invoke-DeviceCommand {
                 return
             }
             Start-UpdateJob -CommandId $Id -Params $updateParams
+        }
+        'wake' {
+            try {
+                $wake = Test-WakeParams -Params $Params
+                Send-MagicPacket -Macs $wake.Macs -Broadcasts $wake.Broadcasts
+                Write-AgentLog "Magic packet sent to $($wake.Macs -join ', ') via $($wake.Broadcasts -join ', ')"
+                [void](Send-CommandStatus -Id $Id -Status succeeded -Message "Magic packet sent to $($wake.Macs -join ', ')")
+            }
+            catch {
+                Write-AgentLog "Wake-on-LAN failed: $($_.Exception.Message)"
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "Wake-on-LAN failed: $($_.Exception.Message)")
+            }
         }
         'turnOff' {
             [void](Send-CommandStatus -Id $Id -Status succeeded -Message 'Shutting down')

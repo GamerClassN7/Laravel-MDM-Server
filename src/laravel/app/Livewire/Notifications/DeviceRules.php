@@ -1,0 +1,86 @@
+<?php
+
+namespace App\Livewire\Notifications;
+
+use App\Models\AlertRule;
+use App\Models\Device;
+use Livewire\Component;
+use SteelAnts\Modal\Livewire\Attributes\AllowInModal;
+
+/**
+ * The bell of a device (as in Beszel): one switch per alert type with its threshold and minutes,
+ * saved as the user's rules for just this device. Rules for all devices or tags that cover the
+ * device are listed below.
+ */
+#[AllowInModal]
+class DeviceRules extends Component
+{
+    public int $deviceId;
+
+    /** @var array<string, array{enabled: bool, threshold: ?int, minutes: ?int}> */
+    public array $settings = [];
+
+    public function mount(int $deviceId): void
+    {
+        $this->deviceId = Device::findOrFail($deviceId)->id;
+        foreach (AlertRule::TYPES as $type => $definition) {
+            $rule = $this->ruleFor($type);
+            $this->settings[$type] = [
+                'enabled' => $rule?->enabled ?? false,
+                'threshold' => $rule?->threshold ?? $definition['threshold'],
+                'minutes' => $rule?->minutes ?? $definition['minutes'],
+            ];
+        }
+    }
+
+    /** Any change is saved right away. */
+    public function updatedSettings($value, string $key): void
+    {
+        $type = explode('.', $key)[0];
+        if (! isset(AlertRule::TYPES[$type])) {
+            return;
+        }
+        $setting = $this->settings[$type];
+        $threshold = AlertRule::usesThreshold($type) ? max(1, min(99, (int) $setting['threshold'])) : null;
+        $minutes = AlertRule::usesMinutes($type) ? max(1, min(AlertRule::MAX_MINUTES, (int) $setting['minutes'])) : null;
+        $this->settings[$type]['threshold'] = $threshold;
+        $this->settings[$type]['minutes'] = $minutes;
+
+        $rule = $this->ruleFor($type);
+        if (! $setting['enabled']) {
+            $rule?->delete();
+
+            return;
+        }
+        $rule ??= new AlertRule(['user_id' => auth()->id(), 'type' => $type, 'target' => ['all' => false, 'tags' => [], 'devices' => [$this->deviceId]]]);
+        if ($rule->exists && ($rule->threshold !== $threshold || $rule->minutes !== $minutes)) {
+            $rule->events()->whereNull('resolved_at')->update(['resolved_at' => now()]);
+        }
+        $rule->fill(['threshold' => $threshold, 'minutes' => $minutes, 'enabled' => true])->save();
+        $this->dispatch('alertRuleSaved');
+    }
+
+    /** The user's rule of this type for exactly this device. */
+    private function ruleFor(string $type): ?AlertRule
+    {
+        return AlertRule::query()->where('user_id', auth()->id())->where('type', $type)->get()
+            ->first(function (AlertRule $rule) {
+                $target = Device::normalizeTarget($rule->target);
+
+                return ! $target['all'] && $target['tags'] === [] && $target['devices'] === [$this->deviceId];
+            });
+    }
+
+    public function render()
+    {
+        $device = Device::findOrFail($this->deviceId);
+        $own = collect(array_keys(AlertRule::TYPES))->map(fn ($type) => $this->ruleFor($type)?->id)->filter();
+        $broader = AlertRule::query()->where('user_id', auth()->id())->whereNotIn('id', $own)->get()
+            ->filter(fn (AlertRule $rule) => $device->matchesTarget($rule->target ?? []));
+
+        return view('livewire.notifications.device-rules', [
+            'device' => $device,
+            'broader' => $broader,
+        ]);
+    }
+}

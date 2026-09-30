@@ -9,7 +9,7 @@ use Livewire\Component;
 use SteelAnts\Modal\Livewire\Attributes\AllowInModal;
 
 /** Picks the devices a script runs on; opened again, the devices of the last run are preselected. */
-#[AllowInModal('is-system-admin')]
+#[AllowInModal(ability: 'is-system-admin')]
 class Run extends Component
 {
     public int $scriptId;

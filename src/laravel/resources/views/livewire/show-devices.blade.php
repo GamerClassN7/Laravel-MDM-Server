@@ -2,11 +2,23 @@
     <div class="container">
         <div class="row g-4">
             <div class="col-12 col-lg-4">
+                @if ($tags !== [])
+                    <div class="d-flex flex-wrap gap-1 mb-2">
+                        @foreach ($tags as $tagOption)
+                            <button class="btn btn-sm {{ strcasecmp($tag, $tagOption) === 0 ? 'btn-primary' : 'btn-light' }} rounded-pill py-0" type="button" wire:click="filterTag(@js($tagOption))">
+                                <i class="fas fa-tag me-1 small"></i>{{ $tagOption }}
+                            </button>
+                        @endforeach
+                    </div>
+                @endif
                 <div class="list-group">
-                    @forelse ($devices as $device)
+                    @forelse ($visibleDevices as $device)
                         <a class="list-group-item list-group-item-action d-flex justify-content-between align-items-center {{ isset($selectedDevice) && $device->id == $selectedDevice->id ? 'active' : '' }}" href="#" wire:click.prevent="selectDevice({{ $device->id }})">
-                            <span>
+                            <span class="min-w-0">
                                 <i class="{{ $device->typeIcon }} me-2" title="{{ __(ucfirst($device->type)) }}"></i>{{ $device->DisplayName }}
+                                @foreach ($device->tagList as $deviceTag)
+                                    <span class="badge rounded-pill text-bg-light fw-normal ms-1">{{ $deviceTag }}</span>
+                                @endforeach
                             </span>
                             @if ($device->offline)
                                 <x-badge color="secondary" size="sm" variant="subtle">{{ __('Offline') }}</x-badge>

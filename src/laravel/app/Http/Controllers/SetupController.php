@@ -49,7 +49,7 @@ class SetupController extends Controller
         $redirect = redirect()->route('devices');
 
         // Only when APP_SYSTEM_ADMINS lists other IDs (or the database skipped ID 1).
-        if (!$user->is_system_admin) {
+        if (! $user->is_system_admin) {
             $redirect->with('warning', __('Your account is not a system admin yet. Add its ID :id to APP_SYSTEM_ADMINS.', ['id' => $user->id]));
         }
 

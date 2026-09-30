@@ -9,7 +9,7 @@ use Livewire\Attributes\Computed;
 use SteelAnts\LivewireForm\Livewire\FormComponent;
 use SteelAnts\Modal\Livewire\Attributes\AllowInModal;
 
-#[AllowInModal('is-system-admin')]
+#[AllowInModal(ability: 'is-system-admin')]
 class Form extends FormComponent
 {
     public $user_id;

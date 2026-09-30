@@ -10,6 +10,12 @@ Schedule::command('model:prune', ['--model' => [DeviceMetric::class, DeviceComma
 // Commands the device never finished (it went offline, the agent was stopped) are given up.
 Schedule::call(fn () => DeviceCommand::expireStale())->everyFiveMinutes()->name('mdm:expire-commands');
 
+// Remediation scripts with a schedule (cron expression) run on their target devices.
+Schedule::call(fn () => App\Models\Script::runScheduled())->everyMinute()->name('mdm:scheduled-scripts')->withoutOverlapping();
+
+// Alert rules (App\Models\AlertRule): opens and resolves alerts, notifies their users.
+Schedule::call(fn () => App\Support\AlertEvaluator::run())->everyMinute()->name('mdm:alerts')->withoutOverlapping();
+
 // Creates the server signing key when it does not exist yet and shows its fingerprint.
 Artisan::command('mdm:signing-key', function () {
     $this->info('Signing key: '.App\Support\Signing::keyPath());

@@ -24,6 +24,11 @@ class Detail extends Component
         $this->dispatch('openModal', 'script.run', __('Run :name', ['name' => $this->script->name]), ['scriptId' => $this->script->id], 'lg');
     }
 
+    public function schedule(): void
+    {
+        $this->dispatch('openModal', 'script.schedule', __('Schedule :name', ['name' => $this->script->name]), ['scriptId' => $this->script->id], 'lg');
+    }
+
     public function edit(): void
     {
         $this->dispatch('openModal', 'script.form', __('Edit script'), ['scriptId' => $this->script->id], 'xl');

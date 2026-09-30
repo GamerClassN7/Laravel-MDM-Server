@@ -24,20 +24,12 @@ Route::middleware(['device.signature', 'auth:api'])->post('/device', function (R
         return;
     }
 
-    // //whether ip is from the remote address
-    // $ip = $_SERVER['REMOTE_ADDR'];
-    // //whether ip is from the share internet
-    // if (!empty($_SERVER['HTTP_CLIENT_IP'])) {
-    //     $ip = $_SERVER['HTTP_CLIENT_IP'];
-    // }
-    // //whether ip is from the proxy
-    // elseif (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
-    //     $ip = $_SERVER['HTTP_X_FORWARDED_FOR'];
-    // }
-
     $device->drives = $data['machine']['Drives'];
-    //$device->public_ip = $ip;
-    //$table->ipAddress('public_ip');
+    // The address the device reaches the server from (the first proxy hop when behind one): devices
+    // behind the same one are in the same network, which Wake-on-LAN relays rely on. Only a hint,
+    // the device can send any header.
+    $forwarded = trim(explode(',', (string) $request->header('X-Forwarded-For'))[0]);
+    $device->public_ip = filter_var($forwarded, FILTER_VALIDATE_IP) ? $forwarded : $request->ip();
     $device->name = $data['machine']['Hostname'];
     $device->os = $data['machine']['os'] ?? '';
 
