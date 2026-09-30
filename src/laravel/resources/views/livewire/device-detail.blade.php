@@ -45,10 +45,8 @@
                         </div>
                     @else
                         <h2 class="mb-1 text-break">
+                            {{-- Renamed from the device menu (⋯). --}}
                             <i class="{{ $selectedDevice->typeIcon }} fa-fw fs-4 align-middle text-body-secondary me-2" title="{{ __(ucfirst($selectedDevice->type)) }}"></i>{{ $selectedDevice->DisplayName }}
-                            <button class="btn btn-sm btn-sq" type="button" title="{{ __('Rename') }}" wire:click="$set('editMode', true)">
-                                <i class="fas fa-pen"></i>
-                            </button>
                         </h2>
                     @endif
 
