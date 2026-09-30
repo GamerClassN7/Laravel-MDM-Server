@@ -118,8 +118,10 @@
     </div>
 
     <div class="mt-4">
-        {{-- Scrolls sideways when the tabs do not fit; the active one is kept in view. --}}
-        <ul class="nav nav-tabs flex-nowrap text-nowrap overflow-x-auto overflow-y-hidden" role="tablist" x-init="$nextTick(() => { const tab = $el.querySelector('.nav-link.active'); if (tab) $el.scrollLeft = Math.max(0, tab.getBoundingClientRect().right - $el.getBoundingClientRect().right + $el.scrollLeft + 16) })">
+        {{-- Scrolls sideways when the tabs do not fit; the active one is kept in view. The wrapper
+             scrolls, not the list: it would clip the underline of the active tab. --}}
+        <div class="nav-tabs-scroll" x-init="$nextTick(() => { const tab = $el.querySelector('.nav-link.active'); if (tab) $el.scrollLeft = Math.max(0, tab.getBoundingClientRect().right - $el.getBoundingClientRect().right + $el.scrollLeft + 16) })">
+        <ul class="nav nav-tabs flex-nowrap text-nowrap" role="tablist">
             @if (!empty($selectedDevice->drives))
                 <li class="nav-item" role="presentation">
                     <button aria-controls="drives-tab-pane" aria-selected="{{ $activeTab === 'drives' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'drives' ? 'active' : '' }}" x-on:click="$wire.tab = 'drives'" data-bs-target="#drives-tab-pane" data-bs-toggle="tab" id="drives-tab" role="tab" type="button">
@@ -200,6 +202,7 @@
                 </button>
             </li>
         </ul>
+        </div>
 
         <div class="tab-content pt-3">
             @if (!empty($selectedDevice->drives))
@@ -563,46 +566,105 @@
                 </div>
             @endif
             <div aria-labelledby="agent-tab" class="tab-pane fade {{ $activeTab === 'agent' ? 'show active' : '' }}" id="agent-tab-pane" role="tabpanel" tabindex="0">
-                <dl class="row mb-0">
-                    <dt class="col-sm-4 fw-normal text-muted">{{ __('Version') }}</dt>
-                    <dd class="col-sm-8">
-                        {{ $selectedDevice->agentVersion ?? __('unknown') }}
-                        @if ($selectedDevice->agentOutdated)
-                            <x-badge class="ms-1" color="warning" size="sm" variant="subtle">{{ __('Newer: :version', ['version' => \App\Support\AgentScript::version()]) }}</x-badge>
-                        @else
-                            <x-badge class="ms-1" color="success" size="sm" variant="subtle">{{ __('Up to date') }}</x-badge>
-                        @endif
-                    </dd>
-                    <dt class="col-sm-4 fw-normal text-muted">WebSocket</dt>
-                    <dd class="col-sm-8">
-                        <x-badge :color="$selectedDevice->connectedViaWebsocket ? 'success' : 'secondary'" icon="fas fa-bolt" size="sm" variant="subtle">{{ $selectedDevice->connectedViaWebsocket ? __('Connected') : __('Not connected') }}</x-badge>
-                        <span class="small text-muted ms-1">{{ $selectedDevice->last_ws_at ? __('Last heartbeat :time', ['time' => $selectedDevice->last_ws_at->diffForHumans()]) : __('Never connected over WebSocket') }}</span>
-                    </dd>
-                    <dt class="col-sm-4 fw-normal text-muted">REST API</dt>
-                    <dd class="col-sm-8">
-                        <x-badge :color="$selectedDevice->connectedViaApi ? 'success' : 'secondary'" icon="fas fa-exchange-alt" size="sm" variant="subtle">{{ $selectedDevice->connectedViaApi ? __('Reporting') : __('Inactive') }}</x-badge>
-                        <span class="small text-muted ms-1">{{ __('Last report :time', ['time' => ($selectedDevice->last_http_at ?? $selectedDevice->updated_at)->diffForHumans()]) }}</span>
-                    </dd>
-                    <dt class="col-sm-4 fw-normal text-muted">{{ __('Signing') }}</dt>
-                    <dd class="col-sm-8">
-                        @if ($selectedDevice->signsRequests)
-                            <x-badge color="success" icon="fas fa-lock" size="sm" variant="subtle">{{ __('Signed') }}</x-badge>
-                            <div class="small text-muted mt-1">{{ __('Device key fingerprint') }}: <code class="text-break">{{ \App\Support\Signing::fingerprint($selectedDevice->public_key) }}</code></div>
-                            @can('is-system-admin')
-                                <button class="btn btn-sm btn-link px-0 text-decoration-none" type="button" title="{{ __('The agent registers a new key with its next request, e.g. after it was reinstalled with a new key.') }}" wire:click="resetDeviceKey" wire:confirm="{{ __('Reset the device key? Until the agent registers a key again, the device only gets the agent update.') }}">
-                                    <i class="fas fa-undo me-1"></i>{{ __('Reset device key') }}
-                                </button>
-                            @endcan
-                        @else
-                            <x-badge color="warning" icon="fas fa-unlock" size="sm" variant="subtle">{{ __('Unsigned agent') }}</x-badge>
-                            <div class="small text-muted mt-1">{{ __('The agent does not sign its communication (older than 1.7.0): only the agent update can be sent to it.') }}</div>
-                        @endif
-                    </dd>
-                    <dt class="col-sm-4 fw-normal text-muted">{{ __('Command progress') }}</dt>
-                    <dd class="col-sm-8">{{ $selectedDevice->commandTracking ? __('Reported by the agent') : __('Needs agent :version or newer', ['version' => \App\Models\Device::TRACKING_VERSION]) }}</dd>
-                    <dt class="col-sm-4 fw-normal text-muted">{{ __('Remediation scripts') }}</dt>
-                    <dd class="col-sm-8 mb-0">{{ $selectedDevice->scriptsEnabled ? __('Allowed') : __('Disabled on the device') }}</dd>
-                </dl>
+                @php
+                    $lastReport = $selectedDevice->last_http_at ?? $selectedDevice->updated_at;
+                    // Three cards: what runs, how it talks to the server, how the talk is protected.
+                    $row = 'd-flex justify-content-between align-items-center gap-3 py-2 border-top';
+                @endphp
+                <div class="row g-3">
+                    <div class="col-12 col-md-6">
+                        <div class="card card-body h-100">
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <span class="icon-tile bg-primary-subtle text-primary-emphasis"><i class="fas fa-robot"></i></span>
+                                <span class="fw-semibold">{{ __('Agent') }}</span>
+                            </div>
+                            <div class="{{ $row }}">
+                                <span class="small text-body-secondary">{{ __('Version') }}</span>
+                                <span class="d-flex align-items-center gap-2">
+                                    <span class="fw-semibold">{{ $selectedDevice->agentVersion ?? __('unknown') }}</span>
+                                    @if ($selectedDevice->agentOutdated)
+                                        <x-badge color="warning" size="sm" variant="subtle">{{ __('Newer: :version', ['version' => \App\Support\AgentScript::version()]) }}</x-badge>
+                                    @else
+                                        <x-badge color="success" size="sm" variant="subtle">{{ __('Up to date') }}</x-badge>
+                                    @endif
+                                </span>
+                            </div>
+                            <div class="{{ $row }}">
+                                <span class="small text-body-secondary">{{ __('Command progress') }}</span>
+                                @if ($selectedDevice->commandTracking)
+                                    <x-badge color="success" size="sm" variant="subtle">{{ __('Reported') }}</x-badge>
+                                @else
+                                    <x-badge color="secondary" size="sm" variant="subtle">{{ __('Needs :version', ['version' => \App\Models\Device::TRACKING_VERSION]) }}</x-badge>
+                                @endif
+                            </div>
+                            <div class="{{ $row }}">
+                                <span class="small text-body-secondary">{{ __('Remediation scripts') }}</span>
+                                <x-badge :color="$selectedDevice->scriptsEnabled ? 'success' : 'secondary'" size="sm" variant="subtle">{{ $selectedDevice->scriptsEnabled ? __('Allowed') : __('Disabled on the device') }}</x-badge>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-12 col-md-6">
+                        <div class="card card-body h-100">
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <span class="icon-tile {{ $selectedDevice->connectedViaWebsocket || $selectedDevice->connectedViaApi ? 'bg-success-subtle text-success-emphasis' : '' }}"><i class="fas fa-plug"></i></span>
+                                <span class="fw-semibold">{{ __('Connection') }}</span>
+                            </div>
+                            <div class="{{ $row }}">
+                                <span>
+                                    <span class="small text-body-secondary d-block">WebSocket</span>
+                                    <span class="small text-body-tertiary text-nowrap">{{ $selectedDevice->last_ws_at ? __('Heartbeat :time', ['time' => $selectedDevice->last_ws_at->diffForHumans()]) : __('Never connected') }}</span>
+                                </span>
+                                <x-badge :color="$selectedDevice->connectedViaWebsocket ? 'success' : 'secondary'" icon="fas fa-bolt" size="sm" variant="subtle">{{ $selectedDevice->connectedViaWebsocket ? __('Connected') : __('Not connected') }}</x-badge>
+                            </div>
+                            <div class="{{ $row }}">
+                                <span>
+                                    <span class="small text-body-secondary d-block">REST API</span>
+                                    <span class="small text-body-tertiary text-nowrap">{{ __('Report :time', ['time' => $lastReport->diffForHumans()]) }}</span>
+                                </span>
+                                <x-badge :color="$selectedDevice->connectedViaApi ? 'success' : 'secondary'" icon="fas fa-exchange-alt" size="sm" variant="subtle">{{ $selectedDevice->connectedViaApi ? __('Reporting') : __('Inactive') }}</x-badge>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-12">
+                        <div class="card card-body h-100">
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <span class="icon-tile {{ $selectedDevice->signsRequests ? 'bg-success-subtle text-success-emphasis' : 'bg-warning-subtle text-warning-emphasis' }}"><i class="fas {{ $selectedDevice->signsRequests ? 'fa-lock' : 'fa-unlock' }}"></i></span>
+                                <span class="fw-semibold">{{ __('Security') }}</span>
+                                @can('is-system-admin')
+                                    @if ($selectedDevice->signsRequests)
+                                        <button class="btn btn-sm btn-light ms-auto text-nowrap" type="button" title="{{ __('The agent registers a new key with its next request, e.g. after it was reinstalled with a new key.') }}" wire:click="resetDeviceKey" wire:confirm="{{ __('Reset the device key? Until the agent registers a key again, the device only gets the agent update.') }}">
+                                            <i class="fas fa-undo me-1 text-body-secondary"></i>{{ __('Reset device key') }}
+                                        </button>
+                                    @endif
+                                @endcan
+                            </div>
+                            <div class="{{ $row }}">
+                                <span class="small text-body-secondary">{{ __('Signing') }}</span>
+                                @if ($selectedDevice->signsRequests)
+                                    <x-badge color="success" icon="fas fa-lock" size="sm" variant="subtle">{{ __('Signed') }}</x-badge>
+                                @else
+                                    <x-badge color="warning" icon="fas fa-unlock" size="sm" variant="subtle">{{ __('Unsigned agent') }}</x-badge>
+                                @endif
+                            </div>
+                            @if ($selectedDevice->signsRequests)
+                                @if ($selectedDevice->key_registered_at)
+                                    <div class="{{ $row }}">
+                                        <span class="small text-body-secondary">{{ __('Key registered') }}</span>
+                                        <span class="small" title="{{ $selectedDevice->key_registered_at }}">{{ $selectedDevice->key_registered_at->diffForHumans() }}</span>
+                                    </div>
+                                @endif
+                                <div class="{{ $row }} flex-wrap">
+                                    <span class="small text-body-secondary">{{ __('Device key fingerprint') }}</span>
+                                    <code class="small text-break">{{ \App\Support\Signing::fingerprint($selectedDevice->public_key) }}</code>
+                                </div>
+                            @else
+                                <div class="small text-body-secondary py-2 border-top">{{ __('The agent does not sign its communication (older than 1.7.0): only the agent update can be sent to it.') }}</div>
+                            @endif
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

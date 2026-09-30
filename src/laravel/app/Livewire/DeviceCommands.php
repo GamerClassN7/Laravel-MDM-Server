@@ -12,7 +12,7 @@ class DeviceCommands extends Component
     public $selectedDeviceId;
 
     /** Commands the toolbar offers; the others come from the alerts and the update list. */
-    public const TOOLBAR = ['restart', 'turnOff', 'doUpdates', 'updateAgent'];
+    public const TOOLBAR = ['restart', 'turnOff', 'doUpdates'];
 
     public function sendCommandToDevice($command)
     {

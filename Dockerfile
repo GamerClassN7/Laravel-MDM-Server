@@ -86,7 +86,6 @@ USER app
 
 ENV APP_ENV=production \
     APP_DEBUG=false \
-    LOG_CHANNEL=stderr \
     REVERB_ENABLED=true \
     SCHEDULER_ENABLED=true
 

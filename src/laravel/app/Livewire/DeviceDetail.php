@@ -33,11 +33,11 @@ class DeviceDetail extends Component
         $this->friendlyName = Device::find($this->selectedDeviceId)->DisplayName;
     }
 
-    /** "Details" of an alert opens its tab. */
-    #[On('show-device-tab')]
-    public function showTab(string $tab): void
+    /** Rename from the device menu. */
+    #[On('rename-device')]
+    public function rename(): void
     {
-        $this->tab = $tab;
+        $this->editMode = true;
     }
 
     /**

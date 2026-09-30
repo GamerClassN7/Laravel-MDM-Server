@@ -19,6 +19,13 @@ class DeviceAlerts extends Component
         }
     }
 
+    public function dismiss(string $key): void
+    {
+        if ($device = Device::find($this->selectedDeviceId)) {
+            SmartAlerts::dismiss($device, $key, auth()->user());
+        }
+    }
+
     /** Kept for the agent update button of older views and tests. */
     public function updateAgent(): void
     {

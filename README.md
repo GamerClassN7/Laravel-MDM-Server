@@ -86,8 +86,10 @@ With `DB_CONNECTION=sqlite` and no `DB_DATABASE`, the database is kept in the `s
 `database.sqlite` is used, and on every start the migrations in it are replaced with the ones
 from the image, so new migrations are applied after an update.
 
-Errors always show up in `docker logs`; when `.env` sets a file channel (e.g. `LOG_CHANNEL=daily`),
-the file log is kept in addition. Database backups from the system pages are not supported in the image (no
+The application logs to daily files in the `storage` volume (`storage/logs`, shown in
+**System → Logs**) and to `docker logs` at the same time. Another file channel in the environment or
+in `.env` (e.g. `LOG_CHANNEL=single`) is used instead of the daily files; `LOG_CHANNEL=stderr` logs
+to `docker logs` only. Database backups from the system pages are not supported in the image (no
 `mysqldump`).
 
 ### Real-time commands (WebSocket)
@@ -146,8 +148,9 @@ way is never queued again: double clicks, two users or an action for all devices
 
 **Smart alerts** show what needs attention on a device (restart required, a newer agent, updates,
 low disk space, disk health, failed services and remediations, failed commands) with the action
-that fixes it. The **Smart alerts** dashboard widget lists them for all devices, with one button per
-alert for all devices that can take the action now.
+that fixes it. An alert can be dismissed: it stays hidden until it says something else (e.g. more
+updates) or goes away and comes back. The **Smart alerts** dashboard widget lists them for all
+devices, with one button per alert for all devices that can take the action now.
 A device without a heartbeat for 90 seconds is shown as offline.
 
 The agent is designed to stay out of the way:
@@ -188,10 +191,10 @@ The agent is designed to stay out of the way:
 | Applications | ✅ winget | ✅ flatpak, snap |
 | PowerShell modules (PowerShell Gallery) | ✅ Windows PowerShell and 7 | ✅ PowerShell 7 |
 | Users' own PowerShell modules | ⚠️ listed only | ✅ updated as the user |
-| Newer PowerShell 7 release | ✅ | ✅ |
+| Newer PowerShell 7 release | ✅ installed from GitHub (MSI, SHA-256 checked) | ✅ installed from GitHub (.deb or tar.gz, SHA-256 checked) |
 | **Commands** | | |
 | Install updates | ✅ Windows Update, winget, modules | ✅ apt, flatpak, snap, modules |
-| Install a single update (agent 1.8.0+) | ✅ Windows Update, winget, modules | ✅ apt, flatpak, snap, modules |
+| Install a single update (agent 1.8.0+) | ✅ Windows Update, winget, modules, PowerShell 7 | ✅ apt, flatpak, snap, modules, PowerShell 7 |
 | Progress and result of commands (agent 1.8.0+) | ✅ | ✅ |
 | Restart / Turn off | ✅ | ✅ |
 

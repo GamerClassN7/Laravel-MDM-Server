@@ -55,6 +55,8 @@ class DeviceCommand extends Model
         'flatpak' => '/^[A-Za-z0-9_\-]+(\.[A-Za-z0-9_\-]+)+$/',
         'snap' => '/^[a-z0-9][a-z0-9\-]*$/',
         'module' => '/^[A-Za-z0-9][A-Za-z0-9._\-]*$/',
+        // A PowerShell 7 release from GitHub (installations no package manager knows about).
+        'pwsh' => '/^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}$/',
     ];
 
     public const MODULE_EDITIONS = ['Windows PowerShell', 'PowerShell 7'];
