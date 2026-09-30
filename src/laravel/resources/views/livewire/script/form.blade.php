@@ -1,4 +1,4 @@
-<form wire:submit="save" x-data="{ indent(event) { const el = event.target; const start = el.selectionStart; el.setRangeText('    ', start, el.selectionEnd, 'end'); el.dispatchEvent(new Event('input')); } }">
+<form wire:submit="save">
     <div class="row g-3">
         <div class="col-12 col-md-6">
             <label class="form-label" for="script-name">{{ __('Name') }}</label>
@@ -22,17 +22,15 @@
             <label class="form-label" for="script-description">{{ __('Description') }}</label>
             <input class="form-control" id="script-description" type="text" wire:model="description">
         </div>
-        <div class="col-12">
-            <label class="form-label" for="script-detection">{{ __('Detection script') }}</label>
-            <textarea class="form-control font-monospace @error('detection') is-invalid @enderror" id="script-detection" placeholder="# exit 0 = compliant, exit 1 = run the remediation" rows="12" spellcheck="false" wire:model="detection" x-on:keydown.tab.prevent="indent($event)"></textarea>
-            @error('detection') <div class="invalid-feedback">{{ $message }}</div> @enderror
+        {{-- Empty editors would be a single line: give them room (the component only sets maxLines). --}}
+        <div class="col-12" x-init="$nextTick(() => $el.querySelector('.ace-editor')?.env?.editor?.setOptions({ minLines: 12, maxLines: 40, showPrintMargin: false }))">
+            {{-- Ace editor (steelants/form), PowerShell highlighting; the scripts run in PowerShell on every platform. --}}
+            <x-form::ace id="script-detection" label="{{ __('Detection script') }}" language="powershell" theme="tomorrow_night" wire:model="detection"
+                help="{{ __('Exit 0 = compliant, exit 1 = runs the remediation.') }}" />
         </div>
-        <div class="col-12">
-            <label class="form-label" for="script-remediation">{{ __('Remediation script') }} <span class="text-muted small">({{ __('optional') }})</span></label>
-            <textarea class="form-control font-monospace" id="script-remediation" rows="10" spellcheck="false" wire:model="remediation" x-on:keydown.tab.prevent="indent($event)"></textarea>
-            <div class="form-text">
-                {{ __('Runs when the detection exits with 1, then the detection runs again. Scripts run as SYSTEM / root, without network access, output is kept up to 16 kB.') }}
-            </div>
+        <div class="col-12" x-init="$nextTick(() => $el.querySelector('.ace-editor')?.env?.editor?.setOptions({ minLines: 8, maxLines: 40, showPrintMargin: false }))">
+            <x-form::ace id="script-remediation" label="{{ __('Remediation script') }} ({{ __('optional') }})" language="powershell" theme="tomorrow_night" wire:model="remediation"
+                help="{{ __('Runs when the detection exits with 1, then the detection runs again. Scripts run as SYSTEM / root, without network access, output is kept up to 16 kB.') }}" />
         </div>
     </div>
 

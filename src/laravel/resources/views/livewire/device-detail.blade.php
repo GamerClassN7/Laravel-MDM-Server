@@ -1,4 +1,5 @@
-<div>
+{{-- Polls faster while a command is on its way (install buttons, history). --}}
+<div @if ($activeCommands->isNotEmpty()) wire:poll.3s @else wire:poll.30s @endif>
     @php
         $moduleUpdates = $selectedDevice->moduleUpdates;
         $hasUpdates = count($selectedDevice->updates) > 0 || count($selectedDevice->apps_packages_updates) > 0 || count($moduleUpdates) > 0;
@@ -25,50 +26,60 @@
             'docker' => $docker !== null,
             'health' => $diskHealth !== null,
             'scripts' => $scriptRuns->isNotEmpty(),
+            'history' => $history->isNotEmpty(),
+            'agent' => true,
         ]));
+        $updatesRunning = \App\Models\Device::findActive($activeCommands, 'doUpdates');
         $activeTab = in_array($tab, $tabs, true) ? $tab : ($tabs[0] ?? null);
     @endphp
 
     <div class="card">
         <div class="card-body">
-            <div class="d-flex justify-content-between align-items-start">
-                <div title="{{ $selectedDevice->updated_at->diffForHumans() }}">
+            <div class="d-flex align-items-start gap-3">
+                <div class="flex-grow-1 min-w-0">
                     @if ($editMode)
                         <div class="d-flex gap-2">
-                            <input class="form-control" id="friendlyName" type="text" wire:model="friendlyName" wire:keydown.enter="saveFriendlyName">
+                            <input class="form-control" id="friendlyName" type="text" wire:model="friendlyName" wire:keydown.enter="saveFriendlyName" wire:keydown.escape="$set('editMode', false)">
                             <button class="btn btn-primary" type="button" wire:click="saveFriendlyName">{{ __('Save') }}</button>
+                            <button class="btn btn-light" type="button" wire:click="$set('editMode', false)">{{ __('Cancel') }}</button>
                         </div>
                     @else
-                        <h2 class="mb-1">
-                            @if (count($selectedDevice->installableUpdates) > 1)
-                                <i class="fas fa-exclamation-triangle text-danger me-2" title="{{ __('Updates available') }}"></i>
-                            @elseif ($pendingUpdates > 0)
-                                <i class="fas fa-exclamation-triangle text-warning me-2" title="{{ __('Updates available') }}"></i>
-                            @endif
-                            <i class="{{ $selectedDevice->typeIcon }} text-body-secondary me-2" title="{{ __(ucfirst($selectedDevice->type)) }}"></i>
-                            {{ $selectedDevice->DisplayName }}
+                        <h2 class="mb-1 text-break">
+                            <i class="{{ $selectedDevice->typeIcon }} fa-fw fs-4 align-middle text-body-secondary me-2" title="{{ __(ucfirst($selectedDevice->type)) }}"></i>{{ $selectedDevice->DisplayName }}
                             <button class="btn btn-sm btn-sq" type="button" title="{{ __('Rename') }}" wire:click="$set('editMode', true)">
                                 <i class="fas fa-pen"></i>
                             </button>
                         </h2>
                     @endif
 
-                    @if (!$selectedDevice->offline)
-                        <div class="text-muted small d-flex flex-wrap gap-3">
+                    <div class="text-muted small d-flex flex-wrap align-items-center column-gap-3 row-gap-1">
+                        @if ($selectedDevice->offline)
+                            <x-badge color="secondary" size="sm" variant="subtle" title="{{ ($selectedDevice->last_seen_at ?? $selectedDevice->updated_at)?->toDateTimeString() }}">
+                                {{ __('Offline') }} · {{ ($selectedDevice->last_seen_at ?? $selectedDevice->updated_at)?->diffForHumans() }}
+                            </x-badge>
+                        @else
+                            <x-badge color="success" size="sm" variant="subtle">{{ __('Online') }}</x-badge>
+                        @endif
+                        @if (!empty($selectedDevice->os))
+                            <span><i class="fas fa-info-circle me-1"></i>{{ $selectedDevice->os }}</span>
+                        @endif
+                        @if (!$selectedDevice->offline)
                             @if (!empty($selectedDevice->lastLogonUser))
-                                <span><i class="fas fa-user me-1"></i>{{ $selectedDevice->lastLogonUser }}</span>
+                                <span title="{{ __('Last logged on user') }}"><i class="fas fa-user me-1"></i>{{ $selectedDevice->lastLogonUser }}</span>
                             @endif
                             @if (!empty($selectedDevice->NiceUptime))
-                                <span><i class="far fa-clock me-1"></i>{{ $selectedDevice->NiceUptime }}</span>
+                                <span title="{{ __('Uptime') }}"><i class="far fa-clock me-1"></i>{{ $selectedDevice->NiceUptime }}</span>
                             @endif
-                            @if (!empty($selectedDevice->os))
-                                <span><i class="fas fa-info-circle me-1"></i>{{ $selectedDevice->os }}</span>
-                            @endif
-                            @if (!empty($selectedDevice->data->machine->Processor))
-                                <span><i class="fas fa-microchip me-1"></i>{{ $selectedDevice->data->machine->Processor }} ({{ __(':count cores', ['count' => $selectedDevice->data->machine->Cores ?? '?']) }})</span>
-                            @endif
-                        </div>
-                    @endif
+                        @endif
+                        @if (!empty($selectedDevice->data->machine->Processor))
+                            <span><i class="fas fa-microchip me-1"></i>{{ $selectedDevice->data->machine->Processor }} ({{ __(':count cores', ['count' => $selectedDevice->data->machine->Cores ?? '?']) }})</span>
+                        @endif
+                        @if ($virtualization = $selectedDevice->virtualization)
+                            <span title="{{ $virtualization['type'] === 'container' ? __('Runs in a container') : __('Runs in a virtual machine') }}">
+                                <i class="{{ $virtualization['type'] === 'container' ? 'fas fa-box' : 'fas fa-clone' }} me-1"></i>{{ $virtualization['label'] }}
+                            </span>
+                        @endif
+                    </div>
                 </div>
 
                 @if (!$selectedDevice->offline)
@@ -88,23 +99,27 @@
                                 {{ $power }} %
                             </span>
                         @else
-                            <i class="fas fa-plug" title="{{ __('Plugged in') }}"></i>
+                            <i class="fas fa-plug text-body-secondary" title="{{ __('Plugged in') }}"></i>
                         @endif
                     </div>
                 @endif
             </div>
 
-            @if (!empty($selectedDevice->data))
-                @livewire('device-alerts', ['selectedDeviceId' => $selectedDevice->id], key('device-alerts' . $selectedDevice->id))
-            @endif
             @livewire('device-commands', ['selectedDeviceId' => $selectedDevice->id], key('device-commands' . $selectedDevice->id))
         </div>
     </div>
 
-    @livewire('device-metrics', ['selectedDeviceId' => $selectedDevice->id], key('device-metrics' . $selectedDevice->id))
+    @if (!empty($selectedDevice->data))
+        @livewire('device-alerts', ['selectedDeviceId' => $selectedDevice->id], key('device-alerts' . $selectedDevice->id))
+    @endif
+
+    <div class="mt-3">
+        @livewire('device-metrics', ['selectedDeviceId' => $selectedDevice->id], key('device-metrics' . $selectedDevice->id))
+    </div>
 
     <div class="mt-4">
-        <ul class="nav nav-tabs" role="tablist">
+        {{-- Scrolls sideways when the tabs do not fit; the active one is kept in view. --}}
+        <ul class="nav nav-tabs flex-nowrap text-nowrap overflow-x-auto overflow-y-hidden" role="tablist" x-init="$nextTick(() => { const tab = $el.querySelector('.nav-link.active'); if (tab) $el.scrollLeft = Math.max(0, tab.getBoundingClientRect().right - $el.getBoundingClientRect().right + $el.scrollLeft + 16) })">
             @if (!empty($selectedDevice->drives))
                 <li class="nav-item" role="presentation">
                     <button aria-controls="drives-tab-pane" aria-selected="{{ $activeTab === 'drives' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'drives' ? 'active' : '' }}" x-on:click="$wire.tab = 'drives'" data-bs-target="#drives-tab-pane" data-bs-toggle="tab" id="drives-tab" role="tab" type="button">
@@ -116,6 +131,9 @@
                 <li class="nav-item" role="presentation">
                     <button aria-controls="updates-tab-pane" aria-selected="{{ $activeTab === 'updates' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'updates' ? 'active' : '' }}" x-on:click="$wire.tab = 'updates'" data-bs-target="#updates-tab-pane" data-bs-toggle="tab" id="updates-tab" role="tab" type="button">
                         <i class="fas fa-sync me-2"></i>{{ __('Updates') }}
+                        @if ($pendingUpdates > 0)
+                            <x-badge class="ms-1" :color="count($selectedDevice->installableUpdates) > 0 ? 'warning' : 'secondary'" size="sm" variant="subtle" title="{{ __('Installable updates') }}">{{ $pendingUpdates }}</x-badge>
+                        @endif
                     </button>
                 </li>
             @endif
@@ -131,7 +149,7 @@
                     <button aria-controls="services-tab-pane" aria-selected="{{ $activeTab === 'services' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'services' ? 'active' : '' }}" x-on:click="$wire.tab = 'services'" data-bs-target="#services-tab-pane" data-bs-toggle="tab" id="services-tab" role="tab" type="button">
                         <i class="fas fa-cogs me-2"></i>{{ __('Services') }}
                         @if ($failedServices > 0)
-                            <x-badge class="ms-1" color="danger" size="sm" title="{{ __('Not running') }}">{{ $failedServices }}</x-badge>
+                            <x-badge class="ms-1" color="danger" size="sm" variant="subtle" title="{{ __('Not running') }}">{{ $failedServices }}</x-badge>
                         @endif
                     </button>
                 </li>
@@ -141,7 +159,7 @@
                     <button aria-controls="docker-tab-pane" aria-selected="{{ $activeTab === 'docker' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'docker' ? 'active' : '' }}" x-on:click="$wire.tab = 'docker'" data-bs-target="#docker-tab-pane" data-bs-toggle="tab" id="docker-tab" role="tab" type="button">
                         <i class="fab fa-docker me-2"></i>{{ __('Docker') }}
                         @if ($stoppedContainers > 0)
-                            <x-badge class="ms-1" color="secondary" size="sm" title="{{ __('Not running') }}">{{ $stoppedContainers }}</x-badge>
+                            <x-badge class="ms-1" color="secondary" size="sm" variant="subtle" title="{{ __('Not running') }}">{{ $stoppedContainers }}</x-badge>
                         @endif
                     </button>
                 </li>
@@ -161,11 +179,26 @@
                     <button aria-controls="scripts-tab-pane" aria-selected="{{ $activeTab === 'scripts' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'scripts' ? 'active' : '' }}" x-on:click="$wire.tab = 'scripts'" data-bs-target="#scripts-tab-pane" data-bs-toggle="tab" id="scripts-tab" role="tab" type="button">
                         <i class="fas fa-scroll me-2"></i>{{ __('Scripts') }}
                         @if ($failedScripts > 0)
-                            <x-badge class="ms-1" color="danger" size="sm" title="{{ __('Failed') }}">{{ $failedScripts }}</x-badge>
+                            <x-badge class="ms-1" color="danger" size="sm" variant="subtle" title="{{ __('Failed') }}">{{ $failedScripts }}</x-badge>
                         @endif
                     </button>
                 </li>
             @endif
+            @if ($history->isNotEmpty())
+                <li class="nav-item" role="presentation">
+                    <button aria-controls="history-tab-pane" aria-selected="{{ $activeTab === 'history' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'history' ? 'active' : '' }}" x-on:click="$wire.tab = 'history'" data-bs-target="#history-tab-pane" data-bs-toggle="tab" id="history-tab" role="tab" type="button">
+                        <i class="fas fa-history me-2"></i>{{ __('History') }}
+                    </button>
+                </li>
+            @endif
+            <li class="nav-item" role="presentation">
+                <button aria-controls="agent-tab-pane" aria-selected="{{ $activeTab === 'agent' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'agent' ? 'active' : '' }}" x-on:click="$wire.tab = 'agent'" data-bs-target="#agent-tab-pane" data-bs-toggle="tab" id="agent-tab" role="tab" type="button">
+                    <i class="fas fa-robot me-2"></i>{{ __('Agent') }}
+                    @if (!empty($selectedDevice->data) && ($selectedDevice->agentOutdated || ! $selectedDevice->signsRequests))
+                        <i class="fas fa-exclamation-triangle text-warning ms-1"></i>
+                    @endif
+                </button>
+            </li>
         </ul>
 
         <div class="tab-content pt-3">
@@ -202,7 +235,24 @@
                     $moduleSearch = array_map(fn ($module) => strtolower(($module['Name'] ?? '') . ' ' . ($module['Edition'] ?? '') . ' ' . ($module['User'] ?? '')), $moduleUpdates);
                 @endphp
                 <div aria-labelledby="updates-tab" class="tab-pane fade {{ $activeTab === 'updates' ? 'show active' : '' }}" id="updates-tab-pane" role="tabpanel" tabindex="0" x-data="{ search: '' }">
-                    <input class="form-control form-control-sm mb-3" placeholder="{{ __('Search') }}" style="max-width: 20rem;" type="search" x-model="search">
+                    <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+                        <input class="form-control form-control-sm" placeholder="{{ __('Search') }}" style="max-width: 20rem;" type="search" x-model="search">
+                        <div class="ms-auto d-flex align-items-center gap-2">
+                            @if ($updatesRunning)
+                                <div style="min-width: 14rem;">@include('partials.device.command-progress', ['command' => $updatesRunning])</div>
+                            @elseif ($pendingUpdates > 0)
+                                <button class="btn btn-sm btn-light" type="button" wire:click="installAll" wire:loading.attr="disabled" wire:target="installAll" @disabled($selectedDevice->offline)>
+                                    <i class="fas fa-download me-1 text-primary"></i>{{ __('Install all (:count)', ['count' => $pendingUpdates]) }}
+                                </button>
+                            @endif
+                        </div>
+                    </div>
+                    @error('update')
+                        <div class="alert alert-danger py-2 small">{{ $message }}</div>
+                    @enderror
+                    @unless ($selectedDevice->commandTracking)
+                        <p class="small text-muted">{{ __('Updating single packages needs agent :version or newer.', ['version' => \App\Models\Device::TRACKING_VERSION]) }}</p>
+                    @endunless
                     @if (count($selectedDevice->updates) > 0)
                         <div x-show="!search || @js($osSearch).some(text => text.includes(search.toLowerCase()))">
                         <h5>{{ __('Operating system') }}</h5>
@@ -215,7 +265,7 @@
                                         default => null,
                                     };
                                 @endphp
-                                <li class="list-group-item d-flex justify-content-between align-items-center gap-2 {{ $deferred ? 'text-body-secondary' : '' }}" wire:key="os-update-{{ $loop->index }}" x-show="!search || @js($osSearch[$loop->index]).includes(search.toLowerCase())">
+                                <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2 {{ $deferred ? 'text-body-secondary' : '' }}" wire:key="os-update-{{ $loop->index }}" x-show="!search || @js($osSearch[$loop->index]).includes(search.toLowerCase())">
                                     <span>
                                         @if ($deferred)
                                             <i class="{{ $deferred['icon'] }} me-2" title="{{ $deferred['title'] }}"></i>
@@ -224,6 +274,8 @@
                                     </span>
                                     @if ($deferred)
                                         <x-badge color="secondary" title="{{ $deferred['title'] }}" variant="subtle">{{ $deferred['label'] }}</x-badge>
+                                    @else
+                                        @include('partials.device.update-button', ['section' => 'os', 'index' => $loop->index, 'target' => $selectedDevice->updateTarget('os', $update)])
                                     @endif
                                 </li>
                             @endforeach
@@ -242,7 +294,10 @@
                                             <span class="small text-muted ms-1">{{ $appUpdate['Source'] }}</span>
                                         @endif
                                     </span>
-                                    <x-badge color="primary" variant="subtle">{{ collect([($appUpdate['Version'] ?? '') ?: '?', $appUpdate['Avaliable'] ?? null])->filter()->implode(' → ') }}</x-badge>
+                                    <span class="d-flex align-items-center gap-2">
+                                        <x-badge color="primary" variant="subtle">{{ collect([($appUpdate['Version'] ?? '') ?: '?', $appUpdate['Avaliable'] ?? null])->filter()->implode(' → ') }}</x-badge>
+                                        @include('partials.device.update-button', ['section' => 'app', 'index' => $loop->index, 'target' => $selectedDevice->updateTarget('app', $appUpdate)])
+                                    </span>
                                 </li>
                             @endforeach
                         </ul>
@@ -261,7 +316,10 @@
                                             <span class="small text-muted" title="{{ __('Installed in the user profile, the user updates it (Update-Module).') }}"><i class="fas fa-user ms-1 me-1"></i>{{ $module['User'] }}</span>
                                         @endif
                                     </span>
-                                    <x-badge color="primary" variant="subtle">{{ $module['Version'] ?? '?' }} → {{ $module['Available'] ?? '?' }}</x-badge>
+                                    <span class="d-flex align-items-center gap-2">
+                                        <x-badge color="primary" variant="subtle">{{ $module['Version'] ?? '?' }} → {{ $module['Available'] ?? '?' }}</x-badge>
+                                        @include('partials.device.update-button', ['section' => 'module', 'index' => $loop->index, 'target' => $selectedDevice->updateTarget('module', $module)])
+                                    </span>
                                 </li>
                             @endforeach
                         </ul>
@@ -274,14 +332,29 @@
                 <div aria-labelledby="networks-tab" class="tab-pane fade {{ $activeTab === 'networks' ? 'show active' : '' }}" id="networks-tab-pane" role="tabpanel" tabindex="0">
                     <ul class="list-group">
                         @foreach ($selectedDevice->networks as $network)
-                            <li class="list-group-item">
-                                <div class="d-flex justify-content-between">
-                                    <span class="fw-semibold">{{ $network->Name }}</span>
-                                    <x-badge color="{{ $network->Status === 'Up' ? 'success' : 'secondary' }}" variant="subtle">{{ $network->Status }}</x-badge>
+                            @php $type = \App\Models\Device::NETWORK_TYPES[$network['Type']]; @endphp
+                            <li class="list-group-item d-flex align-items-start gap-3 {{ $network['Connected'] ? '' : 'text-body-secondary' }}" wire:key="network-{{ $loop->index }}">
+                                <span class="icon-tile {{ $network['Connected'] ? 'bg-primary-subtle text-primary-emphasis' : '' }}" title="{{ __($type['label']) }}"><i class="{{ $type['icon'] }}"></i></span>
+                                <div class="flex-grow-1 min-w-0">
+                                    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                                        <span>
+                                            <span class="fw-semibold text-break">{{ $network['Name'] }}</span>
+                                            <x-badge class="ms-1" color="secondary" size="sm" variant="subtle">{{ __($type['label']) }}</x-badge>
+                                        </span>
+                                        <x-badge :color="$network['Connected'] ? 'success' : 'secondary'" :icon="$network['Connected'] ? 'fas fa-check-circle' : 'fas fa-times-circle'" title="{{ $network['Status'] }}" variant="subtle">
+                                            {{ $network['Connected'] ? __('Connected') : __('Disconnected') }}
+                                        </x-badge>
+                                    </div>
+                                    @if ($network['Description'] && $network['Description'] !== $network['Name'])
+                                        <div class="small text-muted text-break">{{ $network['Description'] }}</div>
+                                    @endif
+                                    @foreach ($network['IPAddresses'] as $ipAddress)
+                                        <div class="small text-muted font-monospace">{{ $ipAddress }}</div>
+                                    @endforeach
+                                    @if ($network['Mac'])
+                                        <div class="small text-body-tertiary font-monospace" title="{{ __('MAC address') }}">{{ $network['Mac'] }}</div>
+                                    @endif
                                 </div>
-                                @foreach ($network->IPAddresses as $ipAddress)
-                                    <div class="small text-muted">{{ $ipAddress }}</div>
-                                @endforeach
                             </li>
                         @endforeach
                     </ul>
@@ -449,6 +522,88 @@
                     @endunless
                 </div>
             @endif
+            @if ($history->isNotEmpty())
+                <div aria-labelledby="history-tab" class="tab-pane fade {{ $activeTab === 'history' ? 'show active' : '' }}" id="history-tab-pane" role="tabpanel" tabindex="0">
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-0">
+                            <thead>
+                                <tr>
+                                    <th>{{ __('Command') }}</th>
+                                    <th>{{ __('Status') }}</th>
+                                    <th class="d-none d-md-table-cell">{{ __('Issued by') }}</th>
+                                    <th class="text-end">{{ __('Issued') }}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($history as $command)
+                                    <tr wire:key="history-{{ $command->id }}">
+                                        <td class="text-break"><i class="{{ $command->icon }} fa-fw text-body-secondary me-1"></i>{{ $command->label }}</td>
+                                        <td>
+                                            @if ($command->active)
+                                                <div style="min-width: 10rem;">@include('partials.device.command-progress', ['command' => $command, 'compact' => true])</div>
+                                            @else
+                                                <x-badge :color="$command->statusColor" size="sm" variant="subtle">{{ $command->statusLabel }}</x-badge>
+                                                @if ($command->message)
+                                                    <div class="small text-body-secondary text-break">{{ $command->message }}</div>
+                                                @endif
+                                            @endif
+                                        </td>
+                                        <td class="d-none d-md-table-cell small text-body-secondary">{{ $command->issuer?->name ?? '—' }}</td>
+                                        <td class="text-end small text-nowrap" title="{{ $command->created_at }}{{ $command->finished_at ? ' → ' . $command->finished_at : '' }}">
+                                            {{ $command->created_at->diffForHumans() }}
+                                            @if ($command->finished_at && $command->started_at)
+                                                <div class="text-body-secondary">{{ $command->started_at->diffForHumans($command->finished_at, \Carbon\CarbonInterface::DIFF_ABSOLUTE, true) }}</div>
+                                            @endif
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            @endif
+            <div aria-labelledby="agent-tab" class="tab-pane fade {{ $activeTab === 'agent' ? 'show active' : '' }}" id="agent-tab-pane" role="tabpanel" tabindex="0">
+                <dl class="row mb-0">
+                    <dt class="col-sm-4 fw-normal text-muted">{{ __('Version') }}</dt>
+                    <dd class="col-sm-8">
+                        {{ $selectedDevice->agentVersion ?? __('unknown') }}
+                        @if ($selectedDevice->agentOutdated)
+                            <x-badge class="ms-1" color="warning" size="sm" variant="subtle">{{ __('Newer: :version', ['version' => \App\Support\AgentScript::version()]) }}</x-badge>
+                        @else
+                            <x-badge class="ms-1" color="success" size="sm" variant="subtle">{{ __('Up to date') }}</x-badge>
+                        @endif
+                    </dd>
+                    <dt class="col-sm-4 fw-normal text-muted">WebSocket</dt>
+                    <dd class="col-sm-8">
+                        <x-badge :color="$selectedDevice->connectedViaWebsocket ? 'success' : 'secondary'" icon="fas fa-bolt" size="sm" variant="subtle">{{ $selectedDevice->connectedViaWebsocket ? __('Connected') : __('Not connected') }}</x-badge>
+                        <span class="small text-muted ms-1">{{ $selectedDevice->last_ws_at ? __('Last heartbeat :time', ['time' => $selectedDevice->last_ws_at->diffForHumans()]) : __('Never connected over WebSocket') }}</span>
+                    </dd>
+                    <dt class="col-sm-4 fw-normal text-muted">REST API</dt>
+                    <dd class="col-sm-8">
+                        <x-badge :color="$selectedDevice->connectedViaApi ? 'success' : 'secondary'" icon="fas fa-exchange-alt" size="sm" variant="subtle">{{ $selectedDevice->connectedViaApi ? __('Reporting') : __('Inactive') }}</x-badge>
+                        <span class="small text-muted ms-1">{{ __('Last report :time', ['time' => ($selectedDevice->last_http_at ?? $selectedDevice->updated_at)->diffForHumans()]) }}</span>
+                    </dd>
+                    <dt class="col-sm-4 fw-normal text-muted">{{ __('Signing') }}</dt>
+                    <dd class="col-sm-8">
+                        @if ($selectedDevice->signsRequests)
+                            <x-badge color="success" icon="fas fa-lock" size="sm" variant="subtle">{{ __('Signed') }}</x-badge>
+                            <div class="small text-muted mt-1">{{ __('Device key fingerprint') }}: <code class="text-break">{{ \App\Support\Signing::fingerprint($selectedDevice->public_key) }}</code></div>
+                            @can('is-system-admin')
+                                <button class="btn btn-sm btn-link px-0 text-decoration-none" type="button" title="{{ __('The agent registers a new key with its next request, e.g. after it was reinstalled with a new key.') }}" wire:click="resetDeviceKey" wire:confirm="{{ __('Reset the device key? Until the agent registers a key again, the device only gets the agent update.') }}">
+                                    <i class="fas fa-undo me-1"></i>{{ __('Reset device key') }}
+                                </button>
+                            @endcan
+                        @else
+                            <x-badge color="warning" icon="fas fa-unlock" size="sm" variant="subtle">{{ __('Unsigned agent') }}</x-badge>
+                            <div class="small text-muted mt-1">{{ __('The agent does not sign its communication (older than 1.7.0): only the agent update can be sent to it.') }}</div>
+                        @endif
+                    </dd>
+                    <dt class="col-sm-4 fw-normal text-muted">{{ __('Command progress') }}</dt>
+                    <dd class="col-sm-8">{{ $selectedDevice->commandTracking ? __('Reported by the agent') : __('Needs agent :version or newer', ['version' => \App\Models\Device::TRACKING_VERSION]) }}</dd>
+                    <dt class="col-sm-4 fw-normal text-muted">{{ __('Remediation scripts') }}</dt>
+                    <dd class="col-sm-8 mb-0">{{ $selectedDevice->scriptsEnabled ? __('Allowed') : __('Disabled on the device') }}</dd>
+                </dl>
+            </div>
         </div>
     </div>
 </div>

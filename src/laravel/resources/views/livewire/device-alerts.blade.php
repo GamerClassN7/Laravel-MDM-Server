@@ -1,76 +1,20 @@
-<div wire:poll>
-    <div class="d-flex flex-wrap gap-2 mt-3">
-        <x-badge :color="$selectedDevice->connectedViaWebsocket ? 'success' : 'secondary'" icon="fas fa-bolt" title="{{ $selectedDevice->last_ws_at ? __('Last WebSocket heartbeat :time', ['time' => $selectedDevice->last_ws_at->diffForHumans()]) : __('Never connected over WebSocket') }}" variant="subtle">
-            WebSocket
-        </x-badge>
-        <x-badge :color="$selectedDevice->connectedViaApi ? 'success' : 'secondary'" icon="fas fa-exchange-alt" title="{{ __('Last report :time', ['time' => ($selectedDevice->last_http_at ?? $selectedDevice->updated_at)->diffForHumans()]) }}" variant="subtle">
-            REST API
-        </x-badge>
-        <x-badge :color="$selectedDevice->agentVersion === null ? 'secondary' : ($selectedDevice->agentOutdated ? 'warning' : 'success')" icon="fas fa-robot" title="{{ $selectedDevice->agentOutdated ? __('A newer agent is available') : __('The agent is up to date') }}" variant="subtle">
-            {{ __('Agent') }} {{ $selectedDevice->agentVersion ?? __('unknown') }}
-        </x-badge>
-        @if ($selectedDevice->signsRequests)
-            <x-badge color="success" icon="fas fa-lock" title="{{ __('Every request and response is signed. Device key fingerprint: :fingerprint', ['fingerprint' => \App\Support\Signing::fingerprint($selectedDevice->public_key)]) }}" variant="subtle">
-                {{ __('Signed') }}
-            </x-badge>
-            @can('is-system-admin')
-                <button class="btn btn-sm btn-link p-0 text-decoration-none" type="button" title="{{ __('The agent registers a new key with its next request, e.g. after it was reinstalled with a new key.') }}" wire:click="resetDeviceKey" wire:confirm="{{ __('Reset the device key? Until the agent registers a key again, the device only gets the agent update.') }}">
-                    <i class="fas fa-undo me-1"></i>{{ __('Reset device key') }}
+{{-- Polls faster while an action is on its way, so its progress stays current. --}}
+<div @if ($busy) wire:poll.3s @else wire:poll.15s @endif>
+    @if ($alerts)
+        {{-- Each smart alert on its own under the device card; the less severe ones behind "Show all". --}}
+        <div class="vstack gap-2 mt-3" x-data="{ all: false }">
+            @foreach ($alerts as $alert)
+                @if ($loop->index < 4)
+                    @include('partials.device.alert', ['alert' => $alert, 'device' => $selectedDevice, 'asAlert' => true])
+                @else
+                    <div x-show="all" x-cloak style="display: none">@include('partials.device.alert', ['alert' => $alert, 'device' => $selectedDevice, 'asAlert' => true])</div>
+                @endif
+            @endforeach
+            @if (count($alerts) > 4)
+                <button class="btn btn-sm text-body-secondary align-self-center" type="button" x-on:click="all = !all">
+                    <span x-show="!all">{{ __('Show all (:count)', ['count' => count($alerts)]) }} <i class="fas fa-chevron-down ms-1"></i></span>
+                    <span x-show="all" x-cloak style="display: none">{{ __('Show less') }} <i class="fas fa-chevron-up ms-1"></i></span>
                 </button>
-            @endcan
-        @else
-            <x-badge color="warning" icon="fas fa-unlock" title="{{ __('The agent does not sign its communication (older than 1.7.0): only the agent update can be sent to it.') }}" variant="subtle">
-                {{ __('Unsigned agent') }}
-            </x-badge>
-        @endif
-        @if ($virtualization = $selectedDevice->virtualization)
-            <x-badge color="info" :icon="$virtualization['type'] === 'container' ? 'fas fa-box' : 'fas fa-clone'" title="{{ $virtualization['type'] === 'container' ? __('Runs in a container') : __('Runs in a virtual machine') }}" variant="subtle">
-                {{ $virtualization['type'] === 'container' ? __('Container') : __('Virtual machine') }} · {{ $virtualization['label'] }}
-            </x-badge>
-        @endif
-    </div>
-
-    @if ($selectedDevice->offline)
-        <div class="alert alert-secondary mt-3 mb-0" role="alert">
-            <i class="fas fa-plug me-2"></i>{{ __('Device is offline!') }}
-        </div>
-    @elseif ($selectedDevice->restartPending)
-        <div class="alert alert-warning mt-3 mb-0" role="alert">
-            <i class="fas fa-redo me-2"></i>{{ __('Device is in restart pending state!') }}
-        </div>
-    @endif
-
-    @if ($selectedDevice->agentOutdated)
-        <div class="alert alert-warning mt-3 mb-0" role="alert">
-            <div class="d-flex flex-wrap align-items-center gap-2">
-            <span class="me-auto">
-                <i class="fas fa-arrow-circle-up me-2"></i>
-                {{ __('A newer agent is available (:current → :latest).', ['current' => $selectedDevice->agentVersion ?? __('unknown'), 'latest' => $latestAgentVersion]) }}
-                @unless ($selectedDevice->agentUpdatable)
-                    {{ __('This agent cannot update itself, reinstall it with the command from Add device.') }}
-                @endunless
-            </span>
-            @if ($selectedDevice->agentUpdatable && ! $remoteUpdate)
-                <span class="small">{{ __('Remote update needs the portal on HTTPS.') }}</span>
-            @elseif ($selectedDevice->agentUpdatable)
-                <button class="btn btn-sm btn-warning" type="button" wire:click="updateAgent" @disabled($selectedDevice->offline || in_array('updateAgent', $selectedDevice->commands ?? []))>
-                    @if (in_array('updateAgent', $selectedDevice->commands ?? []))
-                        <span aria-hidden="true" class="spinner-border spinner-border-sm me-2" role="status"></span>
-                    @else
-                        <i class="fas fa-download me-2"></i>
-                    @endif
-                    {{ __('Update agent') }}
-                </button>
-            @endif
-            </div>
-
-            @if ($updateCommand)
-                <div class="mt-3">
-                    <div class="small mb-1">
-                        {{ __('Or run on the device (:how):', ['how' => $selectedDevice->platform === 'linux' ? 'sudo pwsh' : __('PowerShell as Administrator')]) }}
-                    </div>
-                    <x-copy-command :command="$updateCommand" />
-                </div>
             @endif
         </div>
     @endif

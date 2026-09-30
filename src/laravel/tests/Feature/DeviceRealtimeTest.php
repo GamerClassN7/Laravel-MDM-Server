@@ -39,7 +39,6 @@ class DeviceRealtimeTest extends TestCase
     {
         $device = new Device();
         $device->token = hash('sha256', $token);
-        $device->commands = [];
         $device->save();
 
         return $device;
@@ -126,7 +125,7 @@ class DeviceRealtimeTest extends TestCase
         Event::assertDispatched(DeviceCommandIssued::class, fn ($event) => $event->device->is($device)
             && $event->command === 'restart'
             && $event->broadcastOn()->name === 'private-device.'.$device->id);
-        $this->assertSame(['restart'], $device->fresh()->commands);
+        $this->assertSame(['restart'], $device->fresh()->queuedCommands);
     }
 
     public function test_unknown_command_is_rejected(): void
@@ -139,7 +138,7 @@ class DeviceRealtimeTest extends TestCase
             ->call('sendCommandToDevice', 'format c:');
 
         Event::assertNotDispatched(DeviceCommandIssued::class);
-        $this->assertSame([], $device->fresh()->commands);
+        $this->assertSame([], $device->fresh()->queuedCommands);
     }
 
     public function test_command_is_queued_even_if_websocket_server_is_down(): void
@@ -152,19 +151,19 @@ class DeviceRealtimeTest extends TestCase
             ->call('sendCommandToDevice', 'restart')
             ->assertOk();
 
-        $this->assertSame(['restart'], $device->fresh()->commands);
+        $this->assertSame(['restart'], $device->fresh()->queuedCommands);
     }
 
     public function test_agent_acknowledges_command(): void
     {
         $device = $this->createDevice('secret-token');
-        $device->commands = ['restart', 'doUpdates'];
-        $device->save();
+        $device->commands()->create(['command' => 'restart']);
+        $device->commands()->create(['command' => 'doUpdates']);
 
         $this->withToken('secret-token')->postJson('/api/device/commands/ack', ['command' => 'restart'])
             ->assertOk()
             ->assertExactJson(['commands' => ['doUpdates']]);
 
-        $this->assertSame(['doUpdates'], $device->fresh()->commands);
+        $this->assertSame(['doUpdates'], $device->fresh()->queuedCommands);
     }
 }

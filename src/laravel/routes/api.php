@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Device;
+use App\Models\DeviceCommand;
 use App\Models\Enrolment;
 use App\Models\ScriptRun;
 use Carbon\CarbonImmutable;
@@ -47,7 +48,7 @@ Route::middleware(['device.signature', 'auth:api'])->post('/device', function (R
 
     return response()->json([
         // Commands not delivered over the WebSocket; queued meanwhile ones wait for the next report.
-        'commands' => Device::takeCommands($device->id),
+        ...Device::commandResponse($device->id),
         // Script runs queued while the device was offline.
         'scripts_pending' => $device->signsRequests && ScriptRun::query()->where('device_id', $device->id)->where('status', 'pending')->exists(),
     ]);
@@ -150,8 +151,42 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
     // Signing agents take their commands here when the WebSocket announces one: the response is
     // signed for this request, so a command cannot be replayed or injected.
     Route::post('/device/commands/take', function (Request $request) {
-        return response()->json(['commands' => Device::takeCommands($request->user()->id)]);
+        return response()->json(Device::commandResponse($request->user()->id));
     });
+
+    // Agents 1.8.0+ report what a command they took is doing: running (with an optional progress
+    // in percent and a message), then succeeded or failed. Only for this device's commands.
+    Route::post('/device/commands/{command}', function (Request $request, int $command) {
+        /** @var Device $device */
+        $device = $request->user();
+        $deviceCommand = DeviceCommand::query()->whereKey($command)->where('device_id', $device->id)->first();
+        abort_if($deviceCommand === null, 404);
+
+        $status = (string) $request->json('status');
+        if (! in_array($status, DeviceCommand::RESULTS, true)) {
+            return response()->json(['error' => 'invalid_status'], 422);
+        }
+        $progress = $request->json('progress');
+        $message = $request->json('message');
+        $values = [
+            'status' => $status,
+            'progress' => is_numeric($progress) ? max(0, min(100, (int) $progress)) : ($status === 'succeeded' ? 100 : null),
+            'message' => is_string($message) && $message !== '' ? mb_strcut($message, 0, 1000) : null,
+            'updated_at' => now(),
+        ];
+        if ($status === 'running') {
+            $values['started_at'] = $deviceCommand->started_at ?? now();
+        } else {
+            $values['finished_at'] = now();
+        }
+
+        // A finished (or given up) command is not changed anymore.
+        $updated = DeviceCommand::query()->whereKey($deviceCommand->id)->whereIn('status', ['sent', 'running'])->toBase()->update($values);
+
+        return $updated === 1
+            ? response()->json(['status' => $status])
+            : response()->json(['error' => 'not_running', 'status' => $deviceCommand->status], 409);
+    })->whereNumber('command');
 
     // Remediation scripts waiting for this device, each with its manifest signed with the server
     // key (for this device and run, valid for 24 hours). Taking them marks them sent.
@@ -218,9 +253,11 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         $device = $request->user();
         $command = $request->input('command');
 
-        $device->commands = array_values(array_diff($device->commands ?? [], [$command]));
-        $device->save();
+        // They execute the command from the WebSocket event, the acknowledgement is its delivery.
+        $queued = $device->commands()->where('status', 'queued')->where('command', (string) $command)->orderBy('id')->first();
+        $queued?->update(['status' => 'delivered']);
+        $queued?->forceFill(['sent_at' => now(), 'finished_at' => now()])->save();
 
-        return response()->json(['commands' => $device->commands]);
+        return response()->json(['commands' => $device->queuedCommands]);
     });
 });

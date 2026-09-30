@@ -11,3 +11,28 @@
         justify-content: center;
     }
 }
+
+// Square icon tile in the boilerplate style (like .dropdown-ico / .stat-ico): colour it with
+// bg-{color}-subtle text-{color}-emphasis.
+.icon-tile {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: var(--bs-border-radius);
+    background-color: var(--bs-secondary-bg);
+    color: var(--bs-secondary-color);
+}
+
+// A smart alert on its own (device detail): a quiet surface, the severity is in the icon tile.
+.smart-alert {
+    display: flex;
+    align-items: flex-start;
+    gap: .75rem;
+    padding: .5rem .75rem .5rem .5rem;
+    border: var(--bs-border-width) solid var(--bs-border-color-translucent);
+    border-radius: var(--bs-border-radius-lg);
+    background-color: var(--bs-body-bg);
+}

@@ -18,7 +18,6 @@ class DashboardTest extends TestCase
     {
         $device = new Device();
         $device->token = hash('sha256', uniqid('', true));
-        $device->commands = [];
         $device->save();
         if ($online) {
             Device::recordHeartbeat($device->id);
@@ -35,9 +34,13 @@ class DashboardTest extends TestCase
 
         $this->assertSame('Overview', $dashboard->name);
         $this->assertEquals(1, $dashboard->is_shared);
-        $widget = DB::table('dashboard_widgets')->where('dashboard_id', $dashboard->id)->first();
+        [$widget, $alerts] = DB::table('dashboard_widgets')->where('dashboard_id', $dashboard->id)->orderBy('id')->get()->all();
         $this->assertSame('DeviceStatus', $widget->type);
-        $this->assertSame([['type' => 'row', 'items' => [['id' => $widget->id, 'width' => 4, 'height' => 1]]]], json_decode($dashboard->body, true));
+        $this->assertSame('SmartAlerts', $alerts->type);
+        $this->assertSame([['type' => 'row', 'items' => [
+            ['id' => $widget->id, 'width' => 4, 'height' => 1],
+            ['id' => $alerts->id, 'width' => 8, 'height' => 2],
+        ]]], json_decode($dashboard->body, true));
     }
 
     public function test_dashboard_page_renders_for_any_user(): void

@@ -27,7 +27,6 @@ class ScriptTest extends TestCase
     {
         $device = new Device();
         $device->token = hash('sha256', $token);
-        $device->commands = [];
         $device->name = "srv-$token";
         $device->data = json_encode(['machine' => ['Hostname' => "srv-$token", 'Platform' => $platform, 'ScriptsEnabled' => $scriptsEnabled, 'Drives' => []]]);
         $device->save();
@@ -81,7 +80,7 @@ class ScriptTest extends TestCase
         $runs = $script->runOn([$linux->id, $windows->id, $legacy->id, $disabled->id], $this->admin());
 
         $this->assertSame([$linux->id], $runs->pluck('device_id')->all());
-        $this->assertSame(['runScripts'], $linux->fresh()->commands);
+        $this->assertSame(['runScripts'], $linux->fresh()->queuedCommands);
         $this->assertSame('Other platform', $script->unavailableReason($windows));
         $this->assertSame('Agent does not sign (update it)', $script->unavailableReason($legacy));
         $this->assertSame('Scripts disabled on the device', $script->unavailableReason($disabled));

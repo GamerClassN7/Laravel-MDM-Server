@@ -135,8 +135,19 @@ Docker containers, only when something changed, so the portal shows a failed ser
 container within 30 seconds. Everything large (updates, drives, networks, disk health, service and
 container details) goes with the report over HTTPS; a state too large for a WebSocket message
 (10 kB) is sent over HTTPS too. The live state is stored apart from the report in a single update,
-so neither overwrites the other and the newer one is shown. Queued commands are taken with a
-compare-and-swap, so a command queued while a report is processed is never lost.
+so neither overwrites the other and the newer one is shown. Queued commands are handed to the agent
+exactly once, also when a report and the WebSocket take them at the same time.
+
+Every command has a state in the portal: waiting for the device, taken, running (agents 1.8.0+
+report the progress in percent where it is known, e.g. apt, Windows Update, the steps of Install
+updates), then done or failed with the reason. A restart and an agent update are done when the
+agent is back. Commands without news are given up after a timeout. A command that is already on its
+way is never queued again: double clicks, two users or an action for all devices do not run it twice.
+
+**Smart alerts** show what needs attention on a device (restart required, a newer agent, updates,
+low disk space, disk health, failed services and remediations, failed commands) with the action
+that fixes it. The **Smart alerts** dashboard widget lists them for all devices, with one button per
+alert for all devices that can take the action now.
 A device without a heartbeat for 90 seconds is shown as offline.
 
 The agent is designed to stay out of the way:
@@ -180,6 +191,8 @@ The agent is designed to stay out of the way:
 | Newer PowerShell 7 release | ✅ | ✅ |
 | **Commands** | | |
 | Install updates | ✅ Windows Update, winget, modules | ✅ apt, flatpak, snap, modules |
+| Install a single update (agent 1.8.0+) | ✅ Windows Update, winget, modules | ✅ apt, flatpak, snap, modules |
+| Progress and result of commands (agent 1.8.0+) | ✅ | ✅ |
 | Restart / Turn off | ✅ | ✅ |
 
 Notes:

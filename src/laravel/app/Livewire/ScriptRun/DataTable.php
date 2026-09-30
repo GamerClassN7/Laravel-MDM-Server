@@ -44,7 +44,6 @@ class DataTable extends DataTableComponent
             'device_id' => __('Device'),
             'version' => __('Version'),
             'status' => __('Status'),
-            'exit_codes' => __('Exit codes'),
             'issued_at' => __('Issued'),
             'finished_at' => __('Finished'),
             'output' => __('Output'),
@@ -70,20 +69,12 @@ class DataTable extends DataTableComponent
 
     public function renderColumnStatus($value, $row): string
     {
-        $html = '<span class="badge text-bg-'.$row->statusColor.'">'.e(__(ucfirst($value))).'</span>';
+        $html = '<span class="badge border border-'.$row->statusColor.'-subtle bg-'.$row->statusColor.'-subtle text-'.$row->statusColor.'-emphasis">'.e(__(ucfirst($value))).'</span>';
         if ($row->error) {
             $html .= '<div class="small text-danger">'.e($row->error).'</div>';
         }
 
         return $html;
-    }
-
-    public function renderColumnExitCodes($value, $row): string
-    {
-        return e(collect([__('detection') => $row->detection_exit, __('remediation') => $row->remediation_exit, __('after') => $row->post_detection_exit])
-            ->reject(fn ($code) => $code === null)
-            ->map(fn ($code, $step) => "$step $code")
-            ->implode(', '));
     }
 
     public function renderColumnIssuedAt($value): string

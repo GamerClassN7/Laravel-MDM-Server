@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Events\DeviceCommandIssued;
 use App\Livewire\DeviceAlerts;
+use App\Livewire\DeviceDetail;
 use App\Models\User;
 use Livewire\Livewire;
 use App\Listeners\RecordDeviceHeartbeat;
@@ -23,7 +24,6 @@ class DeviceSignatureTest extends TestCase
     {
         $device = new Device();
         $device->token = hash('sha256', 'secret-token');
-        $device->commands = [];
         $device->save();
 
         return $withKey ? $this->registerDeviceKey($device) : $device;
@@ -214,7 +214,7 @@ class DeviceSignatureTest extends TestCase
         config(['boilerplate.system_admins' => [(string) $admin->id]]);
 
         $this->actingAs(User::factory()->create());
-        Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $device->id])
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
             ->assertSee('Signed')
             ->assertDontSee('Reset device key')
             ->call('resetDeviceKey')
@@ -222,7 +222,7 @@ class DeviceSignatureTest extends TestCase
         $this->assertNotNull($device->fresh()->public_key);
 
         $this->actingAs($admin);
-        Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $device->id])
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
             ->call('resetDeviceKey')
             ->assertSee('Unsigned agent');
         $this->assertNull($device->fresh()->public_key);

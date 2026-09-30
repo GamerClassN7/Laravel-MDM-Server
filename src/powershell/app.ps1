@@ -91,8 +91,17 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.7.3'
-$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'updateAgent', 'runScripts')
+$AgentVersion = '1.8.0'
+$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts')
+# What installUpdate may install on its own, with the pattern its id must match (as on the server).
+$UpdateKinds = @{
+    windows = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    apt     = '^[a-z0-9][a-z0-9+.\-]*(:[a-z0-9]+)?$'
+    winget  = '^[A-Za-z0-9][A-Za-z0-9._+\-]*$'
+    flatpak = '^[A-Za-z0-9_\-]+(\.[A-Za-z0-9_\-]+)+$'
+    snap    = '^[a-z0-9][a-z0-9\-]*$'
+    module  = '^[A-Za-z0-9][A-Za-z0-9._\-]*$'
+}
 # The server's public key ("n:e", base64), filled in by the server when it serves this script.
 # The agent pins it on the first start and then trusts only what is signed with it.
 $EmbeddedServerKey = ''
@@ -132,13 +141,23 @@ function Get-MachineInfo {
                 "DriveType"     = $_.DriveType
             }
         }
-        Networks        = @(Get-NetAdapter | Where-Object -Property Status -Value 'Disabled' -NotLike | Where-Object -Property Status -Value 'Disconnected' -NotLike | Where-Object -Property ConnectorPresent -Value 'False' -NotLike | ForEach-Object {
-                $address = Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex
+        # Every adapter that is not disabled, also disconnected ones (shown as such in the portal).
+        Networks        = @(Get-NetAdapter | Where-Object { $_.Status -ne 'Disabled' -and -not $_.Hidden } | ForEach-Object {
+                $address = @(Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue)
+                $text = "$($_.Name) $($_.InterfaceDescription)"
                 [PSCustomObject]@{
                     "Name"                 = $_.Name
                     "InterfaceDescription" = $_.InterfaceDescription
-                    "Status"               = $_.Status
-                    "IPAddresses"          = $address.IPAddress
+                    "Status"               = "$($_.Status)"
+                    "Connected"            = "$($_.Status)" -eq 'Up'
+                    "Type"                 = if ($_.PhysicalMediaType -match '802\.11|Wireless' -or $text -match 'Wi-?Fi|Wireless|WLAN') { 'wifi' }
+                                             elseif ($text -match 'VPN|WireGuard|TAP-|OpenVPN|Tailscale|ZeroTier|Fortinet|AnyConnect|GlobalProtect|WAN Miniport') { 'vpn' }
+                                             elseif ($text -match 'Bluetooth') { 'bluetooth' }
+                                             elseif ($text -match 'Mobile Broadband|Cellular|WWAN|LTE') { 'cellular' }
+                                             elseif ($text -match 'Hyper-V|vEthernet|VirtualBox|VMware|Loopback') { 'virtual' }
+                                             else { 'lan' }
+                    "Mac"                  = $_.MacAddress
+                    "IPAddresses"          = @($address.IPAddress)
                 }
             })
     }
@@ -243,6 +262,8 @@ function Get-WindowsUpdate {
 
     return $Updates | ForEach-Object {
         [PSCustomObject]@{
+            # installUpdate installs a single update by this id.
+            Id             = $_.Identity.UpdateID
             Title          = $_.Title
             IsDownloaded   = $_.IsDownloaded
             RebootRequired = $_.RebootRequired
@@ -252,28 +273,64 @@ function Get-WindowsUpdate {
 
 function Install-WindowsUpdate {
     # Returns log lines. ResultCode: 2 succeeded, 3 succeeded with errors, 4 failed, 5 aborted.
+    # -UpdateId installs only that update; -OnProgress gets the percent (0-100) and a message;
+    # $State.Failures collects what failed.
+    param (
+        [string]
+        $UpdateId,
+        [scriptblock]
+        $OnProgress = {},
+        [hashtable]
+        $State = @{ Failures = [System.Collections.ArrayList]@() }
+    )
+
     $results = @{ 0 = 'not started'; 1 = 'in progress'; 2 = 'succeeded'; 3 = 'succeeded with errors'; 4 = 'failed'; 5 = 'aborted' }
     $Session = New-Object -ComObject Microsoft.Update.Session
-    $Updates = $Session.CreateUpdateSearcher().Search("IsInstalled=0 and Type='Software' and IsHidden=0").Updates
+    $found = $Session.CreateUpdateSearcher().Search("IsInstalled=0 and Type='Software' and IsHidden=0").Updates
+    $Updates = New-Object -ComObject Microsoft.Update.UpdateColl
+    foreach ($update in $found) {
+        if (-not $UpdateId -or $update.Identity.UpdateID -eq $UpdateId) {
+            if (-not $update.EulaAccepted) { $update.AcceptEula() }
+            $Updates.Add($update) | Out-Null
+        }
+    }
     if ($Updates.Count -eq 0) {
-        'Windows Update: nothing to install'
+        if ($UpdateId) { 'Windows Update: the update is not offered anymore (installed or replaced)' } else { 'Windows Update: nothing to install' }
         return
     }
     "Windows Update: $($Updates.Count) update(s): $(@($Updates | ForEach-Object { $_.Title }) -join '; ')"
 
+    & $OnProgress 0 'Windows Update: downloading'
     $Downloader = $Session.CreateUpdateDownloader()
     $Downloader.Updates = $Updates
     $download = $Downloader.Download()
     "Windows Update: download $($results[[int]$download.ResultCode])"
 
-    $Installer = $Session.CreateUpdateInstaller()
-    $Installer.Updates = $Updates
-    $install = $Installer.Install()
-    "Windows Update: install $($results[[int]$install.ResultCode])$(if ($install.RebootRequired) { ', restart required' })"
+    # One by one, so the progress moves with each installed update.
+    $reboot = $false
     for ($i = 0; $i -lt $Updates.Count; $i++) {
-        $code = [int]$install.GetUpdateResult($i).ResultCode
-        if ($code -ne 2) { "Windows Update: $($Updates.Item($i).Title): $($results[$code])" }
+        $update = $Updates.Item($i)
+        & $OnProgress (30 + [int](70 * $i / $Updates.Count)) "Windows Update: installing $($update.Title)"
+        $single = New-Object -ComObject Microsoft.Update.UpdateColl
+        $single.Add($update) | Out-Null
+        $Installer = $Session.CreateUpdateInstaller()
+        $Installer.Updates = $single
+        try {
+            $install = $Installer.Install()
+            $code = [int]$install.ResultCode
+            if ($install.RebootRequired) { $reboot = $true }
+        }
+        catch {
+            $code = 4
+            "Windows Update: $($update.Title): $($_.Exception.Message)"
+        }
+        if ($code -ne 2) {
+            "Windows Update: $($update.Title): $($results[$code])"
+            if ($code -ne 3) { [void]$State.Failures.Add("$($update.Title): $($results[$code])") }
+        }
     }
+    & $OnProgress 100 'Windows Update: done'
+    "Windows Update: install finished$(if ($reboot) { ', restart required' })"
 }
 
 function Test-PendingReboot {
@@ -499,7 +556,14 @@ function Invoke-PowerShellModules {
         $OnLinux,
         # Install the newer versions instead of only listing them.
         [switch]
-        $Update
+        $Update,
+        # Only these modules of this edition and owner (installUpdate), '' for the system-wide ones.
+        [string[]]
+        $Names,
+        [string]
+        $Edition,
+        [string]
+        $User
     )
 
     # Runs in each PowerShell edition. Only modules installed from the PowerShell Gallery with
@@ -549,6 +613,9 @@ if ($canCheck) {
         }
     }
 }
+if ($Names) {
+    $outdated = @($outdated | Where-Object { $Names -contains $_.Name -and "$($_.User)" -eq "$OnlyUser" })
+}
 if ($Update) {
     # Installed next to the current version, like Update-Module always does; failed ones stay listed
     # with the reason. Users' own modules are left to the caller (updated as that user).
@@ -592,8 +659,10 @@ ConvertTo-Json -InputObject @($outdated) -Compress
     }
 
     $result = @()
-    foreach ($powershell in @(Get-PowerShellHosts -OnLinux $OnLinux)) {
+    $quote = { param ($Value) "'" + ("$Value" -replace "'", "''") + "'" }
+    foreach ($powershell in @(Get-PowerShellHosts -OnLinux $OnLinux | Where-Object { -not $Edition -or $_.Edition -eq $Edition })) {
         $prefix = if ($Update) { '$Update = $true' } else { '$Update = $false' }
+        $prefix += "`n`$Names = @($(@($Names | ForEach-Object { & $quote $_ }) -join ', '))`n`$OnlyUser = $(& $quote $User)"
         foreach ($module in @(& $invoke $powershell.Path @() "$prefix`n$moduleScript")) {
             $result += [PSCustomObject]@{ Name = $module.Name; Version = $module.Version; Available = $module.Available; Edition = $powershell.Edition; User = $module.User; Error = $module.Error }
         }
@@ -603,7 +672,7 @@ ConvertTo-Json -InputObject @($outdated) -Compress
         # Users' own modules (Install-Module defaults to CurrentUser in PowerShell 7) are updated as
         # that user, so they stay in the user's profile and owned by the user. Not possible on
         # Windows: SYSTEM cannot run as a user without the password, they stay listed.
-        foreach ($group in @($result | Where-Object { $_.User } | Group-Object -Property User, Edition)) {
+        foreach ($group in @($result | Where-Object { $_.User -and (-not $User -or $_.User -eq $User) } | Group-Object -Property User, Edition)) {
             $first = $group.Group[0]
             $powershell = @(Get-PowerShellHosts -OnLinux $true | Where-Object { $_.Edition -eq $first.Edition }) | Select-Object -First 1
             if (-not $powershell -or $first.User -notmatch '^[a-z_][a-z0-9_.-]*$') { continue }
@@ -757,15 +826,29 @@ function Get-LinuxDrives {
 }
 
 function Get-LinuxNetworks {
+    # Every interface except loopback and container ends (veth), also the ones that are down.
     $interfaces = ip -j addr show 2>$null | ConvertFrom-Json
     foreach ($interface in $interfaces) {
-        if ($interface.ifname -eq 'lo' -or $interface.ifname -like 'veth*' -or $interface.operstate -eq 'DOWN') {
+        $name = "$($interface.ifname)"
+        if ($name -eq 'lo' -or $name -like 'veth*') {
             continue
         }
+        $addresses = @($interface.addr_info | ForEach-Object { $_.local })
+        $type = if ((Test-Path -Path "/sys/class/net/$name/wireless") -or $name -match "^wl") { 'wifi' }
+            elseif ($name -match '^(docker|br-)') { 'docker' }
+            elseif ($name -match '^(tun|tap|wg|tailscale|zt|ppp|vpn|ipsec|nordlynx)') { 'vpn' }
+            elseif ($name -match '^(wwan|ww)') { 'cellular' }
+            elseif ($name -match '^(virbr|vnet|lxc|lxd|incus|cni|flannel|cali|podman)') { 'virtual' }
+            elseif ($name -match '^(br|bond)') { 'bridge' }
+            else { 'lan' }
         [PSCustomObject]@{
-            Name        = $interface.ifname
-            Status      = if ($interface.operstate -eq 'UP') { 'Up' } else { $interface.operstate }
-            IPAddresses = @($interface.addr_info | ForEach-Object { $_.local })
+            Name        = $name
+            Status      = if ($interface.operstate -eq 'UP') { 'Up' } else { "$($interface.operstate)" }
+            # Tunnels (WireGuard, tun) report UNKNOWN: connected when they have an address.
+            Connected   = $interface.operstate -eq 'UP' -or ($interface.operstate -eq 'UNKNOWN' -and $addresses.Count -gt 0)
+            Type        = $type
+            Mac         = $interface.address
+            IPAddresses = $addresses
         }
     }
 }
@@ -1996,12 +2079,8 @@ function Send-Report {
     )
 
     $response = Invoke-MdmApi -Method Post -Path 'device' -Body $Data -Token $Token
-    # Commands returned here were not delivered over the WebSocket (the server clears them now).
-    foreach ($command in @($response.commands)) {
-        if ($command) {
-            Invoke-DeviceCommand -Command $command
-        }
-    }
+    # Commands returned here were not delivered over the WebSocket (the server hands them over once).
+    Invoke-DeviceCommands -Response $response
     if ($response.scripts_pending) {
         $script:ScriptsRequested = $true
     }
@@ -2010,11 +2089,17 @@ function Send-Report {
 function Update-Agent {
     # Replace the installed script with the version the server serves, then restart.
     # The command carries no data: the source is always the -ServerUrl set at install time.
+    param (
+        $CommandId
+    )
+
     $server = [Uri]$ServerUrl
     if ($server.Scheme -ne 'https' -and -not $server.IsLoopback) {
         Write-AgentLog 'Agent update refused: the server is not reached over HTTPS'
+        [void](Send-CommandStatus -Id $CommandId -Status failed -Message 'Refused: the server is not reached over HTTPS')
         return
     }
+    [void](Send-CommandStatus -Id $CommandId -Status running -Progress 10 -Message 'Downloading the agent')
 
     # Downloaded into memory and checked there: the bytes that are verified are the ones written.
     try {
@@ -2043,10 +2128,14 @@ function Update-Agent {
     }
     catch {
         Write-AgentLog "Agent update failed: $($_.Exception.Message)"
+        [void](Send-CommandStatus -Id $CommandId -Status failed -Message $_.Exception.Message)
         return
     }
 
     Write-AgentLog 'Agent updated, restarting'
+    # The new agent reports the result when it runs (see Complete-PendingCommand).
+    Save-PendingCommand -Id $CommandId -Command 'updateAgent'
+    [void](Send-CommandStatus -Id $CommandId -Status running -Progress 80 -Message 'Restarting the agent')
     if (-not $OnLinux) {
         # The scheduled task does not start a second instance, start it again once this one has exited.
         Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile -Command "Start-Sleep -Seconds 5; Start-ScheduledTask -TaskName Laravel-MDM-Agent"'
@@ -2055,44 +2144,248 @@ function Update-Agent {
     exit 0
 }
 
-function Start-UpdateJob {
-    # Installs OS, package and module updates in the background. Every step is logged to
-    # agent.log when the job ends (see Complete-UpdateJob), the full tool output to updates.log.
-    if ($script:UpdateJob -and $script:UpdateJob.State -eq 'Running') {
-        Write-AgentLog 'Updates are already being installed, command ignored'
-        return
+function Send-CommandStatus {
+    # Reports what a command does (agents 1.8.0+): running with an optional progress, then
+    # succeeded / failed. Problems are only logged, the command itself goes on. Returns $false
+    # when the server could not be reached (a finished or unknown command counts as reported).
+    param (
+        [Parameter(Mandatory = $true)]
+        $Id,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('running', 'succeeded', 'failed')]
+        [string]
+        $Status,
+        $Progress,
+        [string]
+        $Message
+    )
+
+    if (-not $Id -or -not $script:AgentToken) {
+        return $true
+    }
+    $body = @{ status = $Status }
+    if ($null -ne $Progress) { $body['progress'] = [int]$Progress }
+    if ($Message) { $body['message'] = $Message.Substring(0, [Math]::Min(1000, $Message.Length)) }
+    try {
+        Invoke-MdmApi -Method Post -Path "device/commands/$Id" -Token $script:AgentToken -Body $body | Out-Null
+        return $true
+    }
+    catch {
+        Write-AgentLog "Command ${Id}: status '$Status' not reported: $($_.Exception.Message)"
+        # The server gave the command up meanwhile (not_running) or does not know it.
+        return $_.Exception.Data['MdmError'] -in 'not_running', 'Not Found'
+    }
+}
+
+function Save-PendingCommand {
+    # A command that finishes after the agent restarts (restart, agent update): reported by the
+    # agent that starts next (see Complete-PendingCommand).
+    param ($Id, [string]$Command)
+
+    @{ id = $Id; command = $Command; agent_version = $AgentVersion; at = (Get-Date).ToString('o') } | ConvertTo-Json -Compress | Set-Content -Path "$AgentDir/pending-command.json" -Encoding UTF8
+}
+
+function Complete-PendingCommand {
+    # Returns $true when there is nothing (left) to report.
+    $path = "$AgentDir/pending-command.json"
+    if (-not (Test-Path -Path $path)) {
+        return $true
+    }
+    try {
+        $pending = Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $reported = switch ($pending.command) {
+            'restart' { Send-CommandStatus -Id $pending.id -Status succeeded -Message 'Restarted' }
+            'updateAgent' {
+                if ([version]$AgentVersion -gt [version]$pending.agent_version) {
+                    Send-CommandStatus -Id $pending.id -Status succeeded -Message "Updated to $AgentVersion"
+                } else {
+                    Send-CommandStatus -Id $pending.id -Status failed -Message "Still version $AgentVersion after the update"
+                }
+            }
+            default { $true }
+        }
+        # Right after a restart the network may not be up yet: tried again later.
+        if ($reported -ne $false) {
+            Remove-Item -Path $path -Force
+            return $true
+        }
+    }
+    catch {
+        Write-AgentLog "Pending command: $($_.Exception.Message)"
+        Remove-Item -Path $path -Force -ErrorAction SilentlyContinue
+        return $true
     }
 
+    return $false
+}
+
+function Test-UpdateParams {
+    # installUpdate parameters, checked again on the device: only known kinds, ids of the
+    # expected form (they are passed as arguments, never as code).
+    param ($Params)
+
+    $kind = "$($Params.kind)"
+    if (-not $UpdateKinds.ContainsKey($kind) -or "$($Params.id)" -notmatch $UpdateKinds[$kind] -or "$($Params.id)".Length -gt 200) {
+        throw "invalid update '$kind' '$($Params.id)'"
+    }
+    if ($Params.user -and ($kind -notin 'flatpak', 'module' -or "$($Params.user)" -notmatch '^[a-z_][a-z0-9_.\-]{0,31}$')) {
+        throw "invalid user '$($Params.user)'"
+    }
+    if ($kind -eq 'module' -and ("$($Params.edition)" -notin 'Windows PowerShell', 'PowerShell 7' -or "$($Params.version)" -notmatch '^[0-9][0-9A-Za-z.\-]{0,49}$')) {
+        throw "invalid module edition or version"
+    }
+    if ((($kind -in 'windows', 'winget') -and $OnLinux) -or (($kind -in 'apt', 'flatpak', 'snap') -and -not $OnLinux)) {
+        throw "'$kind' updates are not available on this platform"
+    }
+
+    return @{ kind = $kind; id = "$($Params.id)"; user = "$($Params.user)"; edition = "$($Params.edition)"; version = "$($Params.version)" }
+}
+
+function Start-UpdateJob {
+    # Installs OS, package and module updates in the background, or a single one (-Params of
+    # installUpdate). Every step is logged to agent.log when the job ends (see Complete-UpdateJob),
+    # the full tool output to updates.log; the progress goes to update-progress.json.
+    param (
+        $CommandId,
+        [hashtable]
+        $Params
+    )
+
     $script:UpdateJobStarted = Get-Date
-    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log" -ScriptBlock {
-        param ($OnLinux, $OutputLog)
+    $script:UpdateCommandId = $CommandId
+    $script:UpdateProgress = $null
+    $progressFile = "$AgentDir/update-progress.json"
+    Remove-Item -Path $progressFile -Force -ErrorAction SilentlyContinue
+    [void](Send-CommandStatus -Id $CommandId -Status running -Progress 0 -Message 'Starting')
+    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log", $progressFile, $Params -ScriptBlock {
+        param ($OnLinux, $OutputLog, $ProgressFile, $Params)
 
         if ((Test-Path -Path $OutputLog) -and (Get-Item -Path $OutputLog).Length -gt 2MB) {
             Move-Item -Path $OutputLog -Destination "$OutputLog.1" -Force
         }
-        function Invoke-Logged ([string]$Title, [scriptblock]$Command) {
+        $state = @{ Failures = [System.Collections.ArrayList]@(); Base = 0; Span = 100; Last = $null }
+        function Set-Progress ([int]$Percent, [string]$Message) {
+            # Percent within the current step (Base .. Base + Span), written for the agent loop.
+            $total = [Math]::Min(100, [Math]::Max(0, $state.Base + [int]($state.Span * $Percent / 100)))
+            $key = "$total|$Message"
+            if ($key -eq $state.Last) { return }
+            $state.Last = $key
+            $temp = "$ProgressFile.tmp"
+            @{ progress = $total; message = $Message } | ConvertTo-Json -Compress | Set-Content -Path $temp -Encoding UTF8
+            Move-Item -Path $temp -Destination $ProgressFile -Force
+        }
+        function Enter-Step ([int]$From, [int]$To, [string]$Message) {
+            $state.Base = $From
+            $state.Span = $To - $From
+            Set-Progress 0 $Message
+        }
+        function Invoke-Logged ([string]$Title, [scriptblock]$Command, [scriptblock]$OnLine) {
             # Runs a native command, keeps its whole output in updates.log and returns it.
+            # -OnLine sees each line as it comes (progress); it returns $true for lines to drop.
             "===== {0:yyyy-MM-dd HH:mm:ss} $Title" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
-            $output = @(& $Command 2>&1 | ForEach-Object { "$_" })
+            $output = @(& $Command 2>&1 | ForEach-Object {
+                $line = "$_"
+                if (-not ($OnLine -and (& $OnLine $line))) { $line }
+            })
             $output | Add-Content -Path $OutputLog -Encoding UTF8
             "exit code $LASTEXITCODE" | Add-Content -Path $OutputLog -Encoding UTF8
             return , $output
         }
         function Get-Tail ($Lines) { (@($Lines | Where-Object { $_.Trim() }) | Select-Object -Last 3) -join ' | ' }
+        function Add-Result ([string]$Name, [int]$Code, $Output, [int[]]$Ok = @(0)) {
+            if ($Ok -notcontains $Code) {
+                [void]$state.Failures.Add("${Name}: exit $Code$(if ($Output) { ', ' + (Get-Tail $Output) })")
+            }
+        }
+        # apt progress (APT::Status-Fd=1): "dlstatus:..:percent:text" while downloading (first
+        # third of the step), "pmstatus:..:percent:text" while installing.
+        $aptProgress = {
+            param ($Line)
+            if ($Line -match '^(dlstatus|pmstatus):[^:]*:([\d.]+):(.*)$') {
+                $percent = [double]$Matches[2]
+                $overall = if ($Matches[1] -eq 'dlstatus') { $percent / 3 } else { 33 + $percent * 2 / 3 }
+                Set-Progress ([int]$overall) $Matches[3]
+                return $true
+            }
+            return $false
+        }
+        $wingetOk = @(0, -1978335189) # APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE: nothing to update
+        $env:DEBIAN_FRONTEND = 'noninteractive'
+        # Wait for a running apt / unattended-upgrades instead of failing on its lock.
+        $lock = '-o', 'DPkg::Lock::Timeout=600'
+        $aptOptions = @('-y', '-q', '-o', 'APT::Status-Fd=1', '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold')
 
-        if ($OnLinux) {
-            $env:DEBIAN_FRONTEND = 'noninteractive'
-            # Wait for a running apt / unattended-upgrades instead of failing on its lock.
-            $lock = '-o', 'DPkg::Lock::Timeout=600'
+        if ($Params) {
+            # One update (installUpdate); the parameters were checked by Test-UpdateParams.
+            $id = $Params.id
+            switch ($Params.kind) {
+                'windows' {
+                    try { Install-WindowsUpdate -UpdateId $id -OnProgress { param ($p, $m) Set-Progress $p $m } -State $state } catch { [void]$state.Failures.Add("Windows Update: $($_.Exception.Message)") }
+                }
+                'winget' {
+                    $winget = Get-WingetPath
+                    if (-not $winget) { [void]$state.Failures.Add('winget not found'); break }
+                    Set-Progress 10 "winget upgrade $id"
+                    $output = Invoke-Logged "winget upgrade $id" { & $winget upgrade --id $id --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity }
+                    "winget upgrade ${id}: exit $LASTEXITCODE"
+                    Add-Result "winget upgrade $id" $LASTEXITCODE $output $wingetOk
+                }
+                'apt' {
+                    Enter-Step 0 10 'apt-get update'
+                    $output = Invoke-Logged 'apt-get update' { apt-get @lock -q update }
+                    "apt-get update: exit $LASTEXITCODE"
+                    Enter-Step 10 100 "apt-get install $id"
+                    $output = Invoke-Logged "apt-get install --only-upgrade $id" { apt-get @lock @aptOptions install --only-upgrade $id } $aptProgress
+                    "apt-get install --only-upgrade ${id}: exit $LASTEXITCODE"
+                    Add-Result "apt-get install $id" $LASTEXITCODE $output
+                }
+                'flatpak' {
+                    Set-Progress 10 "flatpak update $id"
+                    if ($Params.user) {
+                        $asUser = Get-UserCommand -User $Params.user
+                        if (-not $asUser) { [void]$state.Failures.Add("user $($Params.user) not found"); break }
+                        $output = Invoke-Logged "flatpak update $id ($($Params.user))" { & $asUser[0] @($asUser[1..($asUser.Count - 1)]) flatpak update --user -y --noninteractive $id }
+                    } else {
+                        $output = Invoke-Logged "flatpak update $id" { flatpak update --system -y --noninteractive $id }
+                    }
+                    "flatpak update ${id}: exit $LASTEXITCODE"
+                    Add-Result "flatpak update $id" $LASTEXITCODE $output
+                }
+                'snap' {
+                    Set-Progress 10 "snap refresh $id"
+                    $output = Invoke-Logged "snap refresh $id" { snap refresh $id }
+                    "snap refresh ${id}: exit $LASTEXITCODE"
+                    Add-Result "snap refresh $id" $LASTEXITCODE $output
+                }
+                'module' {
+                    Set-Progress 10 "Update-Module $id"
+                    if (-not @(Get-PowerShellHosts -OnLinux $OnLinux | Where-Object { $_.Edition -eq $Params.edition })) { [void]$state.Failures.Add("$($Params.edition) is not installed"); break }
+                    try {
+                        $failed = @(Invoke-PowerShellModules -OnLinux $OnLinux -Update -Names @($id) -Edition $Params.edition -User $Params.user)
+                        foreach ($module in $failed) {
+                            $reason = if ($module.Error) { $module.Error } else { 'not updated' }
+                            [void]$state.Failures.Add("PowerShell module $($module.Name): $reason")
+                        }
+                        if (-not $failed) { "PowerShell module ${id}: updated" }
+                    }
+                    catch {
+                        [void]$state.Failures.Add("PowerShell module ${id}: $($_.Exception.Message)")
+                    }
+                }
+            }
+        } elseif ($OnLinux) {
+            Enter-Step 0 5 'apt-get update'
             $output = Invoke-Logged 'apt-get update' { apt-get @lock -q update }
             "apt-get update: exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
 
             # --with-new-pkgs installs new dependencies (plain upgrade keeps such packages back),
             # nothing is removed; existing configuration files are kept.
-            $output = Invoke-Logged 'apt-get upgrade' { apt-get @lock -y -q --with-new-pkgs -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade }
+            Enter-Step 5 70 'apt-get upgrade'
+            $output = Invoke-Logged 'apt-get upgrade' { apt-get @lock @aptOptions --with-new-pkgs upgrade } $aptProgress
             $code = $LASTEXITCODE
             $summary = $output | Where-Object { $_ -match '\d+ upgraded, \d+ newly installed' } | Select-Object -Last 1
             "apt-get upgrade: exit $code$(if ($summary) { ', ' + $summary.Trim() })$(if ($code) { ': ' + (Get-Tail $output) })"
+            Add-Result 'apt-get upgrade' $code $output
             $keptBack = $false
             $held = foreach ($line in $output) {
                 # apt 2: "... kept back:" / "... deferred due to phasing:", apt 3: "Not upgrading ...:"
@@ -2100,58 +2393,100 @@ function Start-UpdateJob {
                 if ($keptBack -and $line -match '^\s+\S') { $line.Trim() } elseif ($keptBack) { $keptBack = $false }
             }
             if ($held) { "apt-get upgrade: kept back (phased or held): $($held -join ' ')" }
+            Enter-Step 70 80 'flatpak update'
             if (Get-Command -Name flatpak -CommandType Application -ErrorAction SilentlyContinue) {
                 $output = Invoke-Logged 'flatpak update' { flatpak update --system -y --noninteractive }
                 "flatpak update (system): exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+                Add-Result 'flatpak update' $LASTEXITCODE $output
                 foreach ($userHome in @(Get-ChildItem -Path /home -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -Path "$($_.FullName)/.local/share/flatpak" })) {
                     $user = $userHome.Name
                     $asUser = Get-UserCommand -User $user
                     if (-not $asUser) { continue }
                     $output = Invoke-Logged "flatpak update ($user)" { & $asUser[0] @($asUser[1..($asUser.Count - 1)]) flatpak update --user -y --noninteractive }
                     "flatpak update ($user): exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+                    Add-Result "flatpak update ($user)" $LASTEXITCODE $output
                 }
             }
+            Enter-Step 80 90 'snap refresh'
             if (Get-Command -Name snap -CommandType Application -ErrorAction SilentlyContinue) {
                 $output = Invoke-Logged 'snap refresh' { snap refresh }
                 "snap refresh: exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+                Add-Result 'snap refresh' $LASTEXITCODE $output
             }
-            if (Test-Path -Path /var/run/reboot-required) { 'Restart required' }
         } else {
+            Enter-Step 0 40 'winget upgrade --all'
             $winget = Get-WingetPath
             if ($winget) {
                 # winget also updates PowerShell 7 (Microsoft.PowerShell).
                 $output = Invoke-Logged 'winget upgrade --all' { & $winget upgrade --all --silent --accept-source-agreements --accept-package-agreements --disable-interactivity }
                 "winget upgrade: exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+                Add-Result 'winget upgrade' $LASTEXITCODE $output $wingetOk
             } else {
                 'winget: not found, application updates skipped'
             }
-            try { Install-WindowsUpdate } catch { "Windows Update failed: $($_.Exception.Message)" }
+            Enter-Step 40 90 'Windows Update'
+            try { Install-WindowsUpdate -OnProgress { param ($p, $m) Set-Progress $p $m } -State $state } catch { "Windows Update failed: $($_.Exception.Message)"; [void]$state.Failures.Add("Windows Update: $($_.Exception.Message)") }
         }
 
-        try {
-            $failed = @(Invoke-PowerShellModules -OnLinux $OnLinux -Update)
-            if (-not $failed) { 'PowerShell modules: up to date' }
-            foreach ($module in $failed) {
-                $owner = if ($module.User) { ", user $($module.User)" } else { '' }
-                $reason = if ($module.Error) { $module.Error } elseif ($module.User) { 'in the user profile, only the user can update it' } else { 'not updated' }
-                "PowerShell module $($module.Name) $($module.Version) -> $($module.Available) ($($module.Edition)$owner): $reason"
+        if (-not $Params) {
+            Enter-Step 90 100 'PowerShell modules'
+            try {
+                $failed = @(Invoke-PowerShellModules -OnLinux $OnLinux -Update)
+                if (-not $failed) { 'PowerShell modules: up to date' }
+                foreach ($module in $failed) {
+                    $owner = if ($module.User) { ", user $($module.User)" } else { '' }
+                    $reason = if ($module.Error) { $module.Error } elseif ($module.User) { 'in the user profile, only the user can update it' } else { 'not updated' }
+                    "PowerShell module $($module.Name) $($module.Version) -> $($module.Available) ($($module.Edition)$owner): $reason"
+                    # Modules only their user can update are no failure of this run.
+                    if ($module.Error) { [void]$state.Failures.Add("PowerShell module $($module.Name): $($module.Error)") }
+                }
+            }
+            catch {
+                "PowerShell modules failed: $($_.Exception.Message)"
             }
         }
-        catch {
-            "PowerShell modules failed: $($_.Exception.Message)"
-        }
+        $restart = if ($OnLinux) { Test-Path -Path /var/run/reboot-required } else { $false }
+        if ($restart) { 'Restart required' }
+
+        # The result for the portal, after the log lines.
+        [pscustomobject]@{ UpdateResult = $true; Failures = @($state.Failures); Restart = $restart }
     }
-    Write-AgentLog 'Installing updates started (details in updates.log)'
+    Write-AgentLog "Installing updates started$(if ($Params) { " ($($Params.kind) $($Params.id))" }) (details in updates.log)"
+}
+
+function Sync-UpdateProgress {
+    # Sends the progress the update job wrote, at most every 3 seconds.
+    $job = $script:UpdateJob
+    if (-not $job -or -not $script:UpdateCommandId -or ((Get-Date) - $script:UpdateProgressSent).TotalSeconds -lt 3) {
+        return
+    }
+    $path = "$AgentDir/update-progress.json"
+    try {
+        $text = if (Test-Path -Path $path) { Get-Content -Path $path -Raw -Encoding UTF8 } else { $null }
+    }
+    catch {
+        return
+    }
+    if (-not $text -or $text -eq $script:UpdateProgress) {
+        return
+    }
+    $script:UpdateProgress = $text
+    $script:UpdateProgressSent = Get-Date
+    $progress = $text | ConvertFrom-Json
+    [void](Send-CommandStatus -Id $script:UpdateCommandId -Status running -Progress $progress.progress -Message $progress.message)
 }
 
 function Complete-UpdateJob {
-    # Logs the finished update job; returns $true when it finished, so the inventory is refreshed.
+    # Logs the finished update job and reports its result; returns $true when it finished, so
+    # the inventory is refreshed. Starts the next queued update then.
     $job = $script:UpdateJob
     if (-not $job -or $job.State -eq 'Running') {
         return $false
     }
 
+    $result = $null
     foreach ($line in @(Receive-Job -Job $job -ErrorAction SilentlyContinue 2>&1)) {
+        if ($line.PSObject.Properties['UpdateResult']) { $result = $line; continue }
         Write-AgentLog "Updates: $line"
     }
     if ($job.State -ne 'Completed') {
@@ -2159,47 +2494,127 @@ function Complete-UpdateJob {
     }
     Write-AgentLog ('Installing updates finished after {0:n0} min' -f ((Get-Date) - $script:UpdateJobStarted).TotalMinutes)
     Remove-Job -Job $job -Force
+    Remove-Item -Path "$AgentDir/update-progress.json" -Force -ErrorAction SilentlyContinue
     $script:UpdateJob = $null
 
+    $restart = if ($result -and $result.Restart) { ', restart required' } else { '' }
+    if (-not $result) {
+        [void](Send-CommandStatus -Id $script:UpdateCommandId -Status failed -Message "The update job ended unexpectedly ($($job.State))")
+    } elseif (@($result.Failures).Count -gt 0) {
+        [void](Send-CommandStatus -Id $script:UpdateCommandId -Status failed -Message ((@($result.Failures) -join '; ') + $restart))
+    } else {
+        [void](Send-CommandStatus -Id $script:UpdateCommandId -Status succeeded -Progress 100 -Message "Done$restart")
+    }
+    $script:UpdateCommandId = $null
+    Start-NextUpdate
+
     return $true
+}
+
+function Start-NextUpdate {
+    # Updates run one after another: the next queued one, then a waiting agent update.
+    if ($script:UpdateJob) {
+        return
+    }
+    if ($script:UpdateQueue.Count -gt 0) {
+        $next = $script:UpdateQueue.Dequeue()
+        Start-UpdateJob -CommandId $next.Id -Params $next.Params
+        return
+    }
+    if ($script:DeferredAgentUpdate) {
+        $id = $script:DeferredAgentUpdate
+        $script:DeferredAgentUpdate = $null
+        Update-Agent -CommandId $id
+    }
 }
 
 function Invoke-DeviceCommand {
     param (
         [Parameter(Mandatory = $true)]
         [string]
-        $Command
+        $Command,
+        # Given by servers that track commands: the id the progress and the result are reported with.
+        $Id,
+        $Params
     )
 
     if ($AllowedCommands -notcontains $Command) {
         Write-AgentLog "Ignoring unknown command '$Command'"
+        [void](Send-CommandStatus -Id $Id -Status failed -Message "Unknown command '$Command'")
         return
     }
 
-    Write-AgentLog "Executing command '$Command'"
-    if ($Command -eq 'updateAgent') {
-        Update-Agent
-        return
+    Write-AgentLog "Executing command '$Command'$(if ($Id) { " ($Id)" })"
+    switch ($Command) {
+        'updateAgent' {
+            # Replacing the agent ends the update job: the agent update waits for it.
+            if ($script:UpdateJob) {
+                $script:DeferredAgentUpdate = $Id
+                [void](Send-CommandStatus -Id $Id -Status running -Message 'Waiting for the updates to finish')
+                return
+            }
+            Update-Agent -CommandId $Id
+        }
+        'runScripts' {
+            # Only a trigger: the runs are taken, verified and run by the main loop.
+            $script:ScriptsRequested = $true
+        }
+        { $_ -in 'doUpdates', 'installUpdate' } {
+            $updateParams = $null
+            if ($Command -eq 'installUpdate') {
+                try {
+                    $updateParams = Test-UpdateParams -Params $Params
+                }
+                catch {
+                    Write-AgentLog "Update refused: $($_.Exception.Message)"
+                    [void](Send-CommandStatus -Id $Id -Status failed -Message "Refused by the agent: $($_.Exception.Message)")
+                    return
+                }
+            }
+            if ($script:UpdateJob) {
+                if (-not $Id -and -not $updateParams) {
+                    Write-AgentLog 'Updates are already being installed, command ignored'
+                    return
+                }
+                $script:UpdateQueue.Enqueue(@{ Id = $Id; Params = $updateParams })
+                [void](Send-CommandStatus -Id $Id -Status running -Progress 0 -Message 'Waiting for the updates that are being installed')
+                return
+            }
+            Start-UpdateJob -CommandId $Id -Params $updateParams
+        }
+        'turnOff' {
+            [void](Send-CommandStatus -Id $Id -Status succeeded -Message 'Shutting down')
+            if ($OnLinux) { systemctl poweroff } else { Stop-Computer -Force }
+        }
+        'restart' {
+            # Done when the agent is back after the restart.
+            Save-PendingCommand -Id $Id -Command 'restart'
+            [void](Send-CommandStatus -Id $Id -Status running -Message 'Restarting')
+            if ($OnLinux) { systemctl reboot } else { Restart-Computer -Force }
+        }
     }
-    if ($Command -eq 'runScripts') {
-        # Only a trigger: the runs are taken, verified and run by the main loop.
-        $script:ScriptsRequested = $true
-        return
-    }
+}
 
-    if ($OnLinux) {
-        switch ($Command) {
-            'turnOff' { systemctl poweroff }
-            'restart' { systemctl reboot }
-            'doUpdates' { Start-UpdateJob }
+function Invoke-DeviceCommands {
+    # The commands of a server response: "tasks" (with ids, servers that track commands) or the
+    # names in "commands" (older servers).
+    param (
+        [Parameter(Mandatory = $true)]
+        $Response
+    )
+
+    if ($Response.PSObject.Properties['tasks']) {
+        foreach ($task in @($Response.tasks)) {
+            if ($task -and $task.command) {
+                Invoke-DeviceCommand -Command $task.command -Id $task.id -Params $task.params
+            }
         }
         return
     }
-
-    switch ($Command) {
-        'turnOff' { Stop-Computer -Force }
-        'restart' { Restart-Computer -Force }
-        'doUpdates' { Start-UpdateJob }
+    foreach ($command in @($Response.commands)) {
+        if ($command) {
+            Invoke-DeviceCommand -Command $command
+        }
     }
 }
 
@@ -2349,11 +2764,7 @@ function Invoke-RealtimeMessage {
                 return
             }
             $response = Invoke-MdmApi -Method Post -Path 'device/commands/take' -Token $Token -Body @{}
-            foreach ($command in @($response.commands)) {
-                if ($command) {
-                    Invoke-DeviceCommand -Command $command
-                }
-            }
+            Invoke-DeviceCommands -Response $response
         }
     }
 }
@@ -2600,6 +3011,11 @@ function Start-Agent {
     $config = Initialize-ServerKey
     Protect-AgentPath -Path $AgentDir -Directory
     $Token = Get-AgentToken
+    $script:AgentToken = $Token
+    $script:UpdateQueue = New-Object System.Collections.Queue
+    $script:UpdateProgressSent = [DateTime]::MinValue
+    $pendingChecked = $false
+    $nextPendingCheck = Get-Date
     # Read again: an enrolment just now registered the key.
     $script:KeyRegistered = [bool](Get-AgentConfig)['key_registered']
     Write-AgentLog ('Agent {0} started (PowerShell {1}, {2}, server {3})' -f $AgentVersion, $PSVersionTable.PSVersion, $(if ($OnLinux) { 'Linux' } else { 'Windows' }), $ServerUrl)
@@ -2628,6 +3044,11 @@ function Start-Agent {
                 # Updated from an agent that did not sign, or the key was reset in the portal.
                 Register-DeviceKey -Token $Token
             }
+            if (-not $pendingChecked -and (Get-Date) -ge $nextPendingCheck) {
+                # A restart or agent update of the last run is done now.
+                $pendingChecked = Complete-PendingCommand
+                $nextPendingCheck = (Get-Date).AddSeconds(30)
+            }
 
             if (-not $Once -and ((Get-Date) - $lastHeartbeat).TotalSeconds -ge $HeartbeatInterval) {
                 $lastHeartbeat = Get-Date
@@ -2648,6 +3069,7 @@ function Start-Agent {
                 Remove-Job -Job $inventoryJob -Force
                 $inventoryJob = $null
             }
+            Sync-UpdateProgress
             if (Complete-UpdateJob) {
                 # Show what is left right away instead of the pre-update list for 6 hours.
                 $nextInventory = Get-Date

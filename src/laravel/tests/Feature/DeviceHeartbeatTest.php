@@ -28,7 +28,6 @@ class DeviceHeartbeatTest extends TestCase
     {
         $device = new Device();
         $device->token = hash('sha256', $token);
-        $device->commands = [];
         $device->save();
 
         return $device;
