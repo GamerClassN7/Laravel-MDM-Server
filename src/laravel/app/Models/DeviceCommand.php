@@ -202,7 +202,7 @@ class DeviceCommand extends Model
             'running' => __('Running'),
             'succeeded' => __('Done'),
             'failed' => __('Failed'),
-            'delivered' => __('Delivered'),
+            'delivered' => __('Sent, no result'),
             'expired' => __('Timed out'),
             'cancelled' => __('Cancelled'),
             default => $this->status,
@@ -213,10 +213,46 @@ class DeviceCommand extends Model
     {
         return match ($this->status) {
             'queued', 'sent', 'running' => 'info',
-            'succeeded', 'delivered' => 'success',
+            'succeeded' => 'success',
+            'delivered' => 'secondary',
             'failed', 'expired' => 'danger',
             default => 'secondary',
         };
+    }
+
+    /** What the status badge means, for its tooltip. */
+    public function getStatusHintAttribute(): ?string
+    {
+        return match ($this->status) {
+            'delivered' => __('Taken by an agent older than 1.8.0, it does not report the result.'),
+            'expired' => __('The device did not report a result in time.'),
+            default => null,
+        };
+    }
+
+    /**
+     * The agent's message when it adds something to the status: not the plain "Done" of a
+     * finished update ("Done, restart required" becomes "Restart required").
+     */
+    public function getResultNoteAttribute(): ?string
+    {
+        $message = trim((string) $this->message);
+        if ($this->status === 'succeeded' && preg_match('/^Done\b[,.\s]*/i', $message)) {
+            $message = ucfirst(trim(preg_replace('/^Done\b[,.\s]*/i', '', $message)));
+        }
+
+        return $message === '' || strcasecmp($message, $this->statusLabel) === 0 ? null : $message;
+    }
+
+    /** How long the device worked on it ("5 min"), null when unknown. */
+    public function getDurationAttribute(): ?string
+    {
+        if (! $this->finished_at || ! $this->started_at) {
+            return null;
+        }
+        $seconds = max(0, $this->finished_at->getTimestamp() - $this->started_at->getTimestamp());
+
+        return $seconds < 60 ? __(':count s', ['count' => $seconds]) : \Carbon\CarbonInterval::seconds($seconds)->cascade()->forHumans(['short' => true, 'parts' => 2]);
     }
 
     /** What the agent gets: the id it reports back with, the command and its parameters. */
