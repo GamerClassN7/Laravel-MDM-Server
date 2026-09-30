@@ -3,6 +3,7 @@
 namespace App\Livewire\Script;
 
 use App\Models\Script;
+use App\Models\ScriptRun;
 use Illuminate\Support\Facades\Gate;
 use Livewire\Attributes\On;
 use Livewire\Component;
@@ -36,7 +37,22 @@ class Detail extends Component
 
     public function render()
     {
-        return view('livewire.script.detail')
-            ->title($this->script->name);
+        // The state of each device: its latest run of this script.
+        $latest = ScriptRun::query()->where('script_id', $this->script->id)
+            ->whereIn('id', ScriptRun::query()->selectRaw('max(id)')->where('script_id', $this->script->id)->groupBy('device_id'))
+            ->get(['id', 'status', 'version', 'finished_at']);
+        $groups = [
+            'compliant' => ['compliant'],
+            'remediated' => ['remediated'],
+            'failed' => ['failed', 'error', 'rejected'],
+            'waiting' => ['pending', 'sent'],
+        ];
+
+        return view('livewire.script.detail', [
+            'stats' => collect($groups)->map(fn ($statuses) => $latest->whereIn('status', $statuses)->count()),
+            'devices' => $latest->count(),
+            'outdated' => $latest->where('version', '<', $this->script->version)->count(),
+            'lastRun' => $this->script->runs()->max('issued_at'),
+        ])->title($this->script->name);
     }
 }

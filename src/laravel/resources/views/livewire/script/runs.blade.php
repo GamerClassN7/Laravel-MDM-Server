@@ -12,7 +12,6 @@
                     @endif
                     <th>{{ __('Version') }}</th>
                     <th>{{ __('Status') }}</th>
-                    <th>{{ __('Exit codes') }}</th>
                     <th>{{ __('Issued') }}</th>
                     <th>{{ __('Finished') }}</th>
                 </tr>
@@ -29,15 +28,12 @@
                         </td>
                         <td><span title="{{ $run->fingerprint }}">v{{ $run->version }} · <code>{{ substr($run->fingerprint, 0, 8) }}</code></span></td>
                         <td><x-badge :color="$run->statusColor" size="sm" variant="subtle">{{ __(ucfirst($run->status)) }}</x-badge></td>
-                        <td class="small text-muted">
-                            {{ collect([__('detection') => $run->detection_exit, __('remediation') => $run->remediation_exit, __('after') => $run->post_detection_exit])->reject(fn ($code) => $code === null)->map(fn ($code, $step) => "$step $code")->implode(', ') }}
-                        </td>
                         <td class="small" title="{{ $run->issued_at }}">{{ $run->issued_at->diffForHumans() }}</td>
                         <td class="small" title="{{ $run->finished_at }}">{{ $run->finished_at?->diffForHumans() }}</td>
                     </tr>
                     @if ($run->error || $run->output)
                         <tr>
-                            <td class="border-top-0 pt-0" colspan="6">
+                            <td class="border-top-0 pt-0" colspan="5">
                                 @if ($run->error)
                                     <div class="small text-danger">{{ $run->error }}</div>
                                 @endif

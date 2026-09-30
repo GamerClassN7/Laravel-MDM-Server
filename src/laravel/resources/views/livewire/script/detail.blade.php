@@ -1,7 +1,17 @@
 <div>
     <div class="container-xl">
         <div class="page-header">
-            <h1>{{ $script->name }}</h1>
+            <div class="me-auto min-w-0">
+                <h1 class="mb-1 text-break">{{ $script->name }}</h1>
+                <div class="d-flex flex-wrap align-items-center gap-2 small text-muted">
+                    <x-badge color="secondary" size="sm" variant="subtle" :icon="match ($script->platform) { 'windows' => 'fab fa-windows', 'linux' => 'fab fa-linux', default => 'fas fa-desktop' }">{{ __(\App\Models\Script::PLATFORMS[$script->platform]) }}</x-badge>
+                    <x-badge color="primary" size="sm" variant="subtle">v{{ $script->version }}</x-badge>
+                    <span title="{{ $script->updated_at }}"><i class="far fa-clock me-1"></i>{{ __('Changed :time', ['time' => $script->updated_at->diffForHumans()]) }}</span>
+                    @if ($lastRun)
+                        <span title="{{ $lastRun }}"><i class="fas fa-play me-1"></i>{{ __('Last run :time', ['time' => \Illuminate\Support\Carbon::parse($lastRun)->diffForHumans()]) }}</span>
+                    @endif
+                </div>
+            </div>
             <a class="btn btn-secondary" href="{{ route('script.index') }}">
                 <i class="me-2 fas fa-arrow-left"></i><span>{{ __('Back') }}</span>
             </a>
@@ -14,39 +24,87 @@
         </div>
         <x-boilerplate::alerts />
 
+        @if ($script->description)
+            <p class="text-body-secondary">{{ $script->description }}</p>
+        @endif
+
+        {{-- Where the script stands on the devices (the latest run of each device). --}}
+        <div class="row g-3 mb-4" wire:poll.10s>
+            @foreach ([
+                'compliant' => ['label' => __('Compliant'), 'color' => 'success', 'icon' => 'fas fa-check-circle'],
+                'remediated' => ['label' => __('Remediated'), 'color' => 'success', 'icon' => 'fas fa-magic'],
+                'failed' => ['label' => __('Failed'), 'color' => 'danger', 'icon' => 'fas fa-times-circle'],
+                'waiting' => ['label' => __('Waiting'), 'color' => 'info', 'icon' => 'fas fa-hourglass-half'],
+            ] as $key => $stat)
+                <div class="col-6 col-md-3">
+                    <div class="card h-100">
+                        <div class="card-body py-3">
+                            <div class="small text-muted"><i class="{{ $stat['icon'] }} text-{{ $stat['color'] }} me-1"></i>{{ $stat['label'] }}</div>
+                            <div class="fs-3 fw-semibold lh-sm {{ $stats[$key] > 0 ? 'text-' . $stat['color'] : 'text-body-secondary' }}">{{ $stats[$key] }}</div>
+                        </div>
+                    </div>
+                </div>
+            @endforeach
+            @if ($outdated > 0)
+                <div class="col-12">
+                    <div class="small text-muted"><i class="fas fa-info-circle me-1"></i>{{ trans_choice(':count device ran an older version, run it again to apply v:version.|:count devices ran an older version, run it again to apply v:version.', $outdated, ['version' => $script->version]) }}</div>
+                </div>
+            @endif
+        </div>
+
         <div class="row g-4">
-            <div class="col-12 col-lg-4">
-                <div class="card h-100">
+            <div class="col-12 col-lg-8">
+                <div class="card" x-data="{ code: 'detection' }">
+                    <div class="card-header">
+                        <ul class="nav nav-tabs card-header-tabs">
+                            <li class="nav-item">
+                                <button class="nav-link" type="button" x-bind:class="{ active: code === 'detection' }" x-on:click="code = 'detection'">
+                                    <i class="fas fa-search me-2"></i>{{ __('Detection') }}
+                                </button>
+                            </li>
+                            <li class="nav-item">
+                                <button class="nav-link" type="button" x-bind:class="{ active: code === 'remediation' }" x-on:click="code = 'remediation'">
+                                    <i class="fas fa-wrench me-2"></i>{{ __('Remediation') }}
+                                    @if ($script->remediation === null)
+                                        <span class="small text-muted">({{ __('none') }})</span>
+                                    @endif
+                                </button>
+                            </li>
+                        </ul>
+                    </div>
                     <div class="card-body">
-                        @if ($script->description)
-                            <p>{{ $script->description }}</p>
-                        @endif
-                        <dl class="row mb-0">
+                        <div x-show="code === 'detection'">
+                            <p class="small text-muted">{{ __('Exit 0 = compliant, exit 1 = runs the remediation.') }}</p>
+                            <x-code-viewer :code="$script->detection" wire:key="detection-{{ $script->fingerprint }}" />
+                        </div>
+                        <div x-show="code === 'remediation'" x-cloak style="display: none">
+                            @if ($script->remediation !== null)
+                                <p class="small text-muted">{{ __('Runs when the detection exits with 1, then the detection runs again.') }}</p>
+                                <x-code-viewer :code="$script->remediation" wire:key="remediation-{{ $script->fingerprint }}" />
+                            @else
+                                <p class="text-muted mb-0">{{ __('No remediation script: the detection only reports whether the device is compliant.') }}</p>
+                            @endif
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-lg-4">
+                <div class="card">
+                    <div class="card-body">
+                        <h6 class="card-title">{{ __('Details') }}</h6>
+                        <dl class="row small mb-0">
                             <dt class="col-5 fw-normal text-muted">{{ __('Platform') }}</dt>
                             <dd class="col-7">{{ __(\App\Models\Script::PLATFORMS[$script->platform]) }}</dd>
                             <dt class="col-5 fw-normal text-muted">{{ __('Version') }}</dt>
                             <dd class="col-7">v{{ $script->version }}</dd>
                             <dt class="col-5 fw-normal text-muted">{{ __('Timeout') }}</dt>
                             <dd class="col-7">{{ $script->timeout }} s</dd>
-                            <dt class="col-5 fw-normal text-muted">{{ __('Changed') }}</dt>
-                            <dd class="col-7" title="{{ $script->updated_at }}">{{ $script->updated_at->diffForHumans() }}</dd>
+                            <dt class="col-5 fw-normal text-muted">{{ __('Devices') }}</dt>
+                            <dd class="col-7">{{ $devices }}</dd>
                             <dt class="col-12 fw-normal text-muted">{{ __('Fingerprint') }}</dt>
                             <dd class="col-12 mb-0"><code class="text-break">{{ $script->fingerprint }}</code></dd>
                         </dl>
-                    </div>
-                </div>
-            </div>
-            <div class="col-12 col-lg-8">
-                <div class="card h-100">
-                    <div class="card-body">
-                        <h6 class="card-title">{{ __('Detection script') }}</h6>
-                        <pre class="small bg-body-tertiary p-2 rounded" style="max-height: 16rem; white-space: pre-wrap;">{{ $script->detection }}</pre>
-                        <h6 class="card-title">{{ __('Remediation script') }}</h6>
-                        @if ($script->remediation !== null)
-                            <pre class="small bg-body-tertiary p-2 rounded mb-0" style="max-height: 16rem; white-space: pre-wrap;">{{ $script->remediation }}</pre>
-                        @else
-                            <p class="text-muted mb-0">{{ __('No remediation script.') }}</p>
-                        @endif
+                        <p class="small text-muted mt-3 mb-0">{{ __('Runs as SYSTEM / root without network access. The agent checks the fingerprint signed by the server before it runs anything.') }}</p>
                     </div>
                 </div>
             </div>
