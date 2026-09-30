@@ -119,7 +119,7 @@
 
     <div class="mt-4">
         {{-- Scrolls sideways when the tabs do not fit; the active one is kept in view. --}}
-        <ul class="nav nav-tabs flex-nowrap text-nowrap overflow-x-auto overflow-y-hidden" role="tablist" x-init="$nextTick(() => { const tab = $el.querySelector('.nav-link.active'); if (tab) $el.scrollLeft = tab.offsetLeft - $el.clientWidth / 2 + tab.clientWidth / 2 })">
+        <ul class="nav nav-tabs flex-nowrap text-nowrap overflow-x-auto overflow-y-hidden" role="tablist" x-init="$nextTick(() => { const tab = $el.querySelector('.nav-link.active'); if (tab) $el.scrollLeft = Math.max(0, tab.getBoundingClientRect().right - $el.getBoundingClientRect().right + $el.scrollLeft + 16) })">
             @if (!empty($selectedDevice->drives))
                 <li class="nav-item" role="presentation">
                     <button aria-controls="drives-tab-pane" aria-selected="{{ $activeTab === 'drives' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'drives' ? 'active' : '' }}" x-on:click="$wire.tab = 'drives'" data-bs-target="#drives-tab-pane" data-bs-toggle="tab" id="drives-tab" role="tab" type="button">
@@ -132,7 +132,7 @@
                     <button aria-controls="updates-tab-pane" aria-selected="{{ $activeTab === 'updates' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'updates' ? 'active' : '' }}" x-on:click="$wire.tab = 'updates'" data-bs-target="#updates-tab-pane" data-bs-toggle="tab" id="updates-tab" role="tab" type="button">
                         <i class="fas fa-sync me-2"></i>{{ __('Updates') }}
                         @if ($pendingUpdates > 0)
-                            <x-badge class="ms-1" :color="count($selectedDevice->installableUpdates) > 0 ? 'warning' : 'secondary'" size="sm" title="{{ __('Installable updates') }}">{{ $pendingUpdates }}</x-badge>
+                            <x-badge class="ms-1" :color="count($selectedDevice->installableUpdates) > 0 ? 'warning' : 'secondary'" size="sm" variant="subtle" title="{{ __('Installable updates') }}">{{ $pendingUpdates }}</x-badge>
                         @endif
                     </button>
                 </li>
@@ -149,7 +149,7 @@
                     <button aria-controls="services-tab-pane" aria-selected="{{ $activeTab === 'services' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'services' ? 'active' : '' }}" x-on:click="$wire.tab = 'services'" data-bs-target="#services-tab-pane" data-bs-toggle="tab" id="services-tab" role="tab" type="button">
                         <i class="fas fa-cogs me-2"></i>{{ __('Services') }}
                         @if ($failedServices > 0)
-                            <x-badge class="ms-1" color="danger" size="sm" title="{{ __('Not running') }}">{{ $failedServices }}</x-badge>
+                            <x-badge class="ms-1" color="danger" size="sm" variant="subtle" title="{{ __('Not running') }}">{{ $failedServices }}</x-badge>
                         @endif
                     </button>
                 </li>
@@ -159,7 +159,7 @@
                     <button aria-controls="docker-tab-pane" aria-selected="{{ $activeTab === 'docker' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'docker' ? 'active' : '' }}" x-on:click="$wire.tab = 'docker'" data-bs-target="#docker-tab-pane" data-bs-toggle="tab" id="docker-tab" role="tab" type="button">
                         <i class="fab fa-docker me-2"></i>{{ __('Docker') }}
                         @if ($stoppedContainers > 0)
-                            <x-badge class="ms-1" color="secondary" size="sm" title="{{ __('Not running') }}">{{ $stoppedContainers }}</x-badge>
+                            <x-badge class="ms-1" color="secondary" size="sm" variant="subtle" title="{{ __('Not running') }}">{{ $stoppedContainers }}</x-badge>
                         @endif
                     </button>
                 </li>
@@ -179,7 +179,7 @@
                     <button aria-controls="scripts-tab-pane" aria-selected="{{ $activeTab === 'scripts' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'scripts' ? 'active' : '' }}" x-on:click="$wire.tab = 'scripts'" data-bs-target="#scripts-tab-pane" data-bs-toggle="tab" id="scripts-tab" role="tab" type="button">
                         <i class="fas fa-scroll me-2"></i>{{ __('Scripts') }}
                         @if ($failedScripts > 0)
-                            <x-badge class="ms-1" color="danger" size="sm" title="{{ __('Failed') }}">{{ $failedScripts }}</x-badge>
+                            <x-badge class="ms-1" color="danger" size="sm" variant="subtle" title="{{ __('Failed') }}">{{ $failedScripts }}</x-badge>
                         @endif
                     </button>
                 </li>
@@ -241,8 +241,8 @@
                             @if ($updatesRunning)
                                 <div style="min-width: 14rem;">@include('partials.device.command-progress', ['command' => $updatesRunning])</div>
                             @elseif ($pendingUpdates > 0)
-                                <button class="btn btn-sm btn-primary" type="button" wire:click="installAll" wire:loading.attr="disabled" wire:target="installAll" @disabled($selectedDevice->offline)>
-                                    <i class="fas fa-download me-1"></i>{{ __('Install all (:count)', ['count' => $pendingUpdates]) }}
+                                <button class="btn btn-sm btn-light" type="button" wire:click="installAll" wire:loading.attr="disabled" wire:target="installAll" @disabled($selectedDevice->offline)>
+                                    <i class="fas fa-download me-1 text-primary"></i>{{ __('Install all (:count)', ['count' => $pendingUpdates]) }}
                                 </button>
                             @endif
                         </div>
@@ -334,7 +334,7 @@
                         @foreach ($selectedDevice->networks as $network)
                             @php $type = \App\Models\Device::NETWORK_TYPES[$network['Type']]; @endphp
                             <li class="list-group-item d-flex align-items-start gap-3 {{ $network['Connected'] ? '' : 'text-body-secondary' }}" wire:key="network-{{ $loop->index }}">
-                                <i class="{{ $type['icon'] }} fa-fw fs-5 mt-1 {{ $network['Connected'] ? 'text-primary' : 'text-body-tertiary' }}" title="{{ __($type['label']) }}"></i>
+                                <span class="icon-tile {{ $network['Connected'] ? 'bg-primary-subtle text-primary-emphasis' : '' }}" title="{{ __($type['label']) }}"><i class="{{ $type['icon'] }}"></i></span>
                                 <div class="flex-grow-1 min-w-0">
                                     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
                                         <span>

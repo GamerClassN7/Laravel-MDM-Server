@@ -69,7 +69,7 @@ class DataTable extends DataTableComponent
 
     public function renderColumnStatus($value, $row): string
     {
-        $html = '<span class="badge text-bg-'.$row->statusColor.'">'.e(__(ucfirst($value))).'</span>';
+        $html = '<span class="badge border border-'.$row->statusColor.'-subtle bg-'.$row->statusColor.'-subtle text-'.$row->statusColor.'-emphasis">'.e(__(ucfirst($value))).'</span>';
         if ($row->error) {
             $html .= '<div class="small text-danger">'.e($row->error).'</div>';
         }

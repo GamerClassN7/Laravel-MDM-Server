@@ -13,17 +13,17 @@
         @if ($bulk->isNotEmpty())
             <div class="d-flex flex-wrap gap-2 mb-2">
                 @foreach ($bulk as $key => $group)
-                    <button class="btn btn-sm btn-outline-primary" type="button"
+                    <button class="btn btn-sm btn-light" type="button"
                         wire:click="runForAll('{{ $key }}')" wire:loading.attr="disabled" wire:target="runForAll('{{ $key }}')"
                         wire:confirm="{{ __(':action on :count devices?', ['action' => $group['action']['label'], 'count' => $group['count']]) }}"
                         title="{{ $group['title'] }}">
-                        <i class="{{ $group['action']['icon'] }} me-1"></i>{{ __(':action (:count devices)', ['action' => $group['action']['label'], 'count' => $group['count']]) }}
+                        <i class="{{ $group['action']['icon'] }} me-1 text-primary"></i>{{ __(':action (:count devices)', ['action' => $group['action']['label'], 'count' => $group['count']]) }}
                     </button>
                 @endforeach
             </div>
         @endif
 
-        <div class="list-group list-group-flush mx-n3">
+        <div class="list-group list-group-flush">
             @foreach ($listed as $item)
                 @include('partials.device.alert', ['alert' => $item['alert'], 'device' => $item['device'], 'showDevice' => true, 'deviceArgument' => true])
             @endforeach

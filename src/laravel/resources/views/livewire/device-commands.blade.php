@@ -28,28 +28,28 @@
                     @endif
                     {{ $button['label'] }}
                     @if ($command === 'doUpdates' && $pendingUpdates > 0)
-                        <x-badge class="ms-1" color="warning" size="sm">{{ $pendingUpdates }}</x-badge>
+                        <x-badge class="ms-1" color="warning" size="sm" variant="subtle">{{ $pendingUpdates }}</x-badge>
                     @endif
                 </button>
             @endforeach
         @endif
 
         <div class="dropdown ms-auto">
-            <button aria-expanded="false" aria-label="{{ __('More actions') }}" class="btn btn-light" data-bs-toggle="dropdown" title="{{ __('More actions') }}" type="button">
+            <button aria-expanded="false" aria-label="{{ __('More actions') }}" class="btn btn-light btn-sq" data-bs-toggle="dropdown" title="{{ __('More actions') }}" type="button">
                 <i class="fas fa-ellipsis-h"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
                 @if ($hasData && $selectedDevice->agentUpdatable && $selectedDevice->agentOutdated)
                     <li>
                         <button class="dropdown-item" type="button" wire:click="sendCommandToDevice('updateAgent')" @disabled(\App\Models\Device::findActive($active, 'updateAgent') || $selectedDevice->commandRefusal('updateAgent') || ! \App\Support\SmartAlerts::remoteUpdateAvailable())>
-                            <i class="fas fa-robot fa-fw me-2"></i>{{ __('Update agent') }}
+                            <i class="dropdown-ico fas fa-robot fa-fw"></i>{{ __('Update agent') }}
                         </button>
                     </li>
                     <li><hr class="dropdown-divider"></li>
                 @endif
                 <li>
                     <button class="dropdown-item text-danger" type="button" wire:click.prevent="deleteDevice()" wire:confirm="{{ __('Do you really want to delete this device?') }}">
-                        <i class="fas fa-trash fa-fw me-2"></i>{{ __('Delete device') }}
+                        <i class="dropdown-ico fas fa-trash fa-fw text-danger"></i>{{ __('Delete device') }}
                     </button>
                 </li>
             </ul>

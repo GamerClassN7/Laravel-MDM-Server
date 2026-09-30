@@ -1,11 +1,14 @@
 <div class="mt-4" wire:poll.30s>
     <div class="d-flex justify-content-between align-items-center mb-2">
         <h5 class="mb-0">{{ __('Performance') }}</h5>
-        <div class="btn-group btn-group-sm" role="group">
+        {{-- Boilerplate segmented switch. --}}
+        <ul class="nav nav-switch" role="tablist">
             @foreach (array_keys(\App\Livewire\DeviceMetrics::RANGES) as $option)
-                <button class="btn {{ $range === $option ? 'btn-primary' : 'btn-light' }}" type="button" wire:click="setRange('{{ $option }}')">{{ $option }}</button>
+                <li class="nav-item">
+                    <button class="nav-link {{ $range === $option ? 'active' : '' }}" type="button" wire:click="setRange('{{ $option }}')">{{ $option }}</button>
+                </li>
             @endforeach
-        </div>
+        </ul>
     </div>
 
     <div class="row g-3">
