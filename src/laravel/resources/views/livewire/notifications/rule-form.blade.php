@@ -1,37 +1,48 @@
+{{-- An alert as a sentence: what, when (threshold, unit, minutes) and on which devices. --}}
+@php
+    $types = \App\Models\AlertRule::TYPES;
+    $definition = $types[$type] ?? null;
+    $hasUnit = \App\Models\AlertRule::usesUnit($type);
+    $gb = $hasUnit && $unit === 'gb';
+@endphp
 <form wire:submit="save">
-    <label class="form-label">{{ __('Alert when') }}</label>
-    <div class="row g-2 mb-3">
-        @foreach (\App\Models\AlertRule::TYPES as $value => $definition)
-            <div class="col-6 col-md-4">
-                <label class="card card-body p-2 h-100 d-flex flex-row gap-2 align-items-start {{ $type === $value ? 'border-primary' : '' }}" style="cursor: pointer">
-                    <input class="form-check-input mt-1" type="radio" value="{{ $value }}" wire:model.live="type">
-                    <span>
-                        <span class="d-block fw-semibold small"><i class="{{ $definition['icon'] }} fa-fw me-1"></i>{{ __($definition['label']) }}</span>
-                        <span class="d-block small text-muted">{{ __($definition['description']) }}</span>
-                    </span>
-                </label>
-            </div>
-        @endforeach
+    <div class="mb-3">
+        <label class="form-label" for="rule-type">{{ __('Alert') }}</label>
+        <select class="form-select" id="rule-type" wire:model.live="type">
+            @foreach ($types as $value => $option)
+                <option value="{{ $value }}">{{ __($option['label']) }}</option>
+            @endforeach
+        </select>
     </div>
 
-    <div class="row g-3 mb-3">
-        @if (\App\Models\AlertRule::usesThreshold($type))
-            @php $gb = \App\Models\AlertRule::usesUnit($type) && $unit === 'gb'; @endphp
-            <div class="col-6">
-                <label class="form-label" for="rule-threshold">
+    <div class="rounded bg-body-tertiary p-3 mb-3">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <i class="{{ $definition['icon'] ?? 'fas fa-bell' }} fa-fw text-body-secondary"></i>
+            @switch($type)
+                @case('status')
+                    <span>{{ __('Offline for at least') }}</span>
+                    @break
+                @case('cpu')
+                    <span>{{ __('Average usage above') }}</span>
+                    @break
+                @case('memory')
+                    <span>{{ $gb ? __('Average free memory below') : __('Average usage above') }}</span>
+                    @break
+                @case('disk')
+                    <span>{{ $gb ? __('A drive with less free space than') : __('A drive fuller than') }}</span>
+                    @break
+                @default
+                    <span>{{ __($definition['description'] ?? '') }}</span>
+            @endswitch
+
+            @if (\App\Models\AlertRule::usesThreshold($type))
+                <div class="input-group input-group-sm" style="width: auto">
                     @if ($gb)
-                        {{ $type === 'memory' ? __('Free memory below') : __('Free space below') }}
+                        <input class="form-control @error('limitGb') is-invalid @enderror" aria-label="{{ __('Limit') }}" max="{{ \App\Models\AlertRule::MAX_LIMIT_GB }}" min="0.1" step="0.1" style="width: 5.5rem" type="number" wire:model="limitGb">
                     @else
-                        {{ $type === 'disk' ? __('Used space above') : __('Usage above') }}
+                        <input class="form-control @error('threshold') is-invalid @enderror" aria-label="{{ __('Threshold') }}" max="99" min="1" style="width: 4.5rem" type="number" wire:model="threshold">
                     @endif
-                </label>
-                <div class="input-group">
-                    @if ($gb)
-                        <input class="form-control @error('limitGb') is-invalid @enderror" id="rule-threshold" max="{{ \App\Models\AlertRule::MAX_LIMIT_GB }}" min="0.1" step="0.1" type="number" wire:model="limitGb">
-                    @else
-                        <input class="form-control @error('threshold') is-invalid @enderror" id="rule-threshold" max="99" min="1" type="number" wire:model="threshold">
-                    @endif
-                    @if (\App\Models\AlertRule::usesUnit($type))
+                    @if ($hasUnit)
                         @foreach (\App\Models\AlertRule::UNITS as $unitValue => $unitLabel)
                             <input autocomplete="off" class="btn-check" id="rule-unit-{{ $unitValue }}" type="radio" value="{{ $unitValue }}" wire:model.live="unit">
                             <label class="btn btn-outline-secondary" for="rule-unit-{{ $unitValue }}">{{ $unitLabel }}</label>
@@ -40,20 +51,21 @@
                         <span class="input-group-text">%</span>
                     @endif
                 </div>
-                @error('threshold') <div class="small text-danger mt-1">{{ $message }}</div> @enderror
-                @error('limitGb') <div class="small text-danger mt-1">{{ $message }}</div> @enderror
-            </div>
-        @endif
-        @if (\App\Models\AlertRule::usesMinutes($type))
-            <div class="col-6">
-                <label class="form-label" for="rule-minutes">{{ $type === 'status' ? __('Offline for at least') : __('Average over') }}</label>
-                <div class="input-group">
-                    <input class="form-control @error('minutes') is-invalid @enderror" id="rule-minutes" max="{{ \App\Models\AlertRule::MAX_MINUTES }}" min="1" type="number" wire:model="minutes">
+            @endif
+
+            @if (\App\Models\AlertRule::usesMinutes($type))
+                @if ($type !== 'status')
+                    <span>{{ __('over') }}</span>
+                @endif
+                <div class="input-group input-group-sm" style="width: auto">
+                    <input class="form-control @error('minutes') is-invalid @enderror" aria-label="{{ __('Minutes') }}" max="{{ \App\Models\AlertRule::MAX_MINUTES }}" min="1" style="width: 4.5rem" type="number" wire:model="minutes">
                     <span class="input-group-text">{{ __('min') }}</span>
                 </div>
-                @error('minutes') <div class="small text-danger mt-1">{{ $message }}</div> @enderror
-            </div>
-        @endif
+            @endif
+        </div>
+        @foreach (['threshold', 'limitGb', 'minutes'] as $field)
+            @error($field) <div class="small text-danger mt-1">{{ $message }}</div> @enderror
+        @endforeach
     </div>
 
     <label class="form-label">{{ __('Devices') }}</label>

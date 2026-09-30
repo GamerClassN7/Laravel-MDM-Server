@@ -1,49 +1,60 @@
 <div>
     <div class="list-group list-group-flush">
         @foreach (\App\Models\AlertRule::TYPES as $type => $definition)
-            <div class="list-group-item px-0" wire:key="device-rule-{{ $type }}">
+            @php
+                $setting = $settings[$type];
+                $hasUnit = \App\Models\AlertRule::usesUnit($type);
+                $gb = $hasUnit && $setting['unit'] === 'gb';
+            @endphp
+            <div class="list-group-item px-0 py-2" wire:key="device-rule-{{ $type }}">
                 <div class="d-flex align-items-center gap-3">
                     <i class="{{ $definition['icon'] }} fa-fw text-body-secondary"></i>
-                    <div class="flex-grow-1 min-w-0">
-                        <div class="fw-semibold">{{ __($definition['label']) }}</div>
-                        <div class="small text-muted">{{ __($definition['description']) }}</div>
-                    </div>
+                    <label class="flex-grow-1 min-w-0 mb-0" for="device-rule-{{ $type }}">
+                        <span class="d-block">{{ __($definition['label']) }}</span>
+                        @unless ($setting['enabled'])
+                            <span class="d-block small text-muted">{{ __($definition['description']) }}</span>
+                        @endunless
+                    </label>
                     <div class="form-check form-switch m-0">
-                        <input class="form-check-input" type="checkbox" wire:model.live="settings.{{ $type }}.enabled" aria-label="{{ __($definition['label']) }}">
+                        <input class="form-check-input" id="device-rule-{{ $type }}" type="checkbox" wire:model.live="settings.{{ $type }}.enabled">
                     </div>
                 </div>
-                @if ($settings[$type]['enabled'] && ($definition['threshold'] !== null || $definition['minutes'] !== null))
-                    <div class="d-flex flex-wrap gap-3 mt-2 ms-5 small">
+
+                @if ($setting['enabled'] && ($definition['threshold'] !== null || $definition['minutes'] !== null))
+                    {{-- The condition as one line, like in the alert form. --}}
+                    <div class="d-flex flex-wrap align-items-center gap-2 small text-muted mt-1" style="padding-left: 2.25rem">
                         @if ($definition['threshold'] !== null)
-                            @php $gb = \App\Models\AlertRule::usesUnit($type) && $settings[$type]['unit'] === 'gb'; @endphp
-                            @if ($gb)
-                                <label class="d-flex align-items-center gap-2">
-                                    {{ $type === 'memory' ? __('Free memory below') : __('Free space below') }}
-                                    <input class="form-control form-control-sm" max="{{ \App\Models\AlertRule::MAX_LIMIT_GB }}" min="0.1" step="0.1" style="width: 6rem" type="number" wire:model.live.debounce.600ms="settings.{{ $type }}.limit_gb">
-                                    GB
-                                </label>
-                            @else
-                                <label class="d-flex align-items-center gap-2">
-                                    {{ __('Above') }}
-                                    <input class="form-range" max="99" min="1" style="width: 10rem" type="range" wire:model.live.debounce.400ms="settings.{{ $type }}.threshold">
-                                    <span class="fw-semibold">{{ $settings[$type]['threshold'] }} %</span>
-                                </label>
-                            @endif
-                            @if (\App\Models\AlertRule::usesUnit($type))
-                                <div class="btn-group btn-group-sm" role="group" aria-label="{{ __('Unit') }}">
+                            <span>
+                                @if ($type === 'disk')
+                                    {{ $gb ? __('less free than') : __('fuller than') }}
+                                @elseif ($gb)
+                                    {{ __('free below') }}
+                                @else
+                                    {{ __('above') }}
+                                @endif
+                            </span>
+                            <div class="input-group input-group-sm" style="width: auto">
+                                @if ($gb)
+                                    <input class="form-control" aria-label="{{ __('Limit') }}" max="{{ \App\Models\AlertRule::MAX_LIMIT_GB }}" min="0.1" step="0.1" style="width: 5rem" type="number" wire:model.live.debounce.600ms="settings.{{ $type }}.limit_gb">
+                                @else
+                                    <input class="form-control" aria-label="{{ __('Threshold') }}" max="99" min="1" style="width: 4rem" type="number" wire:model.live.debounce.600ms="settings.{{ $type }}.threshold">
+                                @endif
+                                @if ($hasUnit)
                                     @foreach (\App\Models\AlertRule::UNITS as $unitValue => $unitLabel)
                                         <input autocomplete="off" class="btn-check" id="device-rule-{{ $type }}-{{ $unitValue }}" type="radio" value="{{ $unitValue }}" wire:model.live="settings.{{ $type }}.unit">
-                                        <label class="btn btn-outline-secondary py-0" for="device-rule-{{ $type }}-{{ $unitValue }}">{{ $unitLabel }}</label>
+                                        <label class="btn btn-outline-secondary" for="device-rule-{{ $type }}-{{ $unitValue }}">{{ $unitLabel }}</label>
                                     @endforeach
-                                </div>
-                            @endif
+                                @else
+                                    <span class="input-group-text">%</span>
+                                @endif
+                            </div>
                         @endif
                         @if ($definition['minutes'] !== null)
-                            <label class="d-flex align-items-center gap-2">
-                                {{ $type === 'status' ? __('for at least') : __('average over') }}
-                                <input class="form-control form-control-sm" max="{{ \App\Models\AlertRule::MAX_MINUTES }}" min="1" style="width: 5rem" type="number" wire:model.live.debounce.600ms="settings.{{ $type }}.minutes">
-                                {{ __('min') }}
-                            </label>
+                            <span>{{ $type === 'status' ? __('for at least') : __('over') }}</span>
+                            <div class="input-group input-group-sm" style="width: auto">
+                                <input class="form-control" aria-label="{{ __('Minutes') }}" max="{{ \App\Models\AlertRule::MAX_MINUTES }}" min="1" style="width: 4rem" type="number" wire:model.live.debounce.600ms="settings.{{ $type }}.minutes">
+                                <span class="input-group-text">{{ __('min') }}</span>
+                            </div>
                         @endif
                     </div>
                 @endif

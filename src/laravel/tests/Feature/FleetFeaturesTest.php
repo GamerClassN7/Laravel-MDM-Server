@@ -304,7 +304,7 @@ class FleetFeaturesTest extends TestCase
         Livewire::test(RuleForm::class)
             ->set('type', 'cpu')
             ->assertSet('threshold', 80)
-            ->set('targetAll', false)
+            ->set('targetMode', 'devices')
             ->call('save')
             ->assertHasErrors('target')
             ->set('targetDevices', [(string) $device->id])

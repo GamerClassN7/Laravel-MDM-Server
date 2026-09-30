@@ -4,10 +4,11 @@ namespace App\Livewire\Concerns;
 
 use App\Models\Device;
 
-/** The state of partials/target-picker: all devices, tags or picked devices. */
+/** The state of partials/target-picker: all devices, the devices with any of the tags, or picked devices. */
 trait PicksTarget
 {
-    public bool $targetAll = false;
+    /** all, tags or devices */
+    public string $targetMode = 'all';
 
     /** @var array<int, string> */
     public array $targetTags = [];
@@ -18,17 +19,23 @@ trait PicksTarget
     protected function fillTarget(?array $target): void
     {
         $target = Device::normalizeTarget($target);
-        $this->targetAll = $target['all'];
         $this->targetTags = $target['tags'];
         $this->targetDevices = array_map('strval', $target['devices']);
+        $this->targetMode = match (true) {
+            $target['all'] => 'all',
+            $target['tags'] === [] && $target['devices'] !== [] => 'devices',
+            $target['tags'] !== [] => 'tags',
+            default => 'all',
+        };
     }
 
+    /** Only what the chosen mode shows counts. */
     protected function target(): array
     {
         return Device::normalizeTarget([
-            'all' => $this->targetAll,
-            'tags' => $this->targetTags,
-            'devices' => $this->targetDevices,
+            'all' => $this->targetMode === 'all',
+            'tags' => $this->targetMode === 'tags' ? $this->targetTags : [],
+            'devices' => $this->targetMode === 'devices' ? $this->targetDevices : [],
         ]);
     }
 

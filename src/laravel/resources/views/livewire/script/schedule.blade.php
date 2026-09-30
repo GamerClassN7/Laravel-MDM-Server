@@ -36,7 +36,6 @@
             {{ trans_choice(':count device matches now|:count devices match now', $targeted, ['count' => $targeted]) }},
             {{ trans_choice(':count can run it|:count can run it', $runnable, ['count' => $runnable]) }}
             ({{ __('platform, signing agent, scripts enabled') }}).
-            {{ __('Tags are resolved at every run, so newly tagged devices are included.') }}
         </div>
     </fieldset>
 
