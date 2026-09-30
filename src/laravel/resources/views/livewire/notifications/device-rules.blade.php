@@ -55,7 +55,7 @@
         <div class="small text-muted mt-3">
             <div class="fw-semibold mb-1">{{ __('Also alerting for this device') }}</div>
             @foreach ($broader as $rule)
-                <div><i class="{{ $rule->icon }} fa-fw me-1"></i>{{ $rule->label }}: {{ $rule->condition }} · {{ $rule->targetDescription }}{{ $rule->enabled ? '' : ' ('.__('disabled').')' }}</div>
+                <div class="d-flex flex-wrap align-items-center gap-1"><i class="{{ $rule->icon }} fa-fw"></i>{{ $rule->label }}: {{ $rule->condition }} · <x-target-summary :target="$rule->target ?? []" />{{ $rule->enabled ? '' : ' ('.__('disabled').')' }}</div>
             @endforeach
         </div>
     @endif

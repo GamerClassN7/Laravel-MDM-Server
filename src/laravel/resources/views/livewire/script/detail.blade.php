@@ -8,7 +8,10 @@
                     <x-badge color="primary" size="sm" variant="subtle">v{{ $script->version }}</x-badge>
                     <span title="{{ $script->updated_at }}"><i class="far fa-clock me-1"></i>{{ __('Changed :time', ['time' => $script->updated_at->diffForHumans()]) }}</span>
                     @if ($script->scheduled)
-                        <span title="{{ \App\Models\Device::describeTarget($script->schedule_target ?? []) }}"><i class="fas fa-calendar-alt me-1"></i><code>{{ $script->schedule }}</code> · {{ __('next :time', ['time' => $script->nextScheduledRun()?->diffForHumans()]) }} · {{ \App\Models\Device::describeTarget($script->schedule_target ?? []) }}</span>
+                        <span class="d-inline-flex flex-wrap align-items-center gap-1" title="{{ $script->nextScheduledRun() }}">
+                            <i class="fas fa-calendar-alt"></i><code>{{ $script->schedule }}</code> · {{ __('next :time', ['time' => $script->nextScheduledRun()?->diffForHumans()]) }} ·
+                            <x-target-summary :target="$script->schedule_target ?? []" />
+                        </span>
                     @endif
                     @if ($lastRun)
                         <span title="{{ $lastRun }}"><i class="fas fa-play me-1"></i>{{ __('Last run :time', ['time' => \Illuminate\Support\Carbon::parse($lastRun)->diffForHumans()]) }}</span>

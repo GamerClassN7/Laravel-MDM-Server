@@ -13,12 +13,11 @@
         @if ($pickerTags !== [])
             <div class="mb-2">
                 <div class="small text-muted mb-1">{{ __('Devices with any of these tags') }}</div>
-                <div class="d-flex flex-wrap gap-2">
+                <div class="mdm-tags">
                     @foreach ($pickerTags as $pickerTag)
-                        <label class="btn btn-sm rounded-pill py-0 {{ in_array($pickerTag, $targetTags, true) ? 'btn-primary' : 'btn-light' }}">
+                        <x-tag as="label" :tag="$pickerTag" :active="in_array($pickerTag, $targetTags, true)" wire:key="target-tag-{{ $loop->index }}">
                             <input class="d-none" type="checkbox" value="{{ $pickerTag }}" wire:model.live="targetTags">
-                            <i class="fas fa-tag me-1 small"></i>{{ $pickerTag }}
-                        </label>
+                        </x-tag>
                     @endforeach
                 </div>
             </div>
@@ -30,9 +29,7 @@
                     <input class="form-check-input m-0" type="checkbox" value="{{ $pickerDevice->id }}" wire:model.live="targetDevices">
                     <i class="{{ $pickerDevice->typeIcon }} text-body-secondary"></i>
                     <span class="me-auto">{{ $pickerDevice->displayName }}</span>
-                    @foreach ($pickerDevice->tagList as $pickerDeviceTag)
-                        <span class="badge rounded-pill text-bg-light fw-normal">{{ $pickerDeviceTag }}</span>
-                    @endforeach
+                    <x-tags class="justify-content-end" :tags="$pickerDevice->tagList" />
                 </label>
             @empty
                 <div class="list-group-item text-muted">{{ __('No devices.') }}</div>

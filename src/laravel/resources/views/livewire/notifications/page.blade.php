@@ -94,7 +94,7 @@
                                 <i class="{{ $rule->icon }} fa-fw text-body-secondary"></i>
                                 <div class="flex-grow-1 min-w-0 {{ $rule->enabled ? '' : 'opacity-50' }}">
                                     <div class="fw-semibold">{{ $rule->label }}</div>
-                                    <div class="small text-muted">{{ $rule->condition }} · {{ $rule->targetDescription }}</div>
+                                    <div class="small text-muted d-flex flex-wrap align-items-center gap-1">{{ $rule->condition }} · <x-target-summary :target="$rule->target ?? []" /></div>
                                 </div>
                                 <div class="form-check form-switch m-0" title="{{ $rule->enabled ? __('Enabled') : __('Disabled') }}">
                                     <input class="form-check-input" type="checkbox" wire:click="toggleRule({{ $rule->id }})" @checked($rule->enabled)>

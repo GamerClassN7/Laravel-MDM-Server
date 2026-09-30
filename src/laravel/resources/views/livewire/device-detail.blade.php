@@ -94,16 +94,11 @@
                         </div>
                         <div class="form-text">{{ __('Separate tags with commas.') }}</div>
                     @elseif ($selectedDevice->tagList !== [])
-                        <div class="d-flex flex-wrap align-items-center gap-1 mt-2">
-                            @foreach ($selectedDevice->tagList as $tag)
-                                <a href="{{ route('devices', ['tag' => $tag]) }}" class="text-decoration-none">
-                                    <x-badge color="primary" size="sm" variant="subtle"><i class="fas fa-tag me-1"></i>{{ $tag }}</x-badge>
-                                </a>
-                            @endforeach
-                            <button class="btn btn-sm btn-sq py-0" type="button" title="{{ __('Edit tags') }}" wire:click="startEditTags">
+                        <x-tags class="align-items-center mt-2" :tags="$selectedDevice->tagList" links>
+                            <button class="btn btn-sm btn-link text-body-secondary p-0 ms-1" type="button" title="{{ __('Edit tags') }}" wire:click="startEditTags">
                                 <i class="fas fa-pen small"></i>
                             </button>
-                        </div>
+                        </x-tags>
                     @endif
                 </div>
 
