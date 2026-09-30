@@ -274,4 +274,21 @@ class DeviceCommandTest extends TestCase
             ->dispatch('rename-device')
             ->assertSet('editMode', true);
     }
+
+    public function test_history_shows_what_the_status_does_not_say(): void
+    {
+        $device = $this->device();
+        $make = fn (array $values) => $device->commands()->create(['command' => 'doUpdates'])->forceFill($values);
+
+        $done = $make(['status' => 'succeeded', 'message' => 'Done', 'started_at' => now()->subMinutes(23), 'finished_at' => now()]);
+        $this->assertNull($done->resultNote);
+        $this->assertSame('23m', $done->duration);
+        $this->assertSame('Restart required', $make(['status' => 'succeeded', 'message' => 'Done, restart required'])->resultNote);
+        $this->assertSame('winget upgrade: exit 1', $make(['status' => 'failed', 'message' => 'winget upgrade: exit 1'])->resultNote);
+
+        $delivered = $make(['status' => 'delivered']);
+        $this->assertSame(['Sent, no result', 'secondary'], [$delivered->statusLabel, $delivered->statusColor]);
+        $this->assertNotNull($delivered->statusHint);
+        $this->assertNull($delivered->duration);
+    }
 }

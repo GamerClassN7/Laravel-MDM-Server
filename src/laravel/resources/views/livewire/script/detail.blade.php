@@ -59,28 +59,38 @@
         <div class="row g-4">
             <div class="col-12 col-lg-8">
                 <div class="card card-body">
-                    <x-boilerplate::tab.group default="detection" variant="switch">
-                        <x-boilerplate::tab.tab name="detection"><i class="fas fa-search me-2"></i>{{ __('Detection') }}</x-boilerplate::tab.tab>
-                        <x-boilerplate::tab.tab name="remediation">
-                            <i class="fas fa-wrench me-2"></i>{{ __('Remediation') }}
-                            @if ($script->remediation === null)
-                                <span class="small text-body-tertiary">({{ __('none') }})</span>
-                            @endif
-                        </x-boilerplate::tab.tab>
+                    {{-- Plain Alpine tabs: x-boilerplate::tab.group moves its tabs around in the DOM,
+                         which the Livewire refresh (wire:poll) undoes. --}}
+                    <div x-data="{ code: 'detection' }">
+                        <ul class="nav nav-switch mb-3" role="tablist">
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" role="tab" type="button" x-bind:aria-selected="code === 'detection'" x-bind:class="{ active: code === 'detection' }" x-on:click="code = 'detection'">
+                                    <i class="fas fa-search me-2"></i>{{ __('Detection') }}
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" role="tab" type="button" x-bind:aria-selected="code === 'remediation'" x-bind:class="{ active: code === 'remediation' }" x-on:click="code = 'remediation'">
+                                    <i class="fas fa-wrench me-2"></i>{{ __('Remediation') }}
+                                    @if ($script->remediation === null)
+                                        <span class="small text-body-tertiary">({{ __('none') }})</span>
+                                    @endif
+                                </button>
+                            </li>
+                        </ul>
 
-                        <x-boilerplate::tab.panel name="detection">
+                        <div x-show="code === 'detection'">
                             <p class="small text-muted">{{ __('Exit 0 = compliant, exit 1 = runs the remediation.') }}</p>
                             <x-code-viewer :code="$script->detection" wire:key="detection-{{ $script->fingerprint }}" />
-                        </x-boilerplate::tab.panel>
-                        <x-boilerplate::tab.panel name="remediation" x-cloak>
+                        </div>
+                        <div x-cloak x-show="code === 'remediation'" style="display: none">
                             @if ($script->remediation !== null)
                                 <p class="small text-muted">{{ __('Runs when the detection exits with 1, then the detection runs again.') }}</p>
                                 <x-code-viewer :code="$script->remediation" wire:key="remediation-{{ $script->fingerprint }}" />
                             @else
                                 <p class="text-muted mb-0">{{ __('No remediation script: the detection only reports whether the device is compliant.') }}</p>
                             @endif
-                        </x-boilerplate::tab.panel>
-                    </x-boilerplate::tab.group>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="col-12 col-lg-4">

@@ -534,6 +534,7 @@
                                     <th>{{ __('Command') }}</th>
                                     <th>{{ __('Status') }}</th>
                                     <th class="d-none d-md-table-cell">{{ __('Issued by') }}</th>
+                                    <th class="d-none d-sm-table-cell">{{ __('Duration') }}</th>
                                     <th class="text-end">{{ __('Issued') }}</th>
                                 </tr>
                             </thead>
@@ -545,19 +546,15 @@
                                             @if ($command->active)
                                                 <div style="min-width: 10rem;">@include('partials.device.command-progress', ['command' => $command, 'compact' => true])</div>
                                             @else
-                                                <x-badge :color="$command->statusColor" size="sm" variant="subtle">{{ $command->statusLabel }}</x-badge>
-                                                @if ($command->message)
-                                                    <div class="small text-body-secondary text-break">{{ $command->message }}</div>
+                                                <x-badge :color="$command->statusColor" size="sm" variant="subtle" :title="$command->statusHint">{{ $command->statusLabel }}</x-badge>
+                                                @if ($command->resultNote)
+                                                    <div class="small text-body-secondary text-break">{{ $command->resultNote }}</div>
                                                 @endif
                                             @endif
                                         </td>
                                         <td class="d-none d-md-table-cell small text-body-secondary">{{ $command->issuer?->name ?? '—' }}</td>
-                                        <td class="text-end small text-nowrap" title="{{ $command->created_at }}{{ $command->finished_at ? ' → ' . $command->finished_at : '' }}">
-                                            {{ $command->created_at->diffForHumans() }}
-                                            @if ($command->finished_at && $command->started_at)
-                                                <div class="text-body-secondary">{{ $command->started_at->diffForHumans($command->finished_at, \Carbon\CarbonInterface::DIFF_ABSOLUTE, true) }}</div>
-                                            @endif
-                                        </td>
+                                        <td class="d-none d-sm-table-cell small text-body-secondary text-nowrap">{{ $command->duration ?? '—' }}</td>
+                                        <td class="text-end small text-nowrap" title="{{ $command->created_at }}{{ $command->finished_at ? ' → ' . $command->finished_at : '' }}">{{ $command->created_at->diffForHumans() }}</td>
                                     </tr>
                                 @endforeach
                             </tbody>
