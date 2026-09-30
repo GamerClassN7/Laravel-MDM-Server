@@ -22,6 +22,11 @@ class RuleForm extends Component
 
     public ?int $minutes = null;
 
+    /** Disk and memory: 'percent' (used above threshold) or 'gb' (free below limitGb). */
+    public string $unit = 'percent';
+
+    public ?float $limitGb = null;
+
     public function mount(?int $ruleId = null): void
     {
         $this->ruleId = $ruleId;
@@ -30,6 +35,8 @@ class RuleForm extends Component
             $this->type = $rule->type;
             $this->threshold = $rule->threshold;
             $this->minutes = $rule->minutes;
+            $this->unit = $rule->unit ?: 'percent';
+            $this->limitGb = $rule->limit_gb ?? (AlertRule::DEFAULT_LIMIT_GB[$rule->type] ?? null);
             $this->fillTarget($rule->target);
         } else {
             $this->fillTarget(['all' => true]);
@@ -46,14 +53,19 @@ class RuleForm extends Component
         }
         $this->threshold = $defaults['threshold'];
         $this->minutes = $defaults['minutes'];
+        $this->unit = 'percent';
+        $this->limitGb = AlertRule::DEFAULT_LIMIT_GB[$this->type] ?? null;
     }
 
     public function save(): void
     {
         $this->resetErrorBag();
+        $gb = AlertRule::usesUnit($this->type) && $this->unit === 'gb';
         $this->validate([
             'type' => ['required', Rule::in(array_keys(AlertRule::TYPES))],
-            'threshold' => [AlertRule::usesThreshold($this->type) ? 'required' : 'nullable', 'integer', 'min:1', 'max:99'],
+            'unit' => ['required', Rule::in(array_keys(AlertRule::UNITS))],
+            'threshold' => [AlertRule::usesThreshold($this->type) && ! $gb ? 'required' : 'nullable', 'integer', 'min:1', 'max:99'],
+            'limitGb' => [$gb ? 'required' : 'nullable', 'numeric', 'min:0.1', 'max:'.AlertRule::MAX_LIMIT_GB],
             'minutes' => [AlertRule::usesMinutes($this->type) ? 'required' : 'nullable', 'integer', 'min:1', 'max:'.AlertRule::MAX_MINUTES],
         ]);
         if ($this->targetIsEmpty()) {
@@ -65,12 +77,14 @@ class RuleForm extends Component
         $rule = $this->ruleId ? AlertRule::query()->where('user_id', auth()->id())->findOrFail($this->ruleId) : new AlertRule(['user_id' => auth()->id(), 'enabled' => true]);
         $rule->fill([
             'type' => $this->type,
-            'threshold' => AlertRule::usesThreshold($this->type) ? $this->threshold : null,
+            'threshold' => AlertRule::usesThreshold($this->type) && ! $gb ? $this->threshold : null,
+            'unit' => $gb ? 'gb' : 'percent',
+            'limit_gb' => $gb ? round((float) $this->limitGb, 1) : null,
             'minutes' => AlertRule::usesMinutes($this->type) ? $this->minutes : null,
             'target' => $this->target(),
         ]);
         // A changed condition starts over: its open alerts close without a message.
-        if ($rule->exists && $rule->isDirty(['type', 'threshold', 'minutes'])) {
+        if ($rule->exists && $rule->isDirty(['type', 'threshold', 'unit', 'limit_gb', 'minutes'])) {
             $rule->events()->whereNull('resolved_at')->update(['resolved_at' => now()]);
         }
         $rule->save();

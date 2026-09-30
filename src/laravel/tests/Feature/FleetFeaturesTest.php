@@ -225,6 +225,61 @@ class FleetFeaturesTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_disk_and_memory_alerts_in_free_gb(): void
+    {
+        $gb = 1073741824;
+        $user = User::factory()->create();
+        $device = $this->device('a', ['Drives' => [
+            ['FriendlyName' => 'System', 'DriveLetter' => 'C', 'Size' => 500 * $gb, 'SizeRemaining' => 8 * $gb, 'DriveType' => 3],
+            ['FriendlyName' => 'Data', 'DriveLetter' => 'D', 'Size' => 4000 * $gb, 'SizeRemaining' => 400 * $gb, 'DriveType' => 3],
+        ]]);
+        foreach (range(1, 20) as $i) {
+            DeviceMetric::create(['device_id' => $device->id, 'cpu' => 5, 'memory_used' => 15 * $gb, 'memory_total' => 16 * $gb]);
+        }
+        // 90 % used on D would not alert in percent (400 GB free), 8 GB free on C does in GB.
+        $disk = AlertRule::create(['user_id' => $user->id, 'type' => 'disk', 'unit' => 'gb', 'limit_gb' => 10, 'target' => ['all' => true]]);
+        $memory = AlertRule::create(['user_id' => $user->id, 'type' => 'memory', 'unit' => 'gb', 'limit_gb' => 2, 'minutes' => 10, 'target' => ['all' => true]]);
+        $enough = AlertRule::create(['user_id' => $user->id, 'type' => 'memory', 'unit' => 'gb', 'limit_gb' => 0.5, 'minutes' => 10, 'target' => ['all' => true]]);
+        $this->assertSame('A drive with less than 10 GB free', $disk->condition);
+        $this->assertSame('Average free memory below 2 GB for 10 min', $memory->condition);
+
+        AlertEvaluator::run();
+        $this->assertStringContainsString('System (C) 8 GB', $disk->events()->sole()->message);
+        $this->assertStringNotContainsString('Data', $disk->events()->sole()->message);
+        $this->assertEqualsWithDelta(1.0, $memory->events()->sole()->value, 0.01);
+        $this->assertSame(0, $enough->events()->count());
+
+        // Switching to percent: 98.4 % used on C is above 90 %.
+        $this->actingAs($user);
+        Livewire::test(RuleForm::class, ['ruleId' => $disk->id])
+            ->assertSet('unit', 'gb')
+            ->set('unit', 'percent')
+            ->set('threshold', 90)
+            ->call('save')
+            ->assertHasNoErrors();
+        $this->assertSame(['percent', null, 90], [$disk->fresh()->unit, $disk->fresh()->limit_gb, $disk->fresh()->threshold]);
+        $this->assertNotNull($disk->events()->sole()->resolved_at, 'A changed condition starts over');
+
+        Livewire::test(RuleForm::class)
+            ->set('type', 'memory')
+            ->set('unit', 'gb')
+            ->set('limitGb', 0)
+            ->call('save')
+            ->assertHasErrors('limitGb')
+            ->set('limitGb', 1.5)
+            ->call('save')
+            ->assertHasNoErrors();
+        $this->assertSame(1.5, AlertRule::latest('id')->first()->limit_gb);
+
+        // The bell: switching the unit keeps the rule, with the GB limit.
+        Livewire::test(DeviceRules::class, ['deviceId' => $device->id])
+            ->set('settings.disk.enabled', true)
+            ->set('settings.disk.unit', 'gb')
+            ->set('settings.disk.limit_gb', 25);
+        $own = AlertRule::where('type', 'disk')->get()->first(fn ($rule) => $rule->target['devices'] === [$device->id]);
+        $this->assertSame(['gb', 25.0, null], [$own->unit, $own->limit_gb, $own->threshold]);
+    }
+
     public function test_notification_page_saves_channels_and_rules(): void
     {
         Http::fake();

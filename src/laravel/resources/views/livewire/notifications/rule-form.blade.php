@@ -16,13 +16,32 @@
 
     <div class="row g-3 mb-3">
         @if (\App\Models\AlertRule::usesThreshold($type))
+            @php $gb = \App\Models\AlertRule::usesUnit($type) && $unit === 'gb'; @endphp
             <div class="col-6">
-                <label class="form-label" for="rule-threshold">{{ __('Threshold') }}</label>
+                <label class="form-label" for="rule-threshold">
+                    @if ($gb)
+                        {{ $type === 'memory' ? __('Free memory below') : __('Free space below') }}
+                    @else
+                        {{ $type === 'disk' ? __('Used space above') : __('Usage above') }}
+                    @endif
+                </label>
                 <div class="input-group">
-                    <input class="form-control @error('threshold') is-invalid @enderror" id="rule-threshold" max="99" min="1" type="number" wire:model="threshold">
-                    <span class="input-group-text">%</span>
+                    @if ($gb)
+                        <input class="form-control @error('limitGb') is-invalid @enderror" id="rule-threshold" max="{{ \App\Models\AlertRule::MAX_LIMIT_GB }}" min="0.1" step="0.1" type="number" wire:model="limitGb">
+                    @else
+                        <input class="form-control @error('threshold') is-invalid @enderror" id="rule-threshold" max="99" min="1" type="number" wire:model="threshold">
+                    @endif
+                    @if (\App\Models\AlertRule::usesUnit($type))
+                        @foreach (\App\Models\AlertRule::UNITS as $unitValue => $unitLabel)
+                            <input autocomplete="off" class="btn-check" id="rule-unit-{{ $unitValue }}" type="radio" value="{{ $unitValue }}" wire:model.live="unit">
+                            <label class="btn btn-outline-secondary" for="rule-unit-{{ $unitValue }}">{{ $unitLabel }}</label>
+                        @endforeach
+                    @else
+                        <span class="input-group-text">%</span>
+                    @endif
                 </div>
                 @error('threshold') <div class="small text-danger mt-1">{{ $message }}</div> @enderror
+                @error('limitGb') <div class="small text-danger mt-1">{{ $message }}</div> @enderror
             </div>
         @endif
         @if (\App\Models\AlertRule::usesMinutes($type))

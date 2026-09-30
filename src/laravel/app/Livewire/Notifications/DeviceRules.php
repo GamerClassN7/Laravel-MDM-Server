@@ -17,7 +17,7 @@ class DeviceRules extends Component
 {
     public int $deviceId;
 
-    /** @var array<string, array{enabled: bool, threshold: ?int, minutes: ?int}> */
+    /** @var array<string, array{enabled: bool, threshold: ?int, minutes: ?int, unit: string, limit_gb: ?float}> */
     public array $settings = [];
 
     public function mount(int $deviceId): void
@@ -29,6 +29,8 @@ class DeviceRules extends Component
                 'enabled' => $rule?->enabled ?? false,
                 'threshold' => $rule?->threshold ?? $definition['threshold'],
                 'minutes' => $rule?->minutes ?? $definition['minutes'],
+                'unit' => $rule?->unit ?: 'percent',
+                'limit_gb' => $rule?->limit_gb ?? (AlertRule::DEFAULT_LIMIT_GB[$type] ?? null),
             ];
         }
     }
@@ -41,10 +43,17 @@ class DeviceRules extends Component
             return;
         }
         $setting = $this->settings[$type];
-        $threshold = AlertRule::usesThreshold($type) ? max(1, min(99, (int) $setting['threshold'])) : null;
+        $gb = AlertRule::usesUnit($type) && ($setting['unit'] ?? null) === 'gb';
+        $threshold = AlertRule::usesThreshold($type) ? max(1, min(99, (int) ($setting['threshold'] ?: AlertRule::TYPES[$type]['threshold']))) : null;
+        $limit = $gb ? max(0.1, min(AlertRule::MAX_LIMIT_GB, round((float) $setting['limit_gb'], 1))) : null;
         $minutes = AlertRule::usesMinutes($type) ? max(1, min(AlertRule::MAX_MINUTES, (int) $setting['minutes'])) : null;
         $this->settings[$type]['threshold'] = $threshold;
         $this->settings[$type]['minutes'] = $minutes;
+        $this->settings[$type]['unit'] = $gb ? 'gb' : 'percent';
+        if ($gb) {
+            $this->settings[$type]['limit_gb'] = $limit;
+        }
+        $threshold = $gb ? null : $threshold;
 
         $rule = $this->ruleFor($type);
         if (! $setting['enabled']) {
@@ -53,10 +62,11 @@ class DeviceRules extends Component
             return;
         }
         $rule ??= new AlertRule(['user_id' => auth()->id(), 'type' => $type, 'target' => ['all' => false, 'tags' => [], 'devices' => [$this->deviceId]]]);
-        if ($rule->exists && ($rule->threshold !== $threshold || $rule->minutes !== $minutes)) {
+        $rule->fill(['threshold' => $threshold, 'unit' => $gb ? 'gb' : 'percent', 'limit_gb' => $limit, 'minutes' => $minutes, 'enabled' => true]);
+        if ($rule->exists && $rule->isDirty(['threshold', 'unit', 'limit_gb', 'minutes'])) {
             $rule->events()->whereNull('resolved_at')->update(['resolved_at' => now()]);
         }
-        $rule->fill(['threshold' => $threshold, 'minutes' => $minutes, 'enabled' => true])->save();
+        $rule->save();
         $this->dispatch('alertRuleSaved');
     }
 

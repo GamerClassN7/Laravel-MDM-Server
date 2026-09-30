@@ -10,7 +10,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 /**
  * What a user is alerted about, as in Beszel: a condition on the devices of the target (all,
  * tags, picked devices). Status: offline for minutes; CPU / memory: the average over minutes
- * above the threshold; disk: a drive fuller than the threshold; disk health, services and
+ * above the threshold (memory also: free GB below limit_gb); disk: a drive fuller than the
+ * threshold, or with less than limit_gb free; disk health, services and
  * scripts: a problem reported by the device.
  */
 class AlertRule extends Model
@@ -18,8 +19,8 @@ class AlertRule extends Model
     public const TYPES = [
         'status' => ['label' => 'Status', 'icon' => 'fas fa-plug', 'threshold' => null, 'minutes' => 5, 'description' => 'The device is offline'],
         'cpu' => ['label' => 'CPU usage', 'icon' => 'fas fa-microchip', 'threshold' => 80, 'minutes' => 10, 'description' => 'Average CPU usage above the threshold'],
-        'memory' => ['label' => 'Memory usage', 'icon' => 'fas fa-memory', 'threshold' => 80, 'minutes' => 10, 'description' => 'Average memory usage above the threshold'],
-        'disk' => ['label' => 'Disk usage', 'icon' => 'fas fa-hdd', 'threshold' => 90, 'minutes' => null, 'description' => 'A drive fuller than the threshold'],
+        'memory' => ['label' => 'Memory usage', 'icon' => 'fas fa-memory', 'threshold' => 80, 'minutes' => 10, 'description' => 'Average usage above a percentage, or free memory below a size'],
+        'disk' => ['label' => 'Disk usage', 'icon' => 'fas fa-hdd', 'threshold' => 90, 'minutes' => null, 'description' => 'A drive fuller than a percentage, or with less free space than a size'],
         'disk_health' => ['label' => 'Disk health', 'icon' => 'fas fa-heartbeat', 'threshold' => null, 'minutes' => null, 'description' => 'A disk reports a S.M.A.R.T. warning or failure'],
         'services' => ['label' => 'Services', 'icon' => 'fas fa-cogs', 'threshold' => null, 'minutes' => null, 'description' => 'A service failed or a container is unhealthy'],
         'scripts' => ['label' => 'Remediations', 'icon' => 'fas fa-scroll', 'threshold' => null, 'minutes' => null, 'description' => 'The latest run of a remediation script failed'],
@@ -27,13 +28,22 @@ class AlertRule extends Model
 
     public const MAX_MINUTES = 1440;
 
-    protected $fillable = ['user_id', 'type', 'threshold', 'minutes', 'target', 'enabled'];
+    /** Disk and memory alerts: used above a percentage, or free space / memory below a size. */
+    public const UNITS = ['percent' => '%', 'gb' => 'GB'];
+
+    /** Default limit (GB free) when switching to GB. */
+    public const DEFAULT_LIMIT_GB = ['disk' => 10, 'memory' => 1];
+
+    public const MAX_LIMIT_GB = 100000;
+
+    protected $fillable = ['user_id', 'type', 'threshold', 'unit', 'limit_gb', 'minutes', 'target', 'enabled'];
 
     protected $casts = [
         'target' => 'array',
         'enabled' => 'boolean',
         'threshold' => 'integer',
         'minutes' => 'integer',
+        'limit_gb' => 'float',
     ];
 
     public function user(): BelongsTo
@@ -56,6 +66,24 @@ class AlertRule extends Model
         return (self::TYPES[$type]['threshold'] ?? null) !== null;
     }
 
+    /** Disk and memory can alert on free GB instead of the used percentage. */
+    public static function usesUnit(string $type): bool
+    {
+        return in_array($type, ['disk', 'memory'], true);
+    }
+
+    /** Whether the rule compares free GB (otherwise the used percentage). */
+    public function getInGbAttribute(): bool
+    {
+        return self::usesUnit($this->type) && $this->unit === 'gb';
+    }
+
+    /** "12.5" for 12.5, "10" for 10.0 */
+    public static function formatGb(?float $gb): string
+    {
+        return rtrim(rtrim(number_format((float) $gb, 1, '.', ''), '0'), '.');
+    }
+
     public static function usesMinutes(string $type): bool
     {
         return (self::TYPES[$type]['minutes'] ?? null) !== null;
@@ -76,8 +104,13 @@ class AlertRule extends Model
     {
         return match ($this->type) {
             'status' => __('Offline for :minutes min', ['minutes' => $this->minutes]),
-            'cpu', 'memory' => __('Average above :threshold % for :minutes min', ['threshold' => $this->threshold, 'minutes' => $this->minutes]),
-            'disk' => __('A drive above :threshold %', ['threshold' => $this->threshold]),
+            'memory' => $this->inGb
+                ? __('Average free memory below :limit GB for :minutes min', ['limit' => self::formatGb($this->limit_gb), 'minutes' => $this->minutes])
+                : __('Average above :threshold % for :minutes min', ['threshold' => $this->threshold, 'minutes' => $this->minutes]),
+            'cpu' => __('Average above :threshold % for :minutes min', ['threshold' => $this->threshold, 'minutes' => $this->minutes]),
+            'disk' => $this->inGb
+                ? __('A drive with less than :limit GB free', ['limit' => self::formatGb($this->limit_gb)])
+                : __('A drive above :threshold %', ['threshold' => $this->threshold]),
             default => __(self::TYPES[$this->type]['description'] ?? ''),
         };
     }

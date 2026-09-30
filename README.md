@@ -400,11 +400,16 @@ tags, so a newly tagged device is included without changing them.
   | Alert | When |
   |---|---|
   | Status | the device is offline for at least *n* minutes |
-  | CPU usage / Memory usage | the average over the last *n* minutes is above the threshold (%) |
-  | Disk usage | a drive is fuller than the threshold (%) |
+  | CPU usage | the average over the last *n* minutes is above the threshold (%) |
+  | Memory usage | the average over the last *n* minutes is above the threshold (%), or the free memory is below a size (GB) |
+  | Disk usage | a drive is fuller than the threshold (%), or has less free space than a size (GB) |
   | Disk health | a disk reports a S.M.A.R.T. warning or failure |
   | Services | a service failed, or a container is unhealthy, dead or restarting |
   | Remediations | the latest run of a remediation script failed |
+
+  Disk and memory switch between **%** and **GB**: a percentage suits drives of the same size, a
+  size suits the big ones (10 % of 4 TB are still 400 GB) and memory of different machines. GB are
+  1024 based, as shown in the portal.
 
   The bell on a device switches the alerts for just that device, with a slider for the threshold
   and the minutes (like the bell of a system in Beszel).

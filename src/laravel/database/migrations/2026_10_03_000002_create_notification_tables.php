@@ -23,6 +23,9 @@ return new class extends Migration
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
             $table->string('type', 32);
             $table->unsignedTinyInteger('threshold')->nullable();
+            // Disk and memory: "percent" (used above threshold %) or "gb" (free below limit_gb).
+            $table->string('unit', 8)->default('percent');
+            $table->decimal('limit_gb', 10, 1)->nullable();
             $table->unsignedSmallInteger('minutes')->nullable();
             $table->json('target');
             $table->boolean('enabled')->default(true);

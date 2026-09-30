@@ -19,6 +19,9 @@ use Throwable;
  */
 class AlertEvaluator
 {
+    /** Sizes are 1024 based, as shown in the portal. */
+    private const GB = 1073741824;
+
     /** @var Collection<int, Device> loaded once per run */
     private Collection $devices;
 
@@ -111,11 +114,26 @@ class AlertEvaluator
             return null;
         }
         $minutes = max(1, (int) $rule->minutes);
-        $column = $rule->type === 'cpu' ? 'cpu' : DB::raw('100.0 * memory_used / memory_total');
+        $column = match (true) {
+            $rule->type === 'cpu' => 'cpu',
+            $rule->inGb => DB::raw('memory_total - memory_used'),
+            default => DB::raw('100.0 * memory_used / memory_total'),
+        };
         $samples = $device->metrics()->where('created_at', '>=', now()->subMinutes($minutes));
         // Heartbeats come every 30 s: at least half of the window must be covered.
         if ((clone $samples)->count() < max(1, $minutes)) {
             return null;
+        }
+        if ($rule->inGb) {
+            $free = round((float) (clone $samples)->avg($column) / self::GB, 1);
+
+            return [
+                'active' => $free < $rule->limit_gb,
+                'value' => $free,
+                'message' => __('Free memory of :device averaged :value GB in the last :minutes min (limit :limit GB).', [
+                    'device' => $device->displayName, 'value' => AlertRule::formatGb($free), 'minutes' => $minutes, 'limit' => AlertRule::formatGb($rule->limit_gb),
+                ]),
+            ];
         }
         $average = round((float) (clone $samples)->avg($column), 1);
         $label = $rule->type === 'cpu' ? __('CPU') : __('Memory');
@@ -135,6 +153,21 @@ class AlertEvaluator
         if ($drives->isEmpty()) {
             return null;
         }
+        $name = fn ($drive) => trim(($drive['FriendlyName'] ?? '').' ('.($drive['DriveLetter'] ?? '?').')');
+        if ($rule->inGb) {
+            $free = fn ($drive) => round((float) ($drive['SizeRemaining'] ?? 0) / self::GB, 1);
+            $low = $drives->filter(fn ($drive) => $free($drive) < $rule->limit_gb);
+
+            return [
+                'active' => $low->isNotEmpty(),
+                'value' => $drives->map($free)->min(),
+                'message' => __('Drives of :device with less than :limit GB free: :drives.', [
+                    'device' => $device->displayName,
+                    'limit' => AlertRule::formatGb($rule->limit_gb),
+                    'drives' => $low->map(fn ($drive) => $name($drive).' '.AlertRule::formatGb($free($drive)).' GB')->implode(', '),
+                ]),
+            ];
+        }
         $full = $drives->filter(fn ($drive) => $drive['PercentUsed'] > $rule->threshold);
         $top = $drives->sortByDesc('PercentUsed')->first();
 
@@ -144,7 +177,7 @@ class AlertEvaluator
             'message' => __('Drives of :device above :threshold %: :drives.', [
                 'device' => $device->displayName,
                 'threshold' => $rule->threshold,
-                'drives' => $full->map(fn ($drive) => trim(($drive['FriendlyName'] ?? '').' ('.($drive['DriveLetter'] ?? '?').') '.$drive['PercentUsed'].' %'))->implode(', '),
+                'drives' => $full->map(fn ($drive) => $name($drive).' '.$drive['PercentUsed'].' %')->implode(', '),
             ]),
         ];
     }
