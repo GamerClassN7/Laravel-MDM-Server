@@ -36,3 +36,19 @@
     border-radius: var(--bs-border-radius-lg);
     background-color: var(--bs-body-bg);
 }
+
+// Tabs that scroll sideways (device detail): all tabs as tall as the one with a badge, so their
+// underlines line up on the bottom line.
+.nav-tabs-scroll {
+    overflow-x: auto;
+    overflow-y: hidden;
+
+    .nav-tabs .nav-item {
+        display: flex;
+    }
+
+    .nav-tabs .nav-link {
+        display: flex;
+        align-items: center;
+    }
+}

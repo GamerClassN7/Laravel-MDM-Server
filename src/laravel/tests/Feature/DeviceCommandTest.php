@@ -46,6 +46,9 @@ class DeviceCommandTest extends TestCase
         $this->signedJson('POST', "/api/device/commands/{$command->id}", ['status' => 'running', 'progress' => 40, 'message' => 'Windows Update: installing KB1'], 'secret-token')
             ->assertOk();
         $this->assertSame(['running', 40, 'Windows Update: installing KB1'], [$command->fresh()->status, $command->fresh()->progress, $command->fresh()->message]);
+        // 100 % only once it is done.
+        $this->signedJson('POST', "/api/device/commands/{$command->id}", ['status' => 'running', 'progress' => 100], 'secret-token')->assertOk();
+        $this->assertSame(99, $command->fresh()->progress);
         $this->assertNotNull($command->fresh()->started_at);
 
         $this->signedJson('POST', "/api/device/commands/{$command->id}", ['status' => 'succeeded'], 'secret-token')->assertOk();

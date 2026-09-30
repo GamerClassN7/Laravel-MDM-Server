@@ -659,7 +659,14 @@ function Invoke-PowerShellModules {
         [string]
         $Edition,
         [string]
-        $User
+        $User,
+        # With -Names: the version to install (known from the inventory), so the gallery is not
+        # searched again for every installed module.
+        [string]
+        $Version,
+        # Gets the percent (0-100) and a message while modules are updated.
+        [scriptblock]
+        $OnProgress
     )
 
     # Runs in each PowerShell edition. Only modules installed from the PowerShell Gallery with
@@ -672,12 +679,20 @@ function ConvertTo-ModuleVersion ($Value) {
     if ($base -notmatch '\.') { $base += '.0' }
     try { [version]$base } catch { [version]'0.0' }
 }
+function Write-MdmProgress ([int]$Percent, [string]$Message) {
+    # Read by the agent while the process runs (the output is only read at the end).
+    if ($ProgressPath) { try { Set-Content -Path $ProgressPath -Value "$Percent|$Message" -Encoding UTF8 } catch { } }
+}
 $outdated = @()
 $canCheck = (Get-Command -Name Get-InstalledModule -ErrorAction SilentlyContinue) -and (Get-Command -Name Find-Module -ErrorAction SilentlyContinue)
 # PowerShellGet 1 (Windows PowerShell) would ask to install the NuGet provider first.
 if ($canCheck -and $PSVersionTable.PSEdition -ne 'Core' -and -not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) { $canCheck = $false }
 if ($canCheck) {
-    $installed = @(Get-InstalledModule -ErrorAction SilentlyContinue | Where-Object { $_.Repository -eq 'PSGallery' } |
+    Write-MdmProgress 5 'Reading the installed modules'
+    # Only the modules asked for (installUpdate): listing all of them (Microsoft.Graph alone has
+    # dozens) and searching the gallery for each would take minutes.
+    $found = if ($Names) { Get-InstalledModule -Name $Names -ErrorAction SilentlyContinue } else { Get-InstalledModule -ErrorAction SilentlyContinue }
+    $installed = @($found | Where-Object { $_.Repository -eq 'PSGallery' } |
         ForEach-Object { [pscustomobject]@{ Name = $_.Name; Version = "$($_.Version)"; User = $null } })
     # Modules users installed for themselves (Install-Module -Scope CurrentUser) are not visible to
     # SYSTEM / root: read their PowerShellGet metadata. They are listed, not updated (only the
@@ -688,6 +703,7 @@ if ($canCheck) {
         $folder = if ($PSVersionTable.PSEdition -eq 'Core') { 'PowerShell' } else { 'WindowsPowerShell' }
         @(Get-ChildItem -Path "$env:SystemDrive\Users\*\Documents\$folder\Modules\*\*\PSGetModuleInfo.xml", "$env:SystemDrive\Users\*\OneDrive*\Documents\$folder\Modules\*\*\PSGetModuleInfo.xml" -ErrorAction SilentlyContinue)
     }
+    if ($Names) { $userModules = @($userModules | Where-Object { $Names -contains $_.Directory.Parent.Name }) }
     foreach ($file in $userModules) {
         try {
             $info = Import-Clixml -Path $file.FullName
@@ -700,7 +716,13 @@ if ($canCheck) {
     $installed = @($installed | Group-Object -Property Name, User | ForEach-Object { $_.Group | Sort-Object -Property { ConvertTo-ModuleVersion $_.Version } -Descending | Select-Object -First 1 })
     if ($installed) {
         $latest = @{}
-        foreach ($module in @(Find-Module -Name @($installed.Name | Select-Object -Unique) -Repository PSGallery -ErrorAction SilentlyContinue)) { $latest[$module.Name] = "$($module.Version)" }
+        if ($Names -and $TargetVersion) {
+            # The version the portal offered, found by the last inventory.
+            foreach ($name in $Names) { $latest[$name] = $TargetVersion }
+        } else {
+            Write-MdmProgress 10 'Searching the PowerShell Gallery'
+            foreach ($module in @(Find-Module -Name @($installed.Name | Select-Object -Unique) -Repository PSGallery -ErrorAction SilentlyContinue)) { $latest[$module.Name] = "$($module.Version)" }
+        }
         foreach ($module in $installed) {
             $available = $latest[$module.Name]
             if ($available -and (ConvertTo-ModuleVersion $available) -gt (ConvertTo-ModuleVersion $module.Version)) {
@@ -716,8 +738,12 @@ if ($Update) {
     # Installed next to the current version, like Update-Module always does; failed ones stay listed
     # with the reason. Users' own modules are left to the caller (updated as that user).
     $remaining = @()
+    $done = 0
+    $count = @($outdated | Where-Object { -not $_.User }).Count
     foreach ($module in $outdated) {
         if ($module.User) { $remaining += $module; continue }
+        Write-MdmProgress (15 + [int](80 * $done / [Math]::Max(1, $count))) "Update-Module $($module.Name) $($module.Version) -> $($module.Available)"
+        $done++
         try {
             Update-Module -Name $module.Name -RequiredVersion $module.Available -Force -Confirm:$false -ErrorAction Stop
         }
@@ -734,14 +760,26 @@ ConvertTo-Json -InputObject @($outdated) -Compress
     # Runs a script in a separate process (inherits the idle priority, stopped when the gallery
     # hangs) and returns the objects of its JSON output.
     $invoke = {
-        param ([string]$FilePath, [string[]]$Prefix, [string]$Script)
-        $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Script))
+        param ([string]$FilePath, [string[]]$Prefix, [string]$Script, [int]$TimeoutMinutes = 15)
         $output = [System.IO.Path]::GetTempFileName()
+        $progress = [System.IO.Path]::GetTempFileName()
+        $Script = "`$ProgressPath = '$($progress -replace "'", "''")'`n$Script"
+        $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Script))
         try {
             $process = Start-Process -FilePath $FilePath -ArgumentList (@($Prefix) + @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)) -RedirectStandardOutput $output -NoNewWindow -PassThru
-            if (-not $process.WaitForExit(900000)) {
-                try { $process.Kill() } catch { }
-                return
+            $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+            $last = $null
+            while (-not $process.WaitForExit(2000)) {
+                if ((Get-Date) -gt $deadline) {
+                    try { $process.Kill() } catch { }
+                    # Not an empty result: the caller must not take it for "nothing to update".
+                    return [pscustomobject]@{ TimedOut = $true; Minutes = $TimeoutMinutes }
+                }
+                $mark = (Get-Content -Path $progress -Raw -ErrorAction SilentlyContinue) -as [string]
+                if ($OnProgress -and $mark -and $mark -ne $last -and $mark -match '^(\d+)\|(.*)$') {
+                    $last = $mark
+                    & $OnProgress ([int]$Matches[1]) $Matches[2].Trim()
+                }
             }
             $json = (Get-Content -Path $output -Raw) -as [string]
             # Windows PowerShell 5.1 outputs a JSON array as one object: enumerate it explicitly.
@@ -750,7 +788,7 @@ ConvertTo-Json -InputObject @($outdated) -Compress
         catch {
         }
         finally {
-            Remove-Item -Path $output -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path $output, $progress -Force -ErrorAction SilentlyContinue
         }
     }
 
@@ -758,8 +796,13 @@ ConvertTo-Json -InputObject @($outdated) -Compress
     $quote = { param ($Value) "'" + ("$Value" -replace "'", "''") + "'" }
     foreach ($powershell in @(Get-PowerShellHosts -OnLinux $OnLinux | Where-Object { -not $Edition -or $_.Edition -eq $Edition })) {
         $prefix = if ($Update) { '$Update = $true' } else { '$Update = $false' }
-        $prefix += "`n`$Names = @($(@($Names | ForEach-Object { & $quote $_ }) -join ', '))`n`$OnlyUser = $(& $quote $User)"
-        foreach ($module in @(& $invoke $powershell.Path @() "$prefix`n$moduleScript")) {
+        $prefix += "`n`$Names = @($(@($Names | ForEach-Object { & $quote $_ }) -join ', '))`n`$OnlyUser = $(& $quote $User)`n`$TargetVersion = $(& $quote $Version)"
+        # Updates of big modules (Microsoft.Graph, Az) take long, listing does not.
+        foreach ($module in @(& $invoke $powershell.Path @() "$prefix`n$moduleScript" $(if ($Update) { 45 } else { 15 }))) {
+            if ($module.PSObject.Properties['TimedOut']) {
+                $result += [PSCustomObject]@{ Name = $(if ($Names) { $Names -join ', ' } else { 'PowerShell modules' }); Version = $null; Available = $null; Edition = $powershell.Edition; User = $null; Error = "Timed out after $($module.Minutes) minutes" }
+                continue
+            }
             $result += [PSCustomObject]@{ Name = $module.Name; Version = $module.Version; Available = $module.Available; Edition = $powershell.Edition; User = $module.User; Error = $module.Error }
         }
     }
@@ -785,7 +828,9 @@ ConvertTo-Json -InputObject @(`$failed) -Compress
             $asUser = Get-UserCommand -User $first.User
             if (-not $asUser) { continue }
             $failed = @{}
-            foreach ($item in @(& $invoke $asUser[0] (@($asUser[1..($asUser.Count - 1)]) + $powershell.Path) $userScript)) { $failed[$item.Name] = $item.Error }
+            foreach ($item in @(& $invoke $asUser[0] (@($asUser[1..($asUser.Count - 1)]) + $powershell.Path) $userScript 45)) {
+                if ($item.PSObject.Properties['TimedOut']) { foreach ($module in $group.Group) { $failed[$module.Name] = "Timed out after $($item.Minutes) minutes" } } else { $failed[$item.Name] = $item.Error }
+            }
             foreach ($module in $group.Group) {
                 if ($failed.ContainsKey($module.Name)) { $module.Error = $failed[$module.Name] } else { $result = @($result | Where-Object { $_ -ne $module }) }
             }
@@ -2068,7 +2113,7 @@ function Start-InventoryCollection {
         param ($OnLinux)
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
         $data = @{}
-        try { $data['module_updates'] = @(Invoke-PowerShellModules -OnLinux $OnLinux) } catch { }
+        try { $data['module_updates'] = @(Invoke-PowerShellModules -OnLinux $OnLinux | Where-Object { $_.Version }) } catch { }
         $packages = @()
         if ($OnLinux) {
             try { $data['os_updates'] = @(Get-AptUpdates) } catch { }
@@ -2337,6 +2382,75 @@ function Test-UpdateParams {
     return @{ kind = $kind; id = "$($Params.id)"; user = "$($Params.user)"; edition = "$($Params.edition)"; version = "$($Params.version)" }
 }
 
+function Save-CommandState {
+    # The update being installed, the ones waiting and a waiting agent update, so they go on
+    # after the agent restarts (it restarts itself when an update replaced its PowerShell).
+    $state = @{
+        running = if ($script:UpdateJob) { @{ id = $script:UpdateCommandId } } else { $null }
+        queue = @($script:UpdateQueue.ToArray() | ForEach-Object { @{ id = $_.Id; params = $_.Params } })
+        deferred_agent_update = $script:DeferredAgentUpdate
+    }
+    try {
+        $state | ConvertTo-Json -Depth 5 -Compress | Set-Content -Path "$AgentDir/commands-state.json" -Encoding UTF8
+    }
+    catch {
+        Write-AgentLog "Command state not saved: $($_.Exception.Message)"
+    }
+}
+
+function Restore-CommandState {
+    # After a restart: the result of the update that was running (written by its job) or that it
+    # was interrupted, then the waiting ones are started again.
+    $path = "$AgentDir/commands-state.json"
+    if (-not (Test-Path -Path $path)) {
+        return
+    }
+    try {
+        $state = Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        Remove-Item -Path $path -Force -ErrorAction SilentlyContinue
+        return
+    }
+    $resultPath = "$AgentDir/update-result.json"
+    if ($state.running -and $state.running.id) {
+        $result = try { Get-Content -Path $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $null }
+        if ($result -and "$($result.CommandId)" -eq "$($state.running.id)") {
+            Send-UpdateResult -Id $state.running.id -Result $result
+        } else {
+            [void](Send-CommandStatus -Id $state.running.id -Status failed -Message 'Interrupted: the agent restarted before the update finished')
+        }
+    }
+    Remove-Item -Path $resultPath -Force -ErrorAction SilentlyContinue
+    foreach ($item in @($state.queue)) {
+        if (-not $item) { continue }
+        $params = $null
+        if ($item.params) {
+            try { $params = Test-UpdateParams -Params $item.params } catch { [void](Send-CommandStatus -Id $item.id -Status failed -Message "Refused by the agent: $($_.Exception.Message)"); continue }
+        }
+        $script:UpdateQueue.Enqueue(@{ Id = $item.id; Params = $params })
+    }
+    if ($state.deferred_agent_update) {
+        $script:DeferredAgentUpdate = $state.deferred_agent_update
+    }
+    Remove-Item -Path $path -Force -ErrorAction SilentlyContinue
+    if ($script:UpdateQueue.Count -gt 0 -or $script:DeferredAgentUpdate) {
+        Write-AgentLog "Resuming $($script:UpdateQueue.Count) waiting update(s)$(if ($script:DeferredAgentUpdate) { ' and the agent update' })"
+        Start-NextUpdate
+    }
+}
+
+function Send-UpdateResult {
+    param ($Id, $Result)
+
+    $restart = if ($Result.Restart) { ', restart required' } else { '' }
+    if (@($Result.Failures).Count -gt 0) {
+        [void](Send-CommandStatus -Id $Id -Status failed -Message ((@($Result.Failures) -join '; ') + $restart))
+    } else {
+        [void](Send-CommandStatus -Id $Id -Status succeeded -Progress 100 -Message "Done$restart")
+    }
+}
+
 function Start-UpdateJob {
     # Installs OS, package and module updates in the background, or a single one (-Params of
     # installUpdate). Every step is logged to agent.log when the job ends (see Complete-UpdateJob),
@@ -2353,8 +2467,13 @@ function Start-UpdateJob {
     $progressFile = "$AgentDir/update-progress.json"
     Remove-Item -Path $progressFile -Force -ErrorAction SilentlyContinue
     [void](Send-CommandStatus -Id $CommandId -Status running -Progress 0 -Message 'Starting')
-    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Install-PowerShellRelease', 'Get-PowerShellReleaseUpdate', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log", $progressFile, $Params -ScriptBlock {
-        param ($OnLinux, $OutputLog, $ProgressFile, $Params)
+    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Install-PowerShellRelease', 'Get-PowerShellReleaseUpdate', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log", $progressFile, $Params, $CommandId, "$AgentDir/update-result.json" -ScriptBlock {
+        param ($OnLinux, $OutputLog, $ProgressFile, $Params, $CommandId, $ResultFile)
+
+        # When an update replaces the PowerShell the agent runs in (apt, a GitHub release, snap,
+        # winget), the agent has to start again in the new one: compared at the end.
+        $runtime = @('pwsh.dll', 'System.Management.Automation.dll') | ForEach-Object { Join-Path $PSHOME $_ } | Where-Object { Test-Path -Path $_ } | Select-Object -First 1
+        $runtimeBefore = if ($runtime) { $item = Get-Item -Path $runtime; "$($item.Length)|$($item.LastWriteTimeUtc.Ticks)" }
 
         if ((Test-Path -Path $OutputLog) -and (Get-Item -Path $OutputLog).Length -gt 2MB) {
             Move-Item -Path $OutputLog -Destination "$OutputLog.1" -Force
@@ -2461,7 +2580,7 @@ function Start-UpdateJob {
                     Set-Progress 10 "Update-Module $id"
                     if (-not @(Get-PowerShellHosts -OnLinux $OnLinux | Where-Object { $_.Edition -eq $Params.edition })) { [void]$state.Failures.Add("$($Params.edition) is not installed"); break }
                     try {
-                        $failed = @(Invoke-PowerShellModules -OnLinux $OnLinux -Update -Names @($id) -Edition $Params.edition -User $Params.user)
+                        $failed = @(Invoke-PowerShellModules -OnLinux $OnLinux -Update -Names @($id) -Edition $Params.edition -User $Params.user -Version $Params.version -OnProgress { param ($p, $m) Set-Progress $p $m })
                         foreach ($module in $failed) {
                             $reason = if ($module.Error) { $module.Error } else { 'not updated' }
                             [void]$state.Failures.Add("PowerShell module $($module.Name): $reason")
@@ -2543,7 +2662,7 @@ function Start-UpdateJob {
             }
             Enter-Step 90 100 'PowerShell modules'
             try {
-                $failed = @(Invoke-PowerShellModules -OnLinux $OnLinux -Update)
+                $failed = @(Invoke-PowerShellModules -OnLinux $OnLinux -Update -OnProgress { param ($p, $m) Set-Progress $p $m })
                 if (-not $failed) { 'PowerShell modules: up to date' }
                 foreach ($module in $failed) {
                     $owner = if ($module.User) { ", user $($module.User)" } else { '' }
@@ -2560,9 +2679,19 @@ function Start-UpdateJob {
         $restart = if ($OnLinux) { Test-Path -Path /var/run/reboot-required } else { $false }
         if ($restart) { 'Restart required' }
 
-        # The result for the portal, after the log lines.
-        [pscustomobject]@{ UpdateResult = $true; Failures = @($state.Failures); Restart = $restart; RestartAgent = [bool]$state.RestartAgent }
+        $runtimeAfter = if ($runtime -and (Test-Path -Path $runtime)) { $item = Get-Item -Path $runtime; "$($item.Length)|$($item.LastWriteTimeUtc.Ticks)" }
+        if ($runtime -and $runtimeAfter -ne $runtimeBefore) {
+            'PowerShell of the agent was updated, the agent restarts'
+            $state.RestartAgent = $true
+        }
+
+        # The result for the portal, after the log lines; also in a file, in case the agent is
+        # gone (restarted) before it reads the job.
+        $result = [pscustomobject]@{ UpdateResult = $true; CommandId = $CommandId; Failures = @($state.Failures); Restart = $restart; RestartAgent = [bool]$state.RestartAgent }
+        try { $result | ConvertTo-Json -Depth 4 -Compress | Set-Content -Path $ResultFile -Encoding UTF8 } catch { }
+        $result
     }
+    Save-CommandState
     Write-AgentLog "Installing updates started$(if ($Params) { " ($($Params.kind) $($Params.id))" }) (details in updates.log)"
 }
 
@@ -2609,17 +2738,22 @@ function Complete-UpdateJob {
     Remove-Item -Path "$AgentDir/update-progress.json" -Force -ErrorAction SilentlyContinue
     $script:UpdateJob = $null
 
-    $restart = if ($result -and $result.Restart) { ', restart required' } else { '' }
+    $resultPath = "$AgentDir/update-result.json"
+    if (-not $result -and (Test-Path -Path $resultPath)) {
+        $saved = try { Get-Content -Path $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $null }
+        if ($saved -and "$($saved.CommandId)" -eq "$($script:UpdateCommandId)") { $result = $saved }
+    }
+    Remove-Item -Path $resultPath -Force -ErrorAction SilentlyContinue
     if (-not $result) {
         [void](Send-CommandStatus -Id $script:UpdateCommandId -Status failed -Message "The update job ended unexpectedly ($($job.State))")
-    } elseif (@($result.Failures).Count -gt 0) {
-        [void](Send-CommandStatus -Id $script:UpdateCommandId -Status failed -Message ((@($result.Failures) -join '; ') + $restart))
     } else {
-        [void](Send-CommandStatus -Id $script:UpdateCommandId -Status succeeded -Progress 100 -Message "Done$restart")
+        Send-UpdateResult -Id $script:UpdateCommandId -Result $result
     }
     $script:UpdateCommandId = $null
+    Save-CommandState
     if ($result -and $result.RestartAgent) {
-        # The agent runs in the PowerShell that was just replaced: start it again in the new one.
+        # The agent runs in the PowerShell that was just replaced: start it again in the new one,
+        # the waiting updates go on after the restart (commands-state.json).
         Write-AgentLog 'PowerShell updated, restarting the agent'
         if (-not $OnLinux) {
             Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile -Command "Start-Sleep -Seconds 5; Start-ScheduledTask -TaskName Laravel-MDM-Agent"'
@@ -2644,6 +2778,7 @@ function Start-NextUpdate {
     if ($script:DeferredAgentUpdate) {
         $id = $script:DeferredAgentUpdate
         $script:DeferredAgentUpdate = $null
+        Save-CommandState
         Update-Agent -CommandId $id
     }
 }
@@ -2670,6 +2805,7 @@ function Invoke-DeviceCommand {
             # Replacing the agent ends the update job: the agent update waits for it.
             if ($script:UpdateJob) {
                 $script:DeferredAgentUpdate = $Id
+                Save-CommandState
                 [void](Send-CommandStatus -Id $Id -Status running -Message 'Waiting for the updates to finish')
                 return
             }
@@ -2697,6 +2833,7 @@ function Invoke-DeviceCommand {
                     return
                 }
                 $script:UpdateQueue.Enqueue(@{ Id = $Id; Params = $updateParams })
+                Save-CommandState
                 [void](Send-CommandStatus -Id $Id -Status running -Progress 0 -Message 'Waiting for the updates that are being installed')
                 return
             }
@@ -3167,6 +3304,7 @@ function Start-Agent {
             if (-not $pendingChecked -and (Get-Date) -ge $nextPendingCheck) {
                 # A restart or agent update of the last run is done now.
                 $pendingChecked = Complete-PendingCommand
+                if ($pendingChecked) { Restore-CommandState }
                 $nextPendingCheck = (Get-Date).AddSeconds(30)
             }
 

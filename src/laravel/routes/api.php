@@ -170,7 +170,8 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         $message = $request->json('message');
         $values = [
             'status' => $status,
-            'progress' => is_numeric($progress) ? max(0, min(100, (int) $progress)) : ($status === 'succeeded' ? 100 : null),
+            // 100 % only once it is done: a running command at 100 % would look stuck.
+            'progress' => is_numeric($progress) ? max(0, min($status === 'running' ? 99 : 100, (int) $progress)) : ($status === 'succeeded' ? 100 : null),
             'message' => is_string($message) && $message !== '' ? mb_strcut($message, 0, 1000) : null,
             'updated_at' => now(),
         ];

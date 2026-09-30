@@ -118,8 +118,10 @@
     </div>
 
     <div class="mt-4">
-        {{-- Scrolls sideways when the tabs do not fit; the active one is kept in view. --}}
-        <ul class="nav nav-tabs flex-nowrap text-nowrap overflow-x-auto overflow-y-hidden" role="tablist" x-init="$nextTick(() => { const tab = $el.querySelector('.nav-link.active'); if (tab) $el.scrollLeft = Math.max(0, tab.getBoundingClientRect().right - $el.getBoundingClientRect().right + $el.scrollLeft + 16) })">
+        {{-- Scrolls sideways when the tabs do not fit; the active one is kept in view. The wrapper
+             scrolls, not the list: it would clip the underline of the active tab. --}}
+        <div class="nav-tabs-scroll" x-init="$nextTick(() => { const tab = $el.querySelector('.nav-link.active'); if (tab) $el.scrollLeft = Math.max(0, tab.getBoundingClientRect().right - $el.getBoundingClientRect().right + $el.scrollLeft + 16) })">
+        <ul class="nav nav-tabs flex-nowrap text-nowrap" role="tablist">
             @if (!empty($selectedDevice->drives))
                 <li class="nav-item" role="presentation">
                     <button aria-controls="drives-tab-pane" aria-selected="{{ $activeTab === 'drives' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'drives' ? 'active' : '' }}" x-on:click="$wire.tab = 'drives'" data-bs-target="#drives-tab-pane" data-bs-toggle="tab" id="drives-tab" role="tab" type="button">
@@ -200,6 +202,7 @@
                 </button>
             </li>
         </ul>
+        </div>
 
         <div class="tab-content pt-3">
             @if (!empty($selectedDevice->drives))
