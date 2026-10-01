@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.10.4'
+$AgentVersion = '1.10.5'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -430,6 +430,23 @@ function Install-PowerShellRelease {
     if (-not $pwsh) {
         [void]$State.Failures.Add('PowerShell 7 is not installed')
         return
+    }
+    switch (Get-PowerShellManager -Path $pwsh.Path -OnLinux $OnLinux) {
+        'snap' {
+            # Read-only: the snap is refreshed instead (it may not have this version yet).
+            $output = @(snap refresh powershell 2>&1 | ForEach-Object { "$_" })
+            if ($LASTEXITCODE) { [void]$State.Failures.Add("PowerShell: snap refresh powershell exit $LASTEXITCODE, $((@($output) | Select-Object -Last 2) -join ' | ')"); return }
+            $installed = "$(& $pwsh.Path -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()' 2>$null)".Trim()
+            "PowerShell: installed from snap, snap refresh: $((@($output) | Select-Object -Last 1)) (version $installed)"
+            if ($installed -ne $Version) {
+                [void]$State.Failures.Add("PowerShell is installed from snap, which has $installed, not $Version yet: snap updates it once the release is there")
+            }
+            return
+        }
+        'store' {
+            [void]$State.Failures.Add('PowerShell is installed from the Microsoft Store, which updates it')
+            return
+        }
     }
     $base = "https://github.com/PowerShell/PowerShell/releases/download/v$Version"
     $machine = if ($OnLinux) { "$(uname -m)" } else { "$env:PROCESSOR_ARCHITECTURE" }
@@ -1196,6 +1213,20 @@ function Get-SnapUpdates {
     }
 }
 
+function Get-PowerShellManager {
+    # Who updates this PowerShell 7 instead of a release from GitHub: 'snap' (read-only, snap
+    # refreshes it) or 'store' (Microsoft Store); $null when it is a plain installation.
+    param ([string]$Path, [bool]$OnLinux)
+
+    if ($OnLinux) {
+        $real = "$(readlink -f $Path 2>$null)"
+        if ($Path -like '/snap/*' -or $real -like '/snap/*' -or $real -eq '/usr/bin/snap') { return 'snap' }
+    } elseif ($Path -like '*\WindowsApps\*') {
+        return 'store'
+    }
+    return $null
+}
+
 function Get-PowerShellReleaseUpdate {
     param (
         [bool]
@@ -1206,6 +1237,10 @@ function Get-PowerShellReleaseUpdate {
 
     $pwsh = @(Get-PowerShellHosts -OnLinux $OnLinux | Where-Object { $_.Edition -eq 'PowerShell 7' }) | Select-Object -First 1
     if (-not $pwsh -or @($Known | Where-Object { "$($_.Id) $($_.Title)" -match '(^|\s)(powershell|Microsoft\.PowerShell)(\s|$)' })) {
+        return
+    }
+    # snap and the Store update it themselves (snap refresh --list shows a waiting snap update).
+    if (Get-PowerShellManager -Path $pwsh.Path -OnLinux $OnLinux) {
         return
     }
 
@@ -2303,7 +2338,7 @@ function Start-AgentJob {
 
 function Start-InventoryCollection {
     # Windows Update search and winget are expensive, run them rarely in a separate idle-priority process.
-    return Start-AgentJob -Name 'inventory' -Functions 'Get-WingetSoftware', 'Get-WindowsUpdate', 'Get-AptUpdates', 'Get-UserCommand', 'Get-FlatpakUpdates', 'Get-SnapUpdates', 'Get-PowerShellReleaseUpdate', 'ConvertFrom-WingetTable', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules' -ArgumentList $OnLinux -ScriptBlock {
+    return Start-AgentJob -Name 'inventory' -Functions 'Get-WingetSoftware', 'Get-WindowsUpdate', 'Get-AptUpdates', 'Get-UserCommand', 'Get-FlatpakUpdates', 'Get-SnapUpdates', 'Get-PowerShellReleaseUpdate', 'Get-PowerShellManager', 'ConvertFrom-WingetTable', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules' -ArgumentList $OnLinux -ScriptBlock {
         param ($OnLinux)
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
         $data = @{}
@@ -2760,7 +2795,7 @@ function Start-UpdateJob {
     $progressFile = "$AgentDir/update-progress.json"
     Remove-Item -Path $progressFile -Force -ErrorAction SilentlyContinue
     [void](Send-CommandStatus -Id $CommandId -Status running -Progress 0 -Message 'Starting')
-    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Install-PowerShellRelease', 'Get-PowerShellReleaseUpdate', 'Get-WingetPath', 'Get-WingetSoftware', 'ConvertFrom-WingetTable', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log", $progressFile, $Params, $CommandId, "$AgentDir/update-result.json" -ScriptBlock {
+    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Install-PowerShellRelease', 'Get-PowerShellReleaseUpdate', 'Get-PowerShellManager', 'Get-WingetPath', 'Get-WingetSoftware', 'ConvertFrom-WingetTable', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log", $progressFile, $Params, $CommandId, "$AgentDir/update-result.json" -ScriptBlock {
         param ($OnLinux, $OutputLog, $ProgressFile, $Params, $CommandId, $ResultFile)
 
         # When an update replaces the PowerShell the agent runs in (apt, a GitHub release, snap,
