@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.10.2'
+$AgentVersion = '1.10.3'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -279,7 +279,7 @@ function Get-WindowsUpdate {
 function Install-WindowsUpdate {
     # Returns log lines. ResultCode: 2 succeeded, 3 succeeded with errors, 4 failed, 5 aborted.
     # -UpdateId installs only that update; -OnProgress gets the percent (0-100) and a message;
-    # $State.Failures collects what failed.
+    # $State.Failures collects what failed, $State.Restart is set when a restart is needed.
     param (
         [string]
         $UpdateId,
@@ -290,60 +290,119 @@ function Install-WindowsUpdate {
     )
 
     $results = @{ 0 = 'not started'; 1 = 'in progress'; 2 = 'succeeded'; 3 = 'succeeded with errors'; 4 = 'failed'; 5 = 'aborted' }
+    # The code is what to search for; the common ones are named.
+    $describe = {
+        param ([int]$HResult)
+        if (-not $HResult) { return '' }
+        $code = '0x{0:X8}' -f $HResult
+        $known = @{
+            '0x80240016' = 'another installation is running'; '0x80240017' = 'not applicable to this device'
+            '0x8024001E' = 'Windows Update is shutting down'; '0x80240022' = 'all updates failed'
+            '0x8024200B' = 'the installer of the update failed'; '0x80070005' = 'access denied'
+            '0x80070643' = 'the installer failed (MSI)'; '0x800F0922' = 'not enough space in the system reserved partition, or the network failed'
+            '0x80070070' = 'not enough disk space'; '0x8024402C' = 'the update server is not reachable'
+            '0x80072EFD' = 'the update server is not reachable'; '0x80072EE2' = 'the connection to the update server timed out'
+            '0x80240FFF' = 'unexpected Windows Update error'; '0x8024A105' = 'Windows Update needs a restart first'
+        }
+        if ($known[$code]) { " ($code, $($known[$code]))" } else { " ($code)" }
+    }
     $Session = New-Object -ComObject Microsoft.Update.Session
+    try { $Session.ClientApplicationID = 'Laravel-MDM agent' } catch { }
     # Software and drivers (the list shows both: "Intel net Driver Update", "NVIDIA Display Driver
     # Update"), without the hidden ones.
     $found = $Session.CreateUpdateSearcher().Search('IsInstalled=0 and IsHidden=0').Updates
     $Updates = New-Object -ComObject Microsoft.Update.UpdateColl
+    $waiting = @()
     foreach ($update in $found) {
-        if (-not $UpdateId -or $update.Identity.UpdateID -eq $UpdateId) {
-            if (-not $update.EulaAccepted) { $update.AcceptEula() }
-            $Updates.Add($update) | Out-Null
+        if ($UpdateId -and $update.Identity.UpdateID -ne $UpdateId) { continue }
+        if ($update.RebootRequired) {
+            # Installed already, Windows lists it until the restart finishes it.
+            $waiting += $update.Title
+            continue
         }
+        if ($update.InstallationBehavior.CanRequestUserInput) {
+            # Would wait for a window nobody sees (SYSTEM has no desktop).
+            [void]$State.Failures.Add("$($update.Title): asks for user input, install it on the device")
+            continue
+        }
+        if (-not $update.EulaAccepted) { $update.AcceptEula() }
+        $Updates.Add($update) | Out-Null
+    }
+    if ($waiting) {
+        "Windows Update: installed, waiting for a restart: $($waiting -join '; ')"
+        $State.Restart = $true
     }
     if ($Updates.Count -eq 0) {
-        if ($UpdateId) {
+        if ($UpdateId -and -not $waiting -and $State.Failures.Count -eq 0) {
             'Windows Update: the update is not offered anymore (installed or replaced)'
             [void]$State.Failures.Add('The update is not offered by Windows Update anymore (installed or replaced), the list is collected again')
-        } else {
+        } elseif (-not $waiting) {
             'Windows Update: nothing to install'
         }
         return
     }
     "Windows Update: $($Updates.Count) update(s): $(@($Updates | ForEach-Object { $_.Title }) -join '; ')"
 
+    # Windows installs on its own too: one installation at a time, wait for it (30 min at most).
+    $Installer = $Session.CreateUpdateInstaller()
+    $deadline = (Get-Date).AddMinutes(30)
+    if ($Installer.IsBusy) {
+        'Windows Update: another installation is running, waiting for it'
+        & $OnProgress 0 'Windows Update: waiting for another installation'
+        while ($Installer.IsBusy -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 10 }
+    }
+
     & $OnProgress 0 'Windows Update: downloading'
     $Downloader = $Session.CreateUpdateDownloader()
     $Downloader.Updates = $Updates
-    $download = $Downloader.Download()
-    "Windows Update: download $($results[[int]$download.ResultCode])"
-    if ([int]$download.ResultCode -in 4, 5) {
-        [void]$State.Failures.Add("Windows Update: download $($results[[int]$download.ResultCode])")
+    # In the foreground: the default background download is throttled and can take hours.
+    try { $Downloader.Priority = 3 } catch { }
+    try {
+        $download = $Downloader.Download()
+        "Windows Update: download $($results[[int]$download.ResultCode])"
+    }
+    catch {
+        "Windows Update: download failed: $($_.Exception.Message)"
+        [void]$State.Failures.Add("Windows Update: download failed$(& $describe $_.Exception.HResult)")
+        return
     }
 
     # One by one, so the progress moves with each installed update.
     $reboot = $false
     for ($i = 0; $i -lt $Updates.Count; $i++) {
         $update = $Updates.Item($i)
+        if (-not $update.IsDownloaded) {
+            $hresult = try { $download.GetUpdateResult($i).HResult } catch { 0 }
+            "Windows Update: $($update.Title): not downloaded$(& $describe $hresult)"
+            [void]$State.Failures.Add("$($update.Title): download failed$(& $describe $hresult)")
+            continue
+        }
         & $OnProgress (30 + [int](70 * $i / $Updates.Count)) "Windows Update: installing $($update.Title)"
         $single = New-Object -ComObject Microsoft.Update.UpdateColl
         $single.Add($update) | Out-Null
         $Installer = $Session.CreateUpdateInstaller()
+        # Never wait for a prompt or a source medium.
+        try { $Installer.ForceQuiet = $true } catch { }
+        try { $Installer.AllowSourcePrompts = $false } catch { }
         $Installer.Updates = $single
+        $hresult = 0
         try {
             $install = $Installer.Install()
             $code = [int]$install.ResultCode
+            $hresult = try { $install.GetUpdateResult(0).HResult } catch { 0 }
             if ($install.RebootRequired) { $reboot = $true }
         }
         catch {
             $code = 4
+            $hresult = $_.Exception.HResult
             "Windows Update: $($update.Title): $($_.Exception.Message)"
         }
         if ($code -ne 2) {
-            "Windows Update: $($update.Title): $($results[$code])"
-            if ($code -ne 3) { [void]$State.Failures.Add("$($update.Title): $($results[$code])") }
+            "Windows Update: $($update.Title): $($results[$code])$(& $describe $hresult)"
+            if ($code -ne 3) { [void]$State.Failures.Add("$($update.Title): $($results[$code])$(& $describe $hresult)") }
         }
     }
+    if ($reboot) { $State.Restart = $true }
     & $OnProgress 100 'Windows Update: done'
     "Windows Update: install finished$(if ($reboot) { ', restart required' })"
 }
@@ -764,29 +823,35 @@ if ($Update) {
         if ($module.User) { $remaining += $module; continue }
         Write-MdmProgress (15 + [int](80 * $done / [Math]::Max(1, $count))) "Update-Module $($module.Name) $($module.Version) -> $($module.Available)"
         $done++
+        # Install-Module next to the current version is what Update-Module does, without its
+        # problems: it reads the dates of the installation, which modules not installed with
+        # Install-Module lack (Microsoft.WinGet.Client: "Cannot convert null to type
+        # System.DateTime"), and it cannot skip the publisher check (a module signed with a new
+        # certificate). Update-Module is the fallback.
+        $errors = @()
         try {
-            Update-Module -Name $module.Name -RequiredVersion $module.Available -Force -Confirm:$false -ErrorAction Stop
+            $install = @{ Name = $module.Name; RequiredVersion = $module.Available; Repository = 'PSGallery'; Scope = 'AllUsers'; Force = $true; Confirm = $false; ErrorAction = 'Stop'; WarningAction = 'SilentlyContinue' }
+            $parameters = (Get-Command -Name Install-Module).Parameters
+            foreach ($switch in 'AllowClobber', 'SkipPublisherCheck', 'AcceptLicense') { if ($parameters.ContainsKey($switch)) { $install[$switch] = $true } }
+            Install-Module @install
         }
         catch {
-            # Update-Module reads the dates of the installation, which modules not installed with
-            # Install-Module lack (Microsoft.WinGet.Client: "Cannot convert null to type
-            # System.DateTime"). Installing the version next to the old one is the same result.
-            $updateError = $_.Exception.Message
-            try {
-                $install = @{ Name = $module.Name; RequiredVersion = $module.Available; Repository = 'PSGallery'; Scope = 'AllUsers'; Force = $true; Confirm = $false; ErrorAction = 'Stop' }
-                $parameters = (Get-Command -Name Install-Module).Parameters
-                foreach ($switch in 'AllowClobber', 'SkipPublisherCheck', 'AcceptLicense') { if ($parameters.ContainsKey($switch)) { $install[$switch] = $true } }
-                Install-Module @install
-            }
-            catch {
-                $module | Add-Member -NotePropertyName Error -NotePropertyValue "$updateError; Install-Module: $($_.Exception.Message)"
-                $remaining += $module
-            }
+            $errors += "Install-Module: $($_.Exception.Message)"
+            try { Update-Module -Name $module.Name -RequiredVersion $module.Available -Force -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue }
+            catch { $errors += "Update-Module: $($_.Exception.Message)" }
+        }
+        # Only what is installed afterwards counts.
+        if (-not (Get-InstalledModule -Name $module.Name -RequiredVersion $module.Available -ErrorAction SilentlyContinue)) {
+            if (-not $errors) { $errors += "version $($module.Available) is not installed afterwards" }
+            $module | Add-Member -NotePropertyName Error -NotePropertyValue ($errors -join '; ') -Force
+            $remaining += $module
         }
     }
     $outdated = $remaining
 }
-ConvertTo-Json -InputObject @($outdated) -Compress
+# Into a file: Windows PowerShell writes warnings to the standard output when it is redirected,
+# which would break the JSON.
+Set-Content -Path $ResultPath -Value (ConvertTo-Json -InputObject @($outdated) -Compress) -Encoding UTF8
 '@
 
     # Runs a script in a separate process (inherits the idle priority, stopped when the gallery
@@ -794,15 +859,19 @@ ConvertTo-Json -InputObject @($outdated) -Compress
     $invoke = {
         param ([string]$FilePath, [string[]]$Prefix, [string]$Script, [int]$TimeoutMinutes = 15)
         $output = [System.IO.Path]::GetTempFileName()
+        $errorOutput = [System.IO.Path]::GetTempFileName()
         $progress = [System.IO.Path]::GetTempFileName()
-        $Script = "`$ProgressPath = '$($progress -replace "'", "''")'`n$Script"
+        $resultFile = [System.IO.Path]::GetTempFileName()
+        Remove-Item -Path $resultFile -Force -ErrorAction SilentlyContinue
+        $Script = "`$ProgressPath = '$($progress -replace "'", "''")'`n`$ResultPath = '$($resultFile -replace "'", "''")'`n$Script"
         $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Script))
         try {
-            $process = Start-Process -FilePath $FilePath -ArgumentList (@($Prefix) + @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)) -RedirectStandardOutput $output -NoNewWindow -PassThru
+            $process = Start-Process -FilePath $FilePath -ArgumentList (@($Prefix) + @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)) -RedirectStandardOutput $output -RedirectStandardError $errorOutput -NoNewWindow -PassThru
             $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
             $last = $null
             while (-not $process.WaitForExit(2000)) {
                 if ((Get-Date) -gt $deadline) {
+                    try { & taskkill.exe /PID $process.Id /T /F 2>&1 | Out-Null } catch { }
                     try { $process.Kill() } catch { }
                     # Not an empty result: the caller must not take it for "nothing to update".
                     return [pscustomobject]@{ TimedOut = $true; Minutes = $TimeoutMinutes }
@@ -813,14 +882,20 @@ ConvertTo-Json -InputObject @($outdated) -Compress
                     & $OnProgress ([int]$Matches[1]) $Matches[2].Trim()
                 }
             }
-            $json = (Get-Content -Path $output -Raw) -as [string]
+            $json = (Get-Content -Path $resultFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue) -as [string]
+            if (-not $json) {
+                # Ended without a result: what it wrote tells why.
+                $tail = @(Get-Content -Path $output, $errorOutput -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' } | Select-Object -Last 3) -join ' | '
+                return [pscustomobject]@{ Failed = "$(Split-Path -Leaf $FilePath) ended without a result$(if ($tail) { ": $tail" })" }
+            }
             # Windows PowerShell 5.1 outputs a JSON array as one object: enumerate it explicitly.
-            if ($json) { foreach ($item in @($json.Trim() | ConvertFrom-Json | ForEach-Object { $_ })) { if ($item) { $item } } }
+            foreach ($item in @($json.Trim() | ConvertFrom-Json | ForEach-Object { $_ })) { if ($item) { $item } }
         }
         catch {
+            [pscustomobject]@{ Failed = "$(Split-Path -Leaf $FilePath): $($_.Exception.Message)" }
         }
         finally {
-            Remove-Item -Path $output, $progress -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path $output, $errorOutput, $progress, $resultFile -Force -ErrorAction SilentlyContinue
         }
     }
 
@@ -831,8 +906,10 @@ ConvertTo-Json -InputObject @($outdated) -Compress
         $prefix += "`n`$Names = @($(@($Names | ForEach-Object { & $quote $_ }) -join ', '))`n`$OnlyUser = $(& $quote $User)`n`$TargetVersion = $(& $quote $Version)"
         # Updates of big modules (Microsoft.Graph, Az) take long, listing does not.
         foreach ($module in @(& $invoke $powershell.Path @() "$prefix`n$moduleScript" $(if ($Update) { 45 } else { 15 }))) {
-            if ($module.PSObject.Properties['TimedOut']) {
-                $result += [PSCustomObject]@{ Name = $(if ($Names) { $Names -join ', ' } else { 'PowerShell modules' }); Version = $null; Available = $null; Edition = $powershell.Edition; User = $null; Error = "Timed out after $($module.Minutes) minutes" }
+            if ($module.PSObject.Properties['TimedOut'] -or $module.PSObject.Properties['Failed']) {
+                $reason = if ($module.PSObject.Properties['TimedOut']) { "Timed out after $($module.Minutes) minutes" } else { $module.Failed }
+                if (-not $Update) { continue }
+                $result += [PSCustomObject]@{ Name = $(if ($Names) { $Names -join ', ' } else { 'PowerShell modules' }); Version = $null; Available = $null; Edition = $powershell.Edition; User = $null; Error = $reason }
                 continue
             }
             $result += [PSCustomObject]@{ Name = $module.Name; Version = $module.Version; Available = $module.Available; Edition = $powershell.Edition; User = $module.User; Error = $module.Error }
@@ -855,13 +932,15 @@ foreach (`$module in @(ConvertFrom-Json '$($modules -replace "'", "''")')) {
     try { Update-Module -Name `$module.Name -RequiredVersion `$module.Available -Force -Confirm:`$false -ErrorAction Stop }
     catch { `$failed += [pscustomobject]@{ Name = `$module.Name; Error = `$_.Exception.Message } }
 }
-ConvertTo-Json -InputObject @(`$failed) -Compress
+Set-Content -Path `$ResultPath -Value (ConvertTo-Json -InputObject @(`$failed) -Compress) -Encoding UTF8
 "@
             $asUser = Get-UserCommand -User $first.User
             if (-not $asUser) { continue }
             $failed = @{}
             foreach ($item in @(& $invoke $asUser[0] (@($asUser[1..($asUser.Count - 1)]) + $powershell.Path) $userScript 45)) {
-                if ($item.PSObject.Properties['TimedOut']) { foreach ($module in $group.Group) { $failed[$module.Name] = "Timed out after $($item.Minutes) minutes" } } else { $failed[$item.Name] = $item.Error }
+                if ($item.PSObject.Properties['TimedOut']) { foreach ($module in $group.Group) { $failed[$module.Name] = "Timed out after $($item.Minutes) minutes" } }
+                elseif ($item.PSObject.Properties['Failed']) { foreach ($module in $group.Group) { $failed[$module.Name] = $item.Failed } }
+                else { $failed[$item.Name] = $item.Error }
             }
             foreach ($module in $group.Group) {
                 if ($failed.ContainsKey($module.Name)) { $module.Error = $failed[$module.Name] } else { $result = @($result | Where-Object { $_ -ne $module }) }
@@ -2915,7 +2994,7 @@ function Start-UpdateJob {
                 "PowerShell modules failed: $($_.Exception.Message)"
             }
         }
-        $restart = if ($OnLinux) { Test-Path -Path /var/run/reboot-required } else { $false }
+        $restart = if ($OnLinux) { Test-Path -Path /var/run/reboot-required } else { [bool]$state.Restart }
         if ($restart) { 'Restart required' }
 
         $runtimeAfter = if ($runtime -and (Test-Path -Path $runtime)) { $item = Get-Item -Path $runtime; "$($item.Length)|$($item.LastWriteTimeUtc.Ticks)" }

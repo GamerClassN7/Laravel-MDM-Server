@@ -691,6 +691,7 @@ class Device extends Model
     /**
      * OS updates, installable ones first. Status (Linux agents 1.6+): installable, phased (apt
      * defers it, rolled out gradually) or held (apt will not install it now); missing means installable.
+     * restart: installed on Windows, the restart finishes it.
      */
     public function getUpdatesAttribute()
     {
@@ -698,10 +699,16 @@ class Device extends Model
             return [];
         }
 
-        $order = ['installable' => 0, 'phased' => 1, 'held' => 2];
-        $updates = array_map(function ($update) {
+        $order = ['installable' => 0, 'restart' => 1, 'phased' => 2, 'held' => 3];
+        // Windows lists an installed update until the restart finishes it (RebootRequired).
+        $restartPending = $this->platform === 'windows' && $this->restartPending;
+        $updates = array_map(function ($update) use ($restartPending) {
             $update = (array) $update;
-            $update['Status'] = in_array($update['Status'] ?? null, ['phased', 'held'], true) ? $update['Status'] : 'installable';
+            $update['Status'] = match (true) {
+                in_array($update['Status'] ?? null, ['phased', 'held'], true) => $update['Status'],
+                $restartPending && filter_var($update['RebootRequired'] ?? false, FILTER_VALIDATE_BOOLEAN) => 'restart',
+                default => 'installable',
+            };
 
             return $update;
         }, (array) self::stdToArray($this->data->os_updates));

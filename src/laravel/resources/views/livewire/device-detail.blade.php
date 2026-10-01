@@ -296,6 +296,7 @@
                                 @php
                                     $deferred = match ($update['Status']) {
                                         'phased' => ['icon' => 'fas fa-hourglass-half', 'label' => __('Phased'), 'title' => __('Rolled out gradually by the distribution, apt installs it later on its own.')],
+                                        'restart' => ['icon' => 'fas fa-redo', 'label' => __('Waiting for a restart'), 'title' => __('Installed, the restart of the device finishes it.')],
                                         'held' => ['icon' => 'fas fa-pause-circle', 'label' => __('Held back'), 'title' => __('apt does not install it now (held, pinned, or it needs other packages to change).')],
                                         default => null,
                                     };

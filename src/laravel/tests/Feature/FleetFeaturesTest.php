@@ -583,4 +583,16 @@ class FleetFeaturesTest extends TestCase
             ->assertSee('Public address')->assertSee('8.8.8.8');
         Livewire::test(ShowDevices::class)->set('search', '8.8.8')->assertSee('pc-a');
     }
+
+    public function test_windows_updates_waiting_for_a_restart_are_not_installable(): void
+    {
+        $device = $this->device('a', ['Platform' => 'windows', 'RestartRequired' => true]);
+        $data = json_decode($device->getRawOriginal('data'), true);
+        $data['os_updates'] = [['Id' => 'u1', 'Title' => 'Cumulative Update', 'RebootRequired' => true], ['Id' => 'u2', 'Title' => 'Defender', 'RebootRequired' => false]];
+        $device->forceFill(['data' => json_encode($data)])->save();
+
+        $device = $device->fresh();
+        $this->assertSame(['installable', 'restart'], array_column($device->updates, 'Status'));
+        $this->assertSame(['u2'], array_column($device->installableUpdates, 'Id'));
+    }
 }
