@@ -3,7 +3,7 @@
     "short_name": "MDM",
     "description": "Self-hosted device management for Windows and Linux",
     "theme_color": "#f9fbfc",
-    "background_color": "#f9fbfc",
+    "background_color": "#ffffff",
     "display": "standalone",
     "scope": "./",
     "start_url": "./devices",

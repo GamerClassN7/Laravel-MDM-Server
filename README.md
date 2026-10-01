@@ -183,7 +183,8 @@ address.
 The portal can be installed as an app (PWA, `steelants/laravel-general`): open it in Chrome,
 Edge or Safari over HTTPS and choose *Install* / *Add to Home Screen*. The service worker caches
 nothing but an offline page. Change the icon with
-`php artisan pwa:make-icons --icon=resources/images/icon.png`.
+`php artisan pwa:make-icons --icon=resources/images/icon.png` (the vector source is
+`resources/images/icon.svg`, also served as `favicon.svg`).
 
 ## Agent
 
