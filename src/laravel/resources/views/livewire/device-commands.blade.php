@@ -1,14 +1,16 @@
 @php
     $hasData = ! empty($selectedDevice->data);
-    // The safe actions are buttons (the most useful one primary), Turn off is in the menu.
+    // Installing the updates is the button (primary when there are some); the other commands are
+    // in the menu.
     $buttons = [
         'doUpdates' => ['icon' => 'fas fa-sync', 'label' => $pendingUpdates > 0 ? trans_choice('Install :count update|Install :count updates', $pendingUpdates, ['count' => $pendingUpdates]) : __('Install updates'), 'confirm' => null, 'primary' => $pendingUpdates > 0],
-        'restart' => ['icon' => 'fas fa-redo', 'label' => __('Restart'), 'confirm' => __('Restart :device now? Unsaved work of its users is lost.', ['device' => $selectedDevice->displayName]), 'primary' => false],
-        // Collects updates, packages and disk health again now instead of on the next schedule.
-        'sync' => ['icon' => 'fas fa-cloud-download-alt', 'label' => __('Sync'), 'confirm' => null, 'primary' => false, 'title' => __('Collect all data on the device again now and report it')],
     ];
-    $turnOffRunning = \App\Models\Device::findActive($active, 'turnOff') ?? \App\Models\Device::findActive($active, 'restart');
-    $turnOffRefusal = $selectedDevice->commandRefusal('turnOff');
+    $menuCommands = [
+        // Collects updates, packages and disk health again now instead of on the next schedule.
+        'sync' => ['icon' => 'fas fa-cloud-download-alt', 'label' => __('Sync'), 'confirm' => null, 'title' => __('Collect all data on the device again now and report it')],
+        'restart' => ['icon' => 'fas fa-redo', 'label' => __('Restart'), 'confirm' => __('Restart :device now? Unsaved work of its users is lost.', ['device' => $selectedDevice->displayName])],
+        'turnOff' => ['icon' => 'fas fa-power-off', 'label' => __('Turn off'), 'confirm' => __('Turn off :device? It can only be started again on site (or with Wake-on-LAN).', ['device' => $selectedDevice->displayName])],
+    ];
 @endphp
 {{-- Polls faster while a command is on its way, so its progress stays current. --}}
 <div class="mt-3" @if ($active->isNotEmpty() || $recentWake?->active) wire:poll.2s @elseif ($hasData) wire:poll.15s @endif>
@@ -26,7 +28,7 @@
         @elseif ($hasData)
             @foreach ($buttons as $command => $button)
                 @php
-                    $running = \App\Models\Device::findActive($active, $command) ?? ($command === 'restart' ? \App\Models\Device::findActive($active, 'turnOff') : null);
+                    $running = \App\Models\Device::findActive($active, $command);
                     $refusal = $selectedDevice->commandRefusal($command);
                 @endphp
                 <button class="btn {{ $button['primary'] && ! $running ? 'btn-primary' : 'btn-light' }}" type="button"
@@ -75,13 +77,30 @@
                 @endif
                 @if ($hasData)
                     <li><hr class="dropdown-divider"></li>
-                    <li>
-                        <button class="dropdown-item" type="button" wire:click="sendCommandToDevice('turnOff')"
-                            wire:confirm="{{ __('Turn off :device? It can only be started again on site (or with Wake-on-LAN).', ['device' => $selectedDevice->displayName]) }}"
-                            @disabled($turnOffRunning || $turnOffRefusal) @if ($turnOffRefusal) title="{{ $turnOffRefusal }}" @endif>
-                            <i class="dropdown-ico fas fa-power-off fa-fw"></i>{{ __('Turn off') }}
-                        </button>
-                    </li>
+                    @foreach ($menuCommands as $command => $item)
+                        @php
+                            // A restart and a shutdown exclude each other.
+                            $running = \App\Models\Device::findActive($active, $command)
+                                ?? (in_array($command, ['restart', 'turnOff'], true) ? (\App\Models\Device::findActive($active, 'restart') ?? \App\Models\Device::findActive($active, 'turnOff')) : null);
+                            $refusal = $selectedDevice->commandRefusal($command);
+                        @endphp
+                        <li>
+                            <button class="dropdown-item d-flex align-items-center" type="button" wire:click="sendCommandToDevice('{{ $command }}')"
+                                @if ($item['confirm']) wire:confirm="{{ $item['confirm'] }}" @endif
+                                @if ($running) title="{{ $running->label }}: {{ $running->statusLabel }}" @elseif ($refusal) title="{{ $refusal }}" @elseif ($item['title'] ?? null) title="{{ $item['title'] }}" @endif
+                                @disabled($running || $refusal)>
+                                @if ($running && $running->command === $command)
+                                    <span aria-hidden="true" class="dropdown-ico spinner-border spinner-border-sm"></span>
+                                @else
+                                    <i class="dropdown-ico {{ $item['icon'] }} fa-fw"></i>
+                                @endif
+                                {{ $item['label'] }}
+                                @if ($running && $running->command === $command)
+                                    <span class="small text-muted ms-2">{{ $running->statusLabel }}</span>
+                                @endif
+                            </button>
+                        </li>
+                    @endforeach
                 @endif
                 <li><hr class="dropdown-divider"></li>
                 <li>
