@@ -258,9 +258,9 @@
                     $moduleSearch = array_map(fn ($module) => strtolower(($module['Name'] ?? '') . ' ' . ($module['Edition'] ?? '') . ' ' . ($module['User'] ?? '')), $moduleUpdates);
                 @endphp
                 <div aria-labelledby="updates-tab" class="tab-pane fade {{ $activeTab === 'updates' ? 'show active' : '' }}" id="updates-tab-pane" role="tabpanel" tabindex="0" x-data="{ search: '' }">
-                    <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-                        <input class="form-control form-control-sm" placeholder="{{ __('Search') }}" style="max-width: 20rem;" type="search" x-model="search">
-                        <div class="ms-auto d-flex align-items-center gap-2">
+                    <div class="d-flex align-items-center gap-2 mb-3">
+                        <input class="form-control form-control-sm flex-grow-1 min-w-0" placeholder="{{ __('Search') }}" style="max-width: 20rem;" type="search" x-model="search">
+                        <div class="ms-auto d-flex align-items-center gap-2 flex-shrink-0">
                             @if ($updatesRunning)
                                 <div style="min-width: 14rem;">@include('partials.device.command-progress', ['command' => $updatesRunning])</div>
                             @elseif ($pendingUpdates > 0)
@@ -289,18 +289,20 @@
                                         default => null,
                                     };
                                 @endphp
-                                <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2 {{ $deferred ? 'text-body-secondary' : '' }}" wire:key="os-update-{{ $loop->index }}" x-show="!search || @js($osSearch[$loop->index]).includes(search.toLowerCase())">
-                                    <span>
+                                <li class="list-group-item d-flex align-items-center gap-2 {{ $deferred ? 'text-body-secondary' : '' }}" wire:key="os-update-{{ $loop->index }}" x-show="!search || @js($osSearch[$loop->index]).includes(search.toLowerCase())">
+                                    <span class="flex-grow-1 min-w-0 text-break">
                                         @if ($deferred)
                                             <i class="{{ $deferred['icon'] }} me-2" title="{{ $deferred['title'] }}"></i>
                                         @endif
                                         {{ $update['Title'] }}
                                     </span>
-                                    @if ($deferred)
-                                        <x-badge color="secondary" title="{{ $deferred['title'] }}" variant="subtle">{{ $deferred['label'] }}</x-badge>
-                                    @else
-                                        @include('partials.device.update-button', ['section' => 'os', 'index' => $loop->index, 'target' => $selectedDevice->updateTarget('os', $update)])
-                                    @endif
+                                    <span class="flex-shrink-0">
+                                        @if ($deferred)
+                                            <x-badge color="secondary" title="{{ $deferred['title'] }}" variant="subtle">{{ $deferred['label'] }}</x-badge>
+                                        @else
+                                            @include('partials.device.update-button', ['section' => 'os', 'index' => $loop->index, 'target' => $selectedDevice->updateTarget('os', $update)])
+                                        @endif
+                                    </span>
                                 </li>
                             @endforeach
                         </ul>
@@ -311,15 +313,20 @@
                         <h5>{{ __('Applications') }}</h5>
                         <ul class="list-group">
                             @foreach ($selectedDevice->apps_packages_updates as $appUpdate)
-                                <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2" wire:key="app-update-{{ $loop->index }}" x-show="!search || @js($appSearch[$loop->index]).includes(search.toLowerCase())">
-                                    <span>
-                                        <span class="fw-semibold">{{ $appUpdate['Id'] ?? '' }}</span>
+                                @php
+                                    $versions = collect([($appUpdate['Version'] ?? '') ?: '?', $appUpdate['Avaliable'] ?? null])->filter()->implode(' → ');
+                                @endphp
+                                <li class="list-group-item d-flex align-items-center gap-2" wire:key="app-update-{{ $loop->index }}" x-show="!search || @js($appSearch[$loop->index]).includes(search.toLowerCase())">
+                                    <span class="flex-grow-1 min-w-0">
+                                        <span class="fw-semibold text-break">{{ $appUpdate['Id'] ?? '' }}</span>
                                         @if (! empty($appUpdate['Source']))
                                             <span class="small text-muted ms-1">{{ $appUpdate['Source'] }}</span>
                                         @endif
+                                        {{-- On phones the versions go under the name, the button keeps its place. --}}
+                                        <span class="d-block d-sm-none small text-primary-emphasis">{{ $versions }}</span>
                                     </span>
-                                    <span class="d-flex align-items-center gap-2">
-                                        <x-badge color="primary" variant="subtle">{{ collect([($appUpdate['Version'] ?? '') ?: '?', $appUpdate['Avaliable'] ?? null])->filter()->implode(' → ') }}</x-badge>
+                                    <span class="d-flex align-items-center gap-2 flex-shrink-0">
+                                        <x-badge class="d-none d-sm-inline-flex" color="primary" variant="subtle">{{ $versions }}</x-badge>
                                         @include('partials.device.update-button', ['section' => 'app', 'index' => $loop->index, 'target' => $selectedDevice->updateTarget('app', $appUpdate)])
                                     </span>
                                 </li>
@@ -332,16 +339,17 @@
                         <h5 class="mt-3">{{ __('PowerShell modules') }}</h5>
                         <ul class="list-group">
                             @foreach ($moduleUpdates as $module)
-                                <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2" wire:key="module-{{ $loop->index }}" x-show="!search || @js($moduleSearch[$loop->index]).includes(search.toLowerCase())">
-                                    <span>
-                                        <span class="fw-semibold">{{ $module['Name'] ?? '' }}</span>
+                                <li class="list-group-item d-flex align-items-center gap-2" wire:key="module-{{ $loop->index }}" x-show="!search || @js($moduleSearch[$loop->index]).includes(search.toLowerCase())">
+                                    <span class="flex-grow-1 min-w-0">
+                                        <span class="fw-semibold text-break">{{ $module['Name'] ?? '' }}</span>
                                         <span class="small text-muted ms-1">{{ $module['Edition'] ?? '' }}</span>
                                         @if (! empty($module['User']))
                                             <span class="small text-muted" title="{{ __('Installed in the user profile, the user updates it (Update-Module).') }}"><i class="fas fa-user ms-1 me-1"></i>{{ $module['User'] }}</span>
                                         @endif
+                                        <span class="d-block d-sm-none small text-primary-emphasis">{{ $module['Version'] ?? '?' }} → {{ $module['Available'] ?? '?' }}</span>
                                     </span>
-                                    <span class="d-flex align-items-center gap-2">
-                                        <x-badge color="primary" variant="subtle">{{ $module['Version'] ?? '?' }} → {{ $module['Available'] ?? '?' }}</x-badge>
+                                    <span class="d-flex align-items-center gap-2 flex-shrink-0">
+                                        <x-badge class="d-none d-sm-inline-flex" color="primary" variant="subtle">{{ $module['Version'] ?? '?' }} → {{ $module['Available'] ?? '?' }}</x-badge>
                                         @include('partials.device.update-button', ['section' => 'module', 'index' => $loop->index, 'target' => $selectedDevice->updateTarget('module', $module)])
                                     </span>
                                 </li>
@@ -370,14 +378,13 @@
                             <li class="list-group-item d-flex align-items-start gap-3 {{ $network['Connected'] ? '' : 'text-body-secondary' }}" wire:key="network-{{ $loop->index }}">
                                 <span class="icon-tile {{ $network['Connected'] ? 'bg-primary-subtle text-primary-emphasis' : '' }}" title="{{ __($type['label']) }}"><i class="{{ $type['icon'] }}"></i></span>
                                 <div class="flex-grow-1 min-w-0">
-                                    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
-                                        <span>
-                                            <span class="fw-semibold text-break">{{ $network['Name'] }}</span>
-                                            <x-badge class="ms-1" color="secondary" size="sm" variant="subtle">{{ __($type['label']) }}</x-badge>
+                                    {{-- Name, type and state in one line that wraps; the state on the right when there is room. --}}
+                                    <div class="d-flex flex-wrap align-items-center column-gap-2 row-gap-1">
+                                        <span class="fw-semibold text-break">{{ $network['Name'] }}</span>
+                                        <x-badge color="secondary" size="sm" variant="subtle">{{ __($type['label']) }}</x-badge>
+                                        <span class="ms-sm-auto small text-nowrap {{ $network['Connected'] ? 'text-success' : 'text-body-secondary' }}" title="{{ $network['Status'] }}">
+                                            <i class="fas {{ $network['Connected'] ? 'fa-check-circle' : 'fa-times-circle' }} me-1"></i>{{ $network['Connected'] ? __('Connected') : __('Disconnected') }}
                                         </span>
-                                        <x-badge :color="$network['Connected'] ? 'success' : 'secondary'" :icon="$network['Connected'] ? 'fas fa-check-circle' : 'fas fa-times-circle'" title="{{ $network['Status'] }}" variant="subtle">
-                                            {{ $network['Connected'] ? __('Connected') : __('Disconnected') }}
-                                        </x-badge>
                                     </div>
                                     @if ($network['Description'] && $network['Description'] !== $network['Name'])
                                         <div class="small text-muted text-break">{{ $network['Description'] }}</div>

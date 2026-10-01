@@ -831,6 +831,10 @@ class Device extends Model
             $status = (string) ($network['Status'] ?? '');
             $addresses = array_values(array_filter((array) ($network['IPAddresses'] ?? []), 'is_string'));
             $type = $network['Type'] ?? null;
+            // Agents before 1.12.1 on Windows took "Realtek" for LTE (a mobile network).
+            if ($type === 'cellular' && ! preg_match('/^(wwan|ww)|mobile broadband|cellular|\blte\b/i', $name.' '.$description)) {
+                $type = null;
+            }
             $networks[] = [
                 'Name' => $name,
                 'Description' => $description,
@@ -1262,7 +1266,8 @@ class Device extends Model
             (bool) preg_match('/^(docker|br-)/i', $name) => 'docker',
             (bool) preg_match('/^(tun|tap|wg|tailscale|zt|ppp|vpn|ipsec|nordlynx)|vpn|wireguard|tap-|openvpn|tailscale|zerotier|fortinet|anyconnect|globalprotect|wan miniport/i', $text) => 'vpn',
             (bool) preg_match('/bluetooth/i', $text) => 'bluetooth',
-            (bool) preg_match('/^(wwan|ww)|mobile broadband|cellular|lte/i', $text) => 'cellular',
+            // \blte\b: "Realtek" contains "lte".
+            (bool) preg_match('/^(wwan|ww)|mobile broadband|cellular|\blte\b/i', $text) => 'cellular',
             (bool) preg_match('/^(virbr|vnet|lxc|lxd|incus|cni|flannel|cali|podman)|hyper-v|vethernet|virtualbox|vmware/i', $text) => 'virtual',
             (bool) preg_match('/^(br|bond)/i', $name) => 'bridge',
             default => 'lan',

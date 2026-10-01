@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.12.0'
+$AgentVersion = '1.12.2'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -155,7 +155,7 @@ function Get-MachineInfo {
                     "Type"                 = if ($_.PhysicalMediaType -match '802\.11|Wireless' -or $text -match 'Wi-?Fi|Wireless|WLAN') { 'wifi' }
                                              elseif ($text -match 'VPN|WireGuard|TAP-|OpenVPN|Tailscale|ZeroTier|Fortinet|AnyConnect|GlobalProtect|WAN Miniport') { 'vpn' }
                                              elseif ($text -match 'Bluetooth') { 'bluetooth' }
-                                             elseif ($text -match 'Mobile Broadband|Cellular|WWAN|LTE') { 'cellular' }
+                                             elseif ($text -match 'Mobile Broadband|Cellular|WWAN|\bLTE\b') { 'cellular' }
                                              elseif ($text -match 'Hyper-V|vEthernet|VirtualBox|VMware|Loopback') { 'virtual' }
                                              else { 'lan' }
                     "Mac"                  = $_.MacAddress
@@ -189,7 +189,7 @@ function ConvertFrom-WingetTable {
         $Lines
     )
 
-    # Locale independent (winget prints "Name" / "Název" ... in the system language, SYSTEM included):
+    # Locale independent (winget prints "Name" / "Nazev" ... in the system language, SYSTEM included):
     # a table is the header above a line of dashes. Columns start where a header word starts and
     # no row has text running across that position (so "K dispozici" stays one column).
     $Lines = @($Lines | ForEach-Object { ("$_" -split "`r")[-1].TrimEnd() })
@@ -2541,6 +2541,15 @@ function Update-Agent {
         if ($errors -or $text -notmatch '(?m)^function Start-Agent') {
             throw 'the downloaded agent is not valid'
         }
+        # Windows PowerShell reads a script without a byte order mark in the ANSI code page, not as
+        # UTF-8: checked the way it will run (a character outside ASCII broke the whole file once).
+        if ($PSVersionTable.PSEdition -ne 'Core') {
+            $ansiErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseInput([System.Text.Encoding]::Default.GetString($bytes), [ref]$null, [ref]$ansiErrors) | Out-Null
+            if ($ansiErrors) {
+                throw "the downloaded agent does not parse in Windows PowerShell ($(@($ansiErrors)[0].Message))"
+            }
+        }
 
         # Only move forward, an older agent is never installed this way.
         $version = if ($text -match "(?m)^\`$AgentVersion = '([^']+)'") { $Matches[1] } else { $null }
@@ -2877,7 +2886,7 @@ function Start-UpdateJob {
                     & taskkill.exe /PID $process.Id /T /F 2>&1 | Out-Null
                     $code = -1
                 }
-                $output = @(Get-Content -Path $out, $err -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' -and $_ -notmatch '^[\s\-\\|/█▒]*$' })
+                $output = @(Get-Content -Path $out, $err -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' -and $_ -notmatch '^[\s\-\\|/\u2588\u2592]*$' })
                 if ($code -eq -1) { $output += "Timed out after $([int]($wingetTimeout / 60)) min, the installer was ended" }
             }
             finally {
