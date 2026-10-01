@@ -146,6 +146,14 @@ Commands (turn off, restart, install updates) are pushed to agents instantly ove
 using [Laravel Reverb](https://laravel.com/docs/reverb). Without it, commands are delivered with
 the agent's next periodic report.
 
+Reverb is required for the portal: its pages never poll. When something about a device changes (a
+report, a heartbeat, the progress of a command, a ping, a script result, an alert, a device going
+offline) the server announces it on the private `devices` channel (only the device id), and the
+components showing that device reload (`resources/js/live.js`, Laravel Echo). Open menus and
+forms stay as they are. Browsers connect to the address of the portal under `/app` (the Docker
+image proxies it), or to `REVERB_HOST` / `REVERB_PORT` / `REVERB_SCHEME` when they name a public
+address.
+
 1. Set `REVERB_APP_KEY` and `REVERB_APP_SECRET` in `.env` to random strings.
 2. Point `REVERB_HOST`, `REVERB_PORT` and `REVERB_SCHEME` to the public address the agents connect to.
 3. Keep the Reverb server running, e.g. with Supervisor (the Docker image already does):

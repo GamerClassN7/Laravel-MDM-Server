@@ -30,7 +30,7 @@
         </div>
 
         <label class="form-label">{{ __('Devices') }}</label>
-        @include('partials.target-picker')
+        @include('partials.target-picker', ['agentsOnly' => true])
         @error('target') <div class="small text-danger mt-1">{{ $message }}</div> @enderror
         <div class="small text-muted mt-2">
             {{ trans_choice(':count device matches now|:count devices match now', $targeted, ['count' => $targeted]) }},

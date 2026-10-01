@@ -4,6 +4,7 @@ namespace App\Livewire;
 
 use App\Models\Device;
 use App\Support\SmartAlerts;
+use Livewire\Attributes\On;
 use Livewire\Component;
 
 /** What needs attention on the device, each alert with the action that fixes it. */
@@ -31,6 +32,10 @@ class DeviceAlerts extends Component
     {
         $this->runAlert('agent');
     }
+
+    /** Live update (resources/js/live.js): this device changed. */
+    #[On('device-changed.{selectedDeviceId}')]
+    public function deviceChanged(): void {}
 
     public function render()
     {

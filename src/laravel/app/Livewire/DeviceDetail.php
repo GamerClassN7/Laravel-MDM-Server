@@ -31,6 +31,7 @@ class DeviceDetail extends Component
         $device->friendly_name = $this->friendlyName;
         $device->save();
         $this->editMode = false;
+        \App\Support\LiveUpdates::device($device->id, 'settings');
     }
 
     public function mount()
@@ -63,6 +64,7 @@ class DeviceDetail extends Component
         $device->tags = $tags === [] ? null : $tags;
         $device->save();
         $this->editTags = false;
+        \App\Support\LiveUpdates::device($device->id, 'settings');
         // The device list shows the tags and filters by them.
         $this->dispatch('device-tags-changed');
     }
@@ -107,6 +109,10 @@ class DeviceDetail extends Component
 
         Device::query()->whereKey($this->selectedDeviceId)->update(['public_key' => null, 'key_registered_at' => null]);
     }
+
+    /** Live update (resources/js/live.js): this device changed. */
+    #[On('device-changed.{selectedDeviceId}')]
+    public function deviceChanged(): void {}
 
     public function render()
     {

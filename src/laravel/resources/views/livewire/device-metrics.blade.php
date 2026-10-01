@@ -1,4 +1,4 @@
-<div class="mt-4" wire:poll.30s>
+<div class="mt-4">
     <div class="d-flex justify-content-between align-items-center mb-2">
         <h5 class="mb-0">{{ __('Performance') }}</h5>
         {{-- Boilerplate segmented switch. --}}

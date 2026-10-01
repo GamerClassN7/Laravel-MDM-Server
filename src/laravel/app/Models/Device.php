@@ -88,7 +88,7 @@ class Device extends Model
     /**
      * @param  'ws'|'http'  $channel
      */
-    public static function recordHeartbeat(int $id, mixed $metrics = null, string $channel = 'ws', mixed $state = null): void
+    public static function recordHeartbeat(int $id, mixed $metrics = null, string $channel = 'ws', mixed $state = null, bool $announce = true): void
     {
         $values = [
             'last_seen_at' => now(),
@@ -106,6 +106,24 @@ class Device extends Model
         if ($updated && $metrics = DeviceMetric::sanitize($metrics)) {
             DeviceMetric::query()->create($metrics + ['device_id' => $id]);
         }
+        // Inside Reverb the listener announces it itself (see LiveUpdates::fromReverb).
+        if ($updated && $announce) {
+            \App\Support\LiveUpdates::device($id, 'heartbeat');
+        }
+    }
+
+    /**
+     * A device goes offline by not sending anything: announces the devices whose last heartbeat
+     * just passed the timeout (run every minute), so the open pages show it.
+     */
+    public static function announceNewlyOffline(): int
+    {
+        $ids = static::query()->whereBetween('last_seen_at', [now()->subSeconds(self::HEARTBEAT_TIMEOUT + 60), now()->subSeconds(self::HEARTBEAT_TIMEOUT)])->pluck('id');
+        foreach ($ids as $id) {
+            \App\Support\LiveUpdates::device($id, 'offline');
+        }
+
+        return $ids->count();
     }
 
     /**
@@ -181,9 +199,9 @@ class Device extends Model
      *
      * @return array<int, string>
      */
-    public static function allTags(): array
+    public static function allTags(bool $agentsOnly = false): array
     {
-        $tags = self::normalizeTags(static::query()->whereNotNull('tags')->pluck('tags')->flatten()->all());
+        $tags = self::normalizeTags(static::query()->whereNotNull('tags')->when($agentsOnly, fn ($query) => $query->where('kind', 'agent'))->pluck('tags')->flatten()->all());
         natcasesort($tags);
 
         return array_values($tags);
@@ -281,6 +299,9 @@ class Device extends Model
             if (DeviceCommand::query()->whereKey($command->id)->where('status', 'queued')->toBase()->update($values) === 1 && ! $refused) {
                 $taken->push($command->fill($values));
             }
+        }
+        if ($taken->isNotEmpty()) {
+            \App\Support\LiveUpdates::device($id, 'command');
         }
 
         return $taken;
@@ -383,6 +404,7 @@ class Device extends Model
 
         // Instant delivery over WebSocket; the command stays queued for the HTTP report as a fallback.
         rescue(fn () => \App\Events\DeviceCommandIssued::dispatch($this, $command));
+        \App\Support\LiveUpdates::device($this->id, 'command');
 
         return $issued;
     }
@@ -964,6 +986,7 @@ class Device extends Model
             }
             static::query()->whereKey($id)->toBase()->update($values);
             PingResult::query()->create(['device_id' => $id, 'up' => $up, 'rtt' => $up ? $rtt : null, 'relay_id' => $relay->id]);
+            \App\Support\LiveUpdates::device($id, 'ping');
             $taken++;
         }
 

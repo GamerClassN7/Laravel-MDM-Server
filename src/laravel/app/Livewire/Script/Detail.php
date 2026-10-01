@@ -40,6 +40,10 @@ class Detail extends Component
         $this->script->refresh();
     }
 
+    /** Live update (resources/js/live.js): some device changed. */
+    #[On('devices-changed')]
+    public function devicesChanged(): void {}
+
     public function render()
     {
         // The state of each device: its latest run of this script.

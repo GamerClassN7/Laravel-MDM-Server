@@ -1,5 +1,5 @@
 {{-- Polls faster while a command is on its way (install buttons, history). --}}
-<div @if ($activeCommands->isNotEmpty()) wire:poll.3s @else wire:poll.30s @endif>
+<div>
     @php
         $moduleUpdates = $selectedDevice->moduleUpdates;
         $hasUpdates = count($selectedDevice->updates) > 0 || count($selectedDevice->apps_packages_updates) > 0 || count($moduleUpdates) > 0;

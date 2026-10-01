@@ -87,6 +87,9 @@ Route::get('/agent/signing-key', function () {
     return response()->json(Signing::publicKey() + ['fingerprint' => Signing::fingerprint()]);
 })->name('agent.signing-key');
 
+// Channel authorization of the portal pages (live updates); agents authorize under /api.
+Illuminate\Support\Facades\Broadcast::routes(['middleware' => ['web', 'auth']]);
+
 // First start: the first user is created here while there is no user yet.
 Route::middleware('guest')->group(function () {
     Route::get('/setup', [App\Http\Controllers\SetupController::class, 'index'])->name('setup');

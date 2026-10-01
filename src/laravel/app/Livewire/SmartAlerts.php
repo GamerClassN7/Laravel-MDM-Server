@@ -6,6 +6,7 @@ use App\Models\Device;
 use App\Support\SmartAlerts as Alerts;
 use Illuminate\Support\Collection;
 use Livewire\Attributes\Locked;
+use Livewire\Attributes\On;
 use Livewire\Component;
 
 /**
@@ -64,6 +65,10 @@ class SmartAlerts extends Component
             ->sortBy(fn ($item) => [Alerts::SEVERITIES[$item['alert']['severity']], $item['device']->displayName])
             ->values();
     }
+
+    /** Live update (resources/js/live.js): some device changed. */
+    #[On('devices-changed')]
+    public function devicesChanged(): void {}
 
     public function render()
     {

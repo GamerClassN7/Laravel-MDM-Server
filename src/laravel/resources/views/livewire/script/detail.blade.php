@@ -38,7 +38,7 @@
         @endif
 
         {{-- Where the script stands on the devices (the latest run of each device). --}}
-        <div class="row g-3 mb-4" wire:poll.10s>
+        <div class="row g-3 mb-4">
             @foreach ([
                 'compliant' => ['label' => __('Compliant'), 'class' => 'is-green', 'icon' => 'fas fa-check'],
                 'remediated' => ['label' => __('Remediated'), 'class' => 'is-purple', 'icon' => 'fas fa-magic'],
@@ -69,7 +69,7 @@
             <div class="col-12 col-lg-8">
                 <div class="card card-body">
                     {{-- Plain Alpine tabs: x-boilerplate::tab.group moves its tabs around in the DOM,
-                         which the Livewire refresh (wire:poll) undoes. --}}
+                         which the Livewire refresh (live updates) undoes. --}}
                     <div x-data="{ code: 'detection' }">
                         <ul class="nav nav-switch mb-3" role="tablist">
                             <li class="nav-item" role="presentation">
@@ -125,7 +125,7 @@
         </div>
 
         <h4 class="mt-4">{{ __('Runs') }}</h4>
-        <div wire:poll.10s>
+        <div>
             @livewire('script-run.data-table', ['scriptId' => $script->id], key('script-runs-'.$script->id))
         </div>
     </div>

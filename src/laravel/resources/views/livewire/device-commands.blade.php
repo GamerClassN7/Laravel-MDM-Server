@@ -12,8 +12,8 @@
         'turnOff' => ['icon' => 'fas fa-power-off', 'label' => __('Turn off'), 'confirm' => __('Turn off :device? It can only be started again on site (or with Wake-on-LAN).', ['device' => $selectedDevice->displayName])],
     ];
 @endphp
-{{-- Polls faster while a command is on its way, so its progress stays current. --}}
-<div class="mt-3" @if ($active->isNotEmpty() || $recentWake?->active) wire:poll.2s @elseif ($hasData) wire:poll.15s @endif>
+{{-- Reloads when the device reports (live updates over Reverb), e.g. the progress of a command. --}}
+<div class="mt-3">
     <div class="d-flex flex-wrap align-items-center gap-2">
         @if ($selectedDevice->offline && ($hasData || $selectedDevice->isPingOnly))
             <button class="btn {{ $wakeRefusal ? 'btn-light' : 'btn-primary' }}" type="button" wire:click="wake" wire:loading.attr="disabled" wire:target="wake"
@@ -51,11 +51,12 @@
             x-on:click="Livewire.dispatch('openModal', {livewireComponents: 'notifications.device-rules', title: @js(__('Alerts for :device', ['device' => $selectedDevice->displayName])), parameters: {deviceId: {{ $selectedDevice->id }}}})">
             <i class="far fa-bell"></i>
         </button>
-        <div class="dropdown">
-            <button aria-expanded="false" aria-label="{{ __('More actions') }}" class="btn btn-light btn-sq" data-bs-toggle="dropdown" title="{{ __('More actions') }}" type="button">
+        {{-- Open state in Alpine (not Bootstrap's JS): a live update of the component keeps it open. --}}
+        <div class="dropdown" x-data="{ open: false }" x-on:click.outside="open = false" x-on:keydown.escape.window="open = false">
+            <button x-bind:aria-expanded="open" aria-label="{{ __('More actions') }}" class="btn btn-light btn-sq" title="{{ __('More actions') }}" type="button" x-on:click="open = ! open" x-bind:class="{ show: open }">
                 <i class="fas fa-ellipsis-h"></i>
             </button>
-            <ul class="dropdown-menu dropdown-menu-end">
+            <ul class="dropdown-menu dropdown-menu-end" data-bs-popper="static" x-bind:class="{ show: open }" x-on:click="if ($event.target.closest('button:not([disabled])')) open = false">
                 {{-- The agent update is in the "newer agent" alert, not repeated here. --}}
                 <li>
                     <button class="dropdown-item" type="button" wire:click="$dispatch('rename-device')">

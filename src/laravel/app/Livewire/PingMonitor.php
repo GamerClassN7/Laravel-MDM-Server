@@ -35,6 +35,10 @@ class PingMonitor extends Component
     #[On('ping-settings-saved')]
     public function refresh(): void {}
 
+    /** Live update (resources/js/live.js): this device changed. */
+    #[On('device-changed.{deviceId}')]
+    public function deviceChanged(): void {}
+
     public function render()
     {
         $device = Device::findOrFail($this->deviceId);

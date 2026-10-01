@@ -262,7 +262,8 @@ function Get-WingetSoftware {
 function Get-WindowsUpdate {
     $UpdateSession = New-Object -ComObject Microsoft.Update.Session
     $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
-    $Updates = $UpdateSearcher.Search("IsInstalled=0").Updates
+    # The same updates Install-WindowsUpdate installs: software and drivers, not hidden.
+    $Updates = $UpdateSearcher.Search('IsInstalled=0 and IsHidden=0').Updates
 
     return $Updates | ForEach-Object {
         [PSCustomObject]@{
@@ -290,7 +291,9 @@ function Install-WindowsUpdate {
 
     $results = @{ 0 = 'not started'; 1 = 'in progress'; 2 = 'succeeded'; 3 = 'succeeded with errors'; 4 = 'failed'; 5 = 'aborted' }
     $Session = New-Object -ComObject Microsoft.Update.Session
-    $found = $Session.CreateUpdateSearcher().Search("IsInstalled=0 and Type='Software' and IsHidden=0").Updates
+    # Software and drivers (the list shows both: "Intel net Driver Update", "NVIDIA Display Driver
+    # Update"), without the hidden ones.
+    $found = $Session.CreateUpdateSearcher().Search('IsInstalled=0 and IsHidden=0').Updates
     $Updates = New-Object -ComObject Microsoft.Update.UpdateColl
     foreach ($update in $found) {
         if (-not $UpdateId -or $update.Identity.UpdateID -eq $UpdateId) {
@@ -299,7 +302,12 @@ function Install-WindowsUpdate {
         }
     }
     if ($Updates.Count -eq 0) {
-        if ($UpdateId) { 'Windows Update: the update is not offered anymore (installed or replaced)' } else { 'Windows Update: nothing to install' }
+        if ($UpdateId) {
+            'Windows Update: the update is not offered anymore (installed or replaced)'
+            [void]$State.Failures.Add('The update is not offered by Windows Update anymore (installed or replaced), the list is collected again')
+        } else {
+            'Windows Update: nothing to install'
+        }
         return
     }
     "Windows Update: $($Updates.Count) update(s): $(@($Updates | ForEach-Object { $_.Title }) -join '; ')"
@@ -309,6 +317,9 @@ function Install-WindowsUpdate {
     $Downloader.Updates = $Updates
     $download = $Downloader.Download()
     "Windows Update: download $($results[[int]$download.ResultCode])"
+    if ([int]$download.ResultCode -in 4, 5) {
+        [void]$State.Failures.Add("Windows Update: download $($results[[int]$download.ResultCode])")
+    }
 
     # One by one, so the progress moves with each installed update.
     $reboot = $false

@@ -4,6 +4,7 @@ namespace App\Livewire;
 
 use App\Models\Device;
 use App\Models\DeviceCommand;
+use Livewire\Attributes\On;
 use Livewire\Component;
 
 /** The device's actions (restart, turn off, install updates ...) and the commands on their way. */
@@ -52,14 +53,20 @@ class DeviceCommands extends Component
             'finished_at' => now(),
             'message' => $command->status === 'queued' ? __('Cancelled by :user', ['user' => $user]) : __('Given up by :user', ['user' => $user]),
         ]);
+        \App\Support\LiveUpdates::device($command->device_id, 'command');
     }
 
     public function deleteDevice()
     {
         Device::find($this->selectedDeviceId)?->delete();
+        \App\Support\LiveUpdates::device((int) $this->selectedDeviceId, 'deleted');
 
         $this->dispatch('device-deleted');
     }
+
+    /** Live update (resources/js/live.js): this device changed. */
+    #[On('device-changed.{selectedDeviceId}')]
+    public function deviceChanged(): void {}
 
     public function render()
     {
