@@ -24,6 +24,22 @@
     border-radius: var(--bs-border-radius);
     background-color: var(--bs-secondary-bg);
     color: var(--bs-secondary-color);
+
+    // Centred: a fixed width like fa-fw (wide glyphs such as the laptop overflow a 1em box to the
+    // right), line height 1 inside a heading. As specific as the boilerplate's
+    // .fas:not(.fa-2x):not(.fa-3x), which sets the width otherwise.
+    > i:not(.fa-2x):not(.fa-3x) {
+        width: 1.25em;
+        text-align: center;
+        line-height: 1;
+    }
+
+    // The type of the device next to its name.
+    &.icon-tile-lg {
+        width: 2.75rem;
+        height: 2.75rem;
+        font-size: 1.25rem;
+    }
 }
 
 // A smart alert on its own (device detail): a quiet surface, the severity is in the icon tile.
@@ -169,4 +185,15 @@ label.mdm-tag {
     height: .9rem;
     gap: 2px;
     max-width: 10rem;
+}
+
+// The header of the device card leaves room for the power state, the bell and the menu in its top
+// right corner (device-commands); the power state is in the header itself on phones.
+.device-head {
+    padding-right: 6rem;
+
+    @include media-breakpoint-up(sm) {
+        &.has-battery { padding-right: 11rem; }
+        &.has-plug { padding-right: 8.5rem; }
+    }
 }

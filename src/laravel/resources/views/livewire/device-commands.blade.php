@@ -14,6 +14,25 @@
      The bell and the menu sit in the top right corner of the device card (position-relative). --}}
 <div>
     <div class="position-absolute top-0 end-0 p-3 d-flex align-items-center gap-2">
+        @if (! $selectedDevice->offline && ! $selectedDevice->isPingOnly)
+            @php
+                $power = $selectedDevice->batteryLevel;
+                $pluggedIn = $selectedDevice->pluggedIn;
+            @endphp
+            {{-- The power state, as high as the buttons beside it. --}}
+            <span class="align-self-stretch d-none d-sm-inline-flex align-items-center gap-1 px-2 text-body-secondary text-nowrap"
+                title="{{ $power === null ? __('Plugged in') : ($pluggedIn ? __('Charging') : ($pluggedIn === false ? __('On battery') : __('Battery'))) }}">
+                @if ($power === null)
+                    <i class="fas fa-plug"></i>
+                @else
+                    @if ($pluggedIn)
+                        <i class="fas fa-bolt text-warning"></i>
+                    @endif
+                    <i class="fas {{ $power < 20 ? 'fa-battery-quarter' : ($power < 85 ? 'fa-battery-half' : 'fa-battery-full') }} {{ $power < 20 && ! $pluggedIn ? 'text-danger' : '' }}"></i>
+                    <span class="text-body">{{ $power }} %</span>
+                @endif
+            </span>
+        @endif
         <button class="btn btn-light btn-sq" type="button" title="{{ __('Alerts') }}" aria-label="{{ __('Alerts') }}"
             x-on:click="Livewire.dispatch('openModal', {livewireComponents: 'notifications.device-rules', title: @js(__('Alerts for :device', ['device' => $selectedDevice->displayName])), parameters: {deviceId: {{ $selectedDevice->id }}}})">
             <i class="far fa-bell"></i>
