@@ -4,7 +4,7 @@
             <div class="dropdown">
                 <div class="d-flex align-items-center">
                     <div class="app-nav-header flex-grow-1">
-                        <div class="app-nav-logo">
+                        <div class="app-nav-logo rounded-0">
                             <img alt="" src="{{ asset('/favicon.svg') }}">
                         </div>
                         <div class="app-nav-header-content nav-collapsed-hide">
