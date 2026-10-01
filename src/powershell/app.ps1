@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.10.5'
+$AgentVersion = '1.11.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -2012,6 +2012,7 @@ function Invoke-MdmApi {
         }
         $exception = New-Object System.Exception("$Path failed: HTTP $([int]$response.StatusCode) $code")
         $exception.Data['MdmError'] = $code
+        $exception.Data['MdmStatus'] = [int]$response.StatusCode
         throw $exception
     }
 }
@@ -2489,11 +2490,12 @@ function Send-PingResults {
             @{ Id = $_.Id; Ping = $ping; Task = $ping.SendPingAsync($_.Address, 1000) }
         })
     try { [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($pings | ForEach-Object { $_.Task }), 3000) } catch { }
+    $at = Get-UnixTime
     $results = @($pings | ForEach-Object {
             $reply = if ($_.Task.Status -eq 'RanToCompletion') { $_.Task.Result } else { $null }
             $up = $reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
             $_.Ping.Dispose()
-            @{ id = $_.Id; up = [bool]$up; rtt = $(if ($up) { [double]$reply.RoundtripTime } else { $null }) }
+            @{ id = $_.Id; up = [bool]$up; rtt = $(if ($up) { [double]$reply.RoundtripTime } else { $null }); at = $at }
         })
     try {
         $response = Invoke-MdmApi -Method Post -Path 'device/pings' -Token $Token -Body @{ results = $results }
@@ -2503,6 +2505,8 @@ function Send-PingResults {
     }
     catch {
         Write-AgentLog "Ping results not sent: $($_.Exception.Message)"
+        # Not reached: the pings go into the history later (see Send-Backlog).
+        if ($null -eq $_.Exception.Data['MdmStatus']) { Add-Backlog -Kind 'pings' -Items $results -Max 10000 }
     }
 }
 
@@ -3649,6 +3653,83 @@ function Get-LiveState {
     return $state
 }
 
+function Get-Backlog {
+    # Data collected while the server could not be reached (agents 1.11.0+): 'metrics' (CPU and
+    # memory samples) and 'pings' (results of the ping-only devices), each with the time it was
+    # taken. Kept in backlog-<kind>.json until the server has it, also over a restart.
+    param ([string]$Kind)
+
+    if (-not $script:Backlog) { $script:Backlog = @{} }
+    if (-not $script:Backlog.ContainsKey($Kind)) {
+        $list = New-Object System.Collections.ArrayList
+        $path = "$AgentDir/backlog-$Kind.json"
+        try {
+            if (Test-Path -Path $path) {
+                foreach ($item in @(Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json | ForEach-Object { $_ })) { if ($item) { [void]$list.Add($item) } }
+            }
+        }
+        catch { Write-AgentLog "Backlog ${Kind}: $($_.Exception.Message)" }
+        $script:Backlog[$Kind] = $list
+    }
+    return , $script:Backlog[$Kind]
+}
+
+function Save-Backlog {
+    param ([string]$Kind)
+
+    $list = Get-Backlog -Kind $Kind
+    $path = "$AgentDir/backlog-$Kind.json"
+    try {
+        if ($list.Count -eq 0) { Remove-Item -Path $path -Force -ErrorAction SilentlyContinue; return }
+        ConvertTo-Json -InputObject @($list) -Depth 4 -Compress | Set-Content -Path $path -Encoding UTF8
+    }
+    catch { Write-AgentLog "Backlog ${Kind} not saved: $($_.Exception.Message)" }
+}
+
+function Add-Backlog {
+    # Keeps the newest $Max items (a day of samples every 30 s).
+    param ([string]$Kind, $Items, [int]$Max)
+
+    $list = Get-Backlog -Kind $Kind
+    if ($list.Count -eq 0) { Write-AgentLog "Server not reachable: keeping the $Kind until it is" }
+    foreach ($item in @($Items)) { if ($item) { [void]$list.Add($item) } }
+    if ($list.Count -gt $Max) { $list.RemoveRange(0, $list.Count - $Max) }
+    Save-Backlog -Kind $Kind
+}
+
+function Send-Backlog {
+    # Sends what was collected while the server could not be reached, in batches, once the server
+    # answers again (at most every 20 s, oldest first).
+    param ([Parameter(Mandatory = $true)][string]$Token)
+
+    if ($script:BacklogSent -and ((Get-Date) - $script:BacklogSent).TotalSeconds -lt 20) { return }
+    $script:BacklogSent = Get-Date
+    foreach ($kind in 'metrics', 'pings') {
+        $list = Get-Backlog -Kind $kind
+        if ($list.Count -eq 0) { continue }
+        $batch = @($list | Select-Object -First $(if ($kind -eq 'metrics') { 600 } else { 2000 }))
+        try {
+            $response = if ($kind -eq 'metrics') {
+                Invoke-MdmApi -Method Post -Path 'device/metrics/backfill' -Token $Token -Body @{ samples = $batch }
+            } else {
+                Invoke-MdmApi -Method Post -Path 'device/pings' -Token $Token -Body @{ results = @(); backlog = $batch }
+            }
+            $list.RemoveRange(0, $batch.Count)
+            Save-Backlog -Kind $kind
+            $stored = if ($kind -eq 'metrics') { $response.taken } else { $response.backfilled }
+            Write-AgentLog "Sent $($batch.Count) $kind collected while the server was not reachable ($stored stored), $($list.Count) left"
+        }
+        catch {
+            if ($_.Exception.Data['MdmStatus'] -in 403, 404) {
+                # A server without backfill (or an agent that does not sign): nothing to wait for.
+                $list.Clear()
+                Save-Backlog -Kind $kind
+            }
+            Write-AgentLog "Backlog ($kind) not sent: $($_.Exception.Message)"
+        }
+    }
+}
+
 function Send-Heartbeat {
     param (
         $Realtime,
@@ -3672,17 +3753,28 @@ function Send-Heartbeat {
     # Reverb limits messages to 10 kB (with the signature): a large state (many services) goes over HTTPS instead.
     $stateOverWs = $state -and $stateJson.Length -le 7000
 
+    # Kept for later when the server cannot be reached now (see Send-Backlog).
+    $sample = if ($metrics) { [ordered]@{ at = Get-UnixTime; cpu = $metrics.cpu; memory_used = $metrics.memory_used; memory_total = $metrics.memory_total } } else { $null }
+
     if ($Realtime -and $Realtime.Subscribed) {
         # Signed with the device key, for this device, once (nonce).
         $payload = [ordered]@{ device_id = $script:DeviceId; ts = Get-UnixTime; nonce = New-Nonce; metrics = $metrics; state = $(if ($stateOverWs) { $state } else { $null }) } | ConvertTo-Json -Depth 6 -Compress
         $data = @{ p = $payload; sig = New-DeviceSignature -Context 'MDM1-HB' -Message $payload }
         # A failed send throws: the connection is reset and the state is sent again later.
-        Send-WsMessage -Socket $Realtime.Socket -Message @{ event = 'client-heartbeat'; channel = $Realtime.Config.channel; data = $data }
+        try {
+            Send-WsMessage -Socket $Realtime.Socket -Message @{ event = 'client-heartbeat'; channel = $Realtime.Config.channel; data = $data }
+        }
+        catch {
+            if ($sample) { Add-Backlog -Kind 'metrics' -Items $sample -Max 2880 }
+            throw
+        }
+        Send-Backlog -Token $Token
         if ($stateOverWs) {
             $script:LastStateJson = $stateJson
             return
         }
         $metrics = $null
+        $sample = $null
     }
     if (-not $state -and $Realtime -and $Realtime.Subscribed) {
         return
@@ -3691,9 +3783,14 @@ function Send-Heartbeat {
     try {
         Invoke-MdmApi -Method Post -Path 'device/heartbeat' -Token $Token -Body @{ metrics = $metrics; state = $state } | Out-Null
         if ($state) { $script:LastStateJson = $stateJson }
+        Send-Backlog -Token $Token
     }
     catch {
         Write-AgentLog "Heartbeat failed: $($_.Exception.Message)"
+        if ($sample -and $null -eq $_.Exception.Data['MdmStatus']) {
+            # Not reached at all (an answer with an error would not change by waiting).
+            Add-Backlog -Kind 'metrics' -Items $sample -Max 2880
+        }
     }
 }
 

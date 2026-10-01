@@ -121,6 +121,20 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         return response()->noContent();
     });
 
+    // Samples the agent collected while it could not reach the server (agents 1.11.0+): they fill
+    // the gap in the CPU and memory history.
+    Route::post('/device/metrics/backfill', function (Request $request) {
+        /** @var Device $device */
+        $device = $request->user();
+        abort_unless($device->signsRequests, 403);
+        $taken = App\Models\DeviceMetric::backfill($device->id, $request->json('samples'));
+        if ($taken > 0) {
+            App\Support\LiveUpdates::device($device->id, 'metrics');
+        }
+
+        return response()->json(['taken' => $taken]);
+    });
+
     // Results of the pings of the ping-only devices (agents 1.10.0+): only the ones it was given.
     Route::post('/device/pings', function (Request $request) {
         /** @var Device $device */
@@ -129,6 +143,8 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
 
         return response()->json([
             'taken' => Device::recordPings($device, $request->json('results')),
+            // Pings made while the agent could not reach the server (agents 1.11.0+).
+            'backfilled' => Device::backfillPings($device, $request->json('backlog')),
             // The current list, so the agent follows changes between its reports.
             'ping_targets' => Device::pingTargetsFor($device),
         ]);

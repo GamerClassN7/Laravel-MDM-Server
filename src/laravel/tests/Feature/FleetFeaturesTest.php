@@ -595,4 +595,44 @@ class FleetFeaturesTest extends TestCase
         $this->assertSame(['installable', 'restart'], array_column($device->updates, 'Status'));
         $this->assertSame(['u2'], array_column($device->installableUpdates, 'Id'));
     }
+
+    public function test_data_collected_without_the_server_is_backfilled(): void
+    {
+        Carbon::setTestNow('2026-10-01 12:00:00');
+        $device = $this->device('a', version: '1.11.0');
+        $sample = fn ($at, $cpu) => ['at' => $at->getTimestamp(), 'cpu' => $cpu, 'memory_used' => 4e9, 'memory_total' => 8e9];
+        $samples = [
+            $sample(now()->subHours(2), 40),
+            $sample(now()->subHours(2)->addSeconds(30), 41),
+            $sample(now()->subDays(40), 50),          // older than the retention
+            $sample(now()->addHour(), 60),            // from the future
+            ['at' => now()->subHour()->getTimestamp(), 'cpu' => 'x'],
+        ];
+        $this->signedJson('POST', '/api/device/metrics/backfill', ['samples' => $samples], 'a')->assertJson(['taken' => 2]);
+        // Sent again (the answer got lost): nothing twice.
+        $this->signedJson('POST', '/api/device/metrics/backfill', ['samples' => $samples], 'a')->assertJson(['taken' => 0]);
+        $stored = DeviceMetric::where('device_id', $device->id)->where('created_at', '<', now()->subHour())->orderBy('created_at')->get();
+        $this->assertSame([40.0, 41.0], $stored->pluck('cpu')->all());
+        $this->assertSame('2026-10-01 10:00:00', $stored->first()->created_at->format('Y-m-d H:i:s'));
+
+        // Pings of the ping-only devices in its network, at the time they were made.
+        $relay = $this->device('nas', ['Networks' => [$this->network('192.168.1.5')]], version: '1.11.0');
+        $printer = new Device;
+        $printer->forceFill(['kind' => 'ping', 'name' => 'Printer', 'os' => '', 'token' => hash('sha256', 'p'), 'ping_address' => '192.168.1.50', 'ping_prefix' => 24])->save();
+        $other = new Device;
+        $other->forceFill(['kind' => 'ping', 'name' => 'Elsewhere', 'os' => '', 'token' => hash('sha256', 'q'), 'ping_address' => '10.9.9.9', 'ping_prefix' => 24])->save();
+        $at = now()->subMinutes(20)->getTimestamp();
+        $backlog = [
+            ['id' => $printer->id, 'up' => true, 'rtt' => 3.1, 'at' => $at],
+            ['id' => $printer->id, 'up' => false, 'at' => $at + 30],
+            ['id' => $other->id, 'up' => true, 'at' => $at],   // not its target
+        ];
+        $this->signedJson('POST', '/api/device/pings', ['results' => [], 'backlog' => $backlog], 'nas')->assertJson(['backfilled' => 2]);
+        $this->signedJson('POST', '/api/device/pings', ['results' => [], 'backlog' => $backlog], 'nas')->assertJson(['backfilled' => 0]);
+        $this->assertSame([true, false], \App\Models\PingResult::where('device_id', $printer->id)->orderBy('created_at')->pluck('up')->all());
+        $this->assertSame(0, \App\Models\PingResult::where('device_id', $other->id)->count());
+        // The history only: the device stays offline until a live ping answers.
+        $this->assertTrue($printer->fresh()->offline);
+        Carbon::setTestNow();
+    }
 }
