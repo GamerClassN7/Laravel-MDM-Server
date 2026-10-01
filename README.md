@@ -40,11 +40,7 @@ kept in the `storage` volume. For access from outside your network put it behind
 
 ## Screenshots
 
-Fleet overview: every device with its state, updates, fullest drive and what needs attention, filters and bulk actions:
-
-![Fleet overview](docs/screenshots/overview.png)
-
-Device detail with actions, summary, CPU/memory history and tabs:
+Devices: the list (search, tags, online state, what needs attention) beside the detail with actions, summary, CPU/memory history and tabs:
 
 ![Device detail](docs/screenshots/device.png)
 
@@ -474,8 +470,7 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
   the last 50 pings as a bar (green answered, red not), the response now and on average, the
   uptime of the last 24 hours and 30 days, and the response time over 1 h, 24 h, 7 d or 30 d with
   the unanswered periods marked. Every ping is kept for 30 days (`ping_results`, pruned daily).
-- In the overview it shows as *Ping only* with the last 20 pings and the uptime of the day; alerts
-  offer the status only (offline for *n* minutes). Its address, prefix and MAC are changed in
+- In the device list it has a network icon; alerts offer the status only (offline for *n* minutes). Its address, prefix and MAC are changed in
   **Ping settings** in the device menu.
 
 ### Dashboard

@@ -114,12 +114,14 @@ label.mdm-tag {
     }
 }
 
-// The device list beside the detail: stays in view while the detail scrolls.
-.device-switcher {
-    position: sticky;
-    top: 1rem;
-    max-height: calc(100vh - 2rem);
-    overflow-y: auto;
+// The device list beside the detail: stays in view while the detail scrolls (wide screens).
+@include media-breakpoint-up(lg) {
+    .device-switcher {
+        position: sticky;
+        top: 1rem;
+        max-height: calc(100vh - 2rem);
+        overflow-y: auto;
+    }
 }
 
 .device-dot {

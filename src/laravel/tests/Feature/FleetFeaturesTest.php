@@ -74,8 +74,7 @@ class FleetFeaturesTest extends TestCase
 
         Livewire::test(ShowDevices::class)
             ->call('filterTag', 'servers')
-            ->assertViewHas('rows', fn ($rows) => $rows->pluck('device.id')->all() === [$server->id])
-            ->assertSet('selectedDeviceId', null);
+            ->assertViewHas('rows', fn ($rows) => $rows->pluck('device.id')->all() === [$server->id]);
 
         $this->assertTrue($server->fresh()->matchesTarget(['tags' => ['SERVERS']]));
         $this->assertFalse($laptop->matchesTarget(['tags' => ['servers']]));
@@ -83,60 +82,25 @@ class FleetFeaturesTest extends TestCase
         $this->assertSame([$server->id, $laptop->id], Device::targeted(['all' => true])->pluck('id')->all());
     }
 
-    public function test_fleet_overview_filters_and_bulk_actions(): void
+    public function test_device_list_searches_and_filters(): void
     {
-        $gb = 1073741824;
-        $user = User::factory()->create();
-        $nas = $this->device('nas', ['Drives' => [['FriendlyName' => 'System', 'DriveLetter' => '/', 'Size' => 100 * $gb, 'SizeRemaining' => 4 * $gb, 'DriveType' => 3]]]);
+        $nas = $this->device('nas');
         $nas->forceFill(['tags' => ['servers']])->save();
-        $sleeping = $this->device('pc', online: false);
+        $this->device('pc', online: false);
         $fine = $this->device('ok');
-        $this->actingAs($user);
+        $this->actingAs(User::factory()->create());
 
-        $page = Livewire::test(ShowDevices::class)
-            ->assertSet('selectedDeviceId', null)
-            ->assertViewHas('counts', fn ($counts) => [$counts['all'], $counts['online'], $counts['offline'], $counts['attention']] === [3, 2, 1, 2])
-            ->assertSee('Disk 96 %');
-        $page->call('filterStatus', 'attention')
-            ->assertViewHas('rows', fn ($rows) => $rows->pluck('device.id')->sort()->values()->all() === [$nas->id, $sleeping->id])
-            ->call('filterStatus', 'offline')
-            ->assertViewHas('rows', fn ($rows) => $rows->pluck('device.id')->all() === [$sleeping->id])
-            ->call('filterStatus', 'offline')
-            ->assertSet('status', '')
+        Livewire::test(ShowDevices::class)
+            ->assertSet('selectedDeviceId', $nas->id)
+            ->assertViewHas('total', 3)
             ->set('search', 'PC-OK')
             ->assertViewHas('rows', fn ($rows) => $rows->pluck('device.id')->all() === [$fine->id])
-            ->set('search', '');
-
-        $page->set('selected', [(string) $nas->id, (string) $sleeping->id])
-            ->call('bulkCommand', 'restart');
-        $this->assertSame(['restart'], $nas->fresh()->queuedCommands);
-        $this->assertSame([], $sleeping->fresh()->queuedCommands, 'Offline devices are skipped');
-
-        $page->set('bulkTag', 'lab')->call('bulkTagChange', true);
-        $this->assertSame(['servers', 'lab'], $nas->fresh()->tags);
-        $this->assertSame(['lab'], $sleeping->fresh()->tags);
-        $page->set('bulkTag', 'LAB')->call('bulkTagChange', false);
-        $this->assertSame(['servers'], $nas->fresh()->tags);
-        $this->assertNull($sleeping->fresh()->tags);
-
-        // The detail opens for a device, a deleted one shows the overview.
-        Livewire::test(ShowDevices::class, ['selectedDeviceId' => $nas->id])->assertSee('pc-nas')->call('showList')->assertSet('selectedDeviceId', null);
-        Livewire::test(ShowDevices::class, ['selectedDeviceId' => 999])->assertSet('selectedDeviceId', null);
-    }
-
-    public function test_bulk_script_run_picks_a_script(): void
-    {
-        $admin = User::factory()->create();
-        config(['boilerplate.system_admins' => [(string) $admin->id]]);
-        $device = $this->device('a');
-        $script = Script::create(['name' => 'Check', 'platform' => 'all', 'detection' => 'exit 0', 'timeout' => 60]);
-        $this->actingAs($admin);
-
-        Livewire::test(\App\Livewire\Script\Pick::class, ['deviceIds' => [$device->id]])
-            ->assertSee('Check')
-            ->call('run', $script->id)
-            ->assertDispatched('closeModal');
-        $this->assertSame([$device->id], $script->runs()->pluck('device_id')->all());
+            ->set('search', '')
+            ->call('filterTag', 'servers')
+            ->assertViewHas('rows', fn ($rows) => $rows->pluck('device.id')->all() === [$nas->id])
+            ->call('selectDevice', $fine->id)
+            ->assertSet('selectedDeviceId', $fine->id);
+        Livewire::test(ShowDevices::class, ['selectedDeviceId' => 999])->assertSet('selectedDeviceId', $nas->id);
     }
 
     // Scheduled remediations
