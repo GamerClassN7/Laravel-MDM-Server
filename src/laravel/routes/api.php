@@ -37,6 +37,7 @@ Route::middleware(['device.signature', 'auth:api'])->post('/device', function (R
     $device->last_http_at = now();
     // The commands column is not written here: queued commands are taken atomically below.
     $device->save();
+    App\Support\LiveUpdates::device($device->id, 'report');
 
     return response()->json([
         // Commands not delivered over the WebSocket; queued meanwhile ones wait for the next report.
@@ -191,6 +192,10 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         // A finished (or given up) command is not changed anymore.
         $updated = DeviceCommand::query()->whereKey($deviceCommand->id)->whereIn('status', ['sent', 'running'])->toBase()->update($values);
 
+        if ($updated === 1) {
+            App\Support\LiveUpdates::device($device->id, 'command');
+        }
+
         return $updated === 1
             ? response()->json(['status' => $status])
             : response()->json(['error' => 'not_running', 'status' => $deviceCommand->status], 409);
@@ -219,6 +224,9 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
             if (ScriptRun::query()->whereKey($run->id)->where('status', 'pending')->update(['status' => 'sent', 'sent_at' => now()]) === 1) {
                 $payloads[] = $run->toSignedPayload();
             }
+        }
+        if ($runs->isNotEmpty()) {
+            App\Support\LiveUpdates::device($device->id, 'script');
         }
 
         return response()->json(['runs' => $payloads]);
@@ -251,6 +259,7 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         $scriptRun->error = is_string($error) && $error !== '' ? mb_strcut($error, 0, 1000) : null;
         $scriptRun->finished_at = now();
         $scriptRun->save();
+        App\Support\LiveUpdates::device($device->id, 'script');
 
         return response()->json(['status' => $scriptRun->status]);
     });

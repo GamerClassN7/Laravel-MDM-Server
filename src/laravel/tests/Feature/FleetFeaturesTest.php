@@ -150,6 +150,12 @@ class FleetFeaturesTest extends TestCase
         $this->assertSame('*/15 * * * *', $script->fresh()->schedule);
         $this->assertTrue($script->fresh()->schedule_target['all']);
 
+        // Ping-only devices cannot run scripts: not offered.
+        $printer = new Device;
+        $printer->forceFill(['kind' => 'ping', 'name' => 'Printer', 'os' => '', 'token' => hash('sha256', 'p'), 'ping_address' => '192.168.1.50', 'tags' => ['printers']])->save();
+        Livewire::test(Schedule::class, ['scriptId' => $script->id])->set('targetMode', 'devices')->assertDontSee('Printer')->set('targetMode', 'tags')->assertDontSee('printers');
+        Livewire::test(\App\Livewire\Script\Run::class, ['scriptId' => $script->id])->assertDontSee('Printer');
+
         Livewire::test(Schedule::class, ['scriptId' => $script->id])->set('enabled', false)->call('save');
         $this->assertNull($script->fresh()->schedule);
 
@@ -515,6 +521,26 @@ class FleetFeaturesTest extends TestCase
         $this->assertSame($desk->id, $sleeping->fresh()->wakeRelay()[0]->id);
         $desk->forceFill(['updated_at' => now()->subHour(), 'last_http_at' => now()->subHour()])->saveQuietly();
         $this->assertSame($laptop->id, $sleeping->fresh()->wakeRelay()[0]->id);
+    }
+
+    public function test_device_changes_are_announced_for_live_updates(): void
+    {
+        $device = $this->device('a');
+        \Illuminate\Support\Facades\Event::fake([\App\Events\DevicesChanged::class]);
+
+        Device::recordHeartbeat($device->id);
+        $this->signedJson('POST', '/api/device', ['machine' => ['Hostname' => 'pc', 'Drives' => [], 'AgentVersion' => '1.10.1']], 'a')->assertOk();
+        $device->issueCommand('restart');
+
+        $announced = collect(\Illuminate\Support\Facades\Event::dispatched(\App\Events\DevicesChanged::class))->map(fn ($call) => $call[0]->what)->all();
+        $this->assertSame(['heartbeat', 'report', 'command'], $announced);
+        $event = new \App\Events\DevicesChanged($device->id, 'report');
+        $this->assertSame('private-devices', $event->broadcastOn()->name);
+        $this->assertSame(['device_id' => $device->id, 'what' => 'report'], $event->broadcastWith());
+
+        // A device that just went offline is announced by the scheduler.
+        $device->forceFill(['last_seen_at' => now()->subSeconds(120)])->save();
+        $this->assertSame(1, Device::announceNewlyOffline());
     }
 
     public function test_wake_parameters_are_checked(): void

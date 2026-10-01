@@ -42,7 +42,8 @@ class RecordDeviceHeartbeat
                 return;
             }
             // Metrics at the top level (older agents), live state in "state".
-            Device::recordHeartbeat((int) $matches[1], $data, 'ws', is_array($data) ? ($data['state'] ?? null) : null);
+            Device::recordHeartbeat((int) $matches[1], $data, 'ws', is_array($data) ? ($data['state'] ?? null) : null, false);
+            \App\Support\LiveUpdates::fromReverb($event->connection->app(), (int) $matches[1], 'heartbeat');
         } catch (Throwable $e) {
             // Reverb swallows listener exceptions (its logger is off without --debug), report them
             // to the application log so they show up next to the web errors.

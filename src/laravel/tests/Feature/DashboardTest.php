@@ -68,7 +68,7 @@ class DashboardTest extends TestCase
         $this->assertMatchesRegularExpression('/>\s*2\s*<\/div>\s*<small[^>]*>Online/', $html);
         $this->assertMatchesRegularExpression('/>\s*1\s*<\/div>\s*<small[^>]*>Offline/', $html);
         $this->assertStringContainsString('selectedDeviceId='.$offline->id, $html);
-        $this->assertStringContainsString('wire:poll.30s', $html);
+        $this->assertStringContainsString('x-on:mdm-devices-changed.window', $html);
     }
 
     public function test_widget_config_keeps_only_known_keys(): void

@@ -42,6 +42,7 @@ class PingSettings extends Component
             $settings += ['last_seen_at' => null, 'ping_rtt' => null];
         }
         $device->forceFill($settings)->save();
+        \App\Support\LiveUpdates::device($device->id, 'settings');
 
         $this->dispatch('ping-settings-saved');
         $this->dispatch('closeModal');

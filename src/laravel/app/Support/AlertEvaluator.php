@@ -212,6 +212,7 @@ class AlertEvaluator
 
     private function trigger(AlertRule $rule, Device $device, array $result): void
     {
+        LiveUpdates::device($device->id, 'alert');
         $rule->events()->create([
             'device_id' => $device->id,
             'message' => mb_strimwidth($result['message'], 0, 1000),
@@ -228,6 +229,7 @@ class AlertEvaluator
     private function resolve(AlertRule $rule, Device $device, AlertEvent $event): void
     {
         $event->update(['resolved_at' => now()]);
+        LiveUpdates::device($device->id, 'alert');
 
         $title = $rule->type === 'status'
             ? "✅ {$device->displayName} ".__('is up')

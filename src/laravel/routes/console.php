@@ -13,6 +13,9 @@ Schedule::call(fn () => DeviceCommand::expireStale())->everyFiveMinutes()->name(
 // Remediation scripts with a schedule (cron expression) run on their target devices.
 Schedule::call(fn () => App\Models\Script::runScheduled())->everyMinute()->name('mdm:scheduled-scripts')->withoutOverlapping();
 
+// Devices that just went offline show up on the open pages (live updates, no polling).
+Schedule::call(fn () => App\Models\Device::announceNewlyOffline())->everyMinute()->name('mdm:announce-offline');
+
 // Alert rules (App\Models\AlertRule): opens and resolves alerts, notifies their users.
 Schedule::call(fn () => App\Support\AlertEvaluator::run())->everyMinute()->name('mdm:alerts')->withoutOverlapping();
 

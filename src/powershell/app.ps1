@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.10.0'
+$AgentVersion = '1.10.1'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -262,7 +262,8 @@ function Get-WingetSoftware {
 function Get-WindowsUpdate {
     $UpdateSession = New-Object -ComObject Microsoft.Update.Session
     $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
-    $Updates = $UpdateSearcher.Search("IsInstalled=0").Updates
+    # The same updates Install-WindowsUpdate installs: software and drivers, not hidden.
+    $Updates = $UpdateSearcher.Search('IsInstalled=0 and IsHidden=0').Updates
 
     return $Updates | ForEach-Object {
         [PSCustomObject]@{
@@ -290,7 +291,9 @@ function Install-WindowsUpdate {
 
     $results = @{ 0 = 'not started'; 1 = 'in progress'; 2 = 'succeeded'; 3 = 'succeeded with errors'; 4 = 'failed'; 5 = 'aborted' }
     $Session = New-Object -ComObject Microsoft.Update.Session
-    $found = $Session.CreateUpdateSearcher().Search("IsInstalled=0 and Type='Software' and IsHidden=0").Updates
+    # Software and drivers (the list shows both: "Intel net Driver Update", "NVIDIA Display Driver
+    # Update"), without the hidden ones.
+    $found = $Session.CreateUpdateSearcher().Search('IsInstalled=0 and IsHidden=0').Updates
     $Updates = New-Object -ComObject Microsoft.Update.UpdateColl
     foreach ($update in $found) {
         if (-not $UpdateId -or $update.Identity.UpdateID -eq $UpdateId) {
@@ -299,7 +302,12 @@ function Install-WindowsUpdate {
         }
     }
     if ($Updates.Count -eq 0) {
-        if ($UpdateId) { 'Windows Update: the update is not offered anymore (installed or replaced)' } else { 'Windows Update: nothing to install' }
+        if ($UpdateId) {
+            'Windows Update: the update is not offered anymore (installed or replaced)'
+            [void]$State.Failures.Add('The update is not offered by Windows Update anymore (installed or replaced), the list is collected again')
+        } else {
+            'Windows Update: nothing to install'
+        }
         return
     }
     "Windows Update: $($Updates.Count) update(s): $(@($Updates | ForEach-Object { $_.Title }) -join '; ')"
@@ -309,6 +317,9 @@ function Install-WindowsUpdate {
     $Downloader.Updates = $Updates
     $download = $Downloader.Download()
     "Windows Update: download $($results[[int]$download.ResultCode])"
+    if ([int]$download.ResultCode -in 4, 5) {
+        [void]$State.Failures.Add("Windows Update: download $($results[[int]$download.ResultCode])")
+    }
 
     # One by one, so the progress moves with each installed update.
     $reboot = $false
@@ -757,8 +768,20 @@ if ($Update) {
             Update-Module -Name $module.Name -RequiredVersion $module.Available -Force -Confirm:$false -ErrorAction Stop
         }
         catch {
-            $module | Add-Member -NotePropertyName Error -NotePropertyValue $_.Exception.Message
-            $remaining += $module
+            # Update-Module reads the dates of the installation, which modules not installed with
+            # Install-Module lack (Microsoft.WinGet.Client: "Cannot convert null to type
+            # System.DateTime"). Installing the version next to the old one is the same result.
+            $updateError = $_.Exception.Message
+            try {
+                $install = @{ Name = $module.Name; RequiredVersion = $module.Available; Repository = 'PSGallery'; Scope = 'AllUsers'; Force = $true; Confirm = $false; ErrorAction = 'Stop' }
+                $parameters = (Get-Command -Name Install-Module).Parameters
+                foreach ($switch in 'AllowClobber', 'SkipPublisherCheck', 'AcceptLicense') { if ($parameters.ContainsKey($switch)) { $install[$switch] = $true } }
+                Install-Module @install
+            }
+            catch {
+                $module | Add-Member -NotePropertyName Error -NotePropertyValue "$updateError; Install-Module: $($_.Exception.Message)"
+                $remaining += $module
+            }
         }
     }
     $outdated = $remaining
@@ -2572,7 +2595,7 @@ function Start-UpdateJob {
     $progressFile = "$AgentDir/update-progress.json"
     Remove-Item -Path $progressFile -Force -ErrorAction SilentlyContinue
     [void](Send-CommandStatus -Id $CommandId -Status running -Progress 0 -Message 'Starting')
-    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Install-PowerShellRelease', 'Get-PowerShellReleaseUpdate', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log", $progressFile, $Params, $CommandId, "$AgentDir/update-result.json" -ScriptBlock {
+    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Install-PowerShellRelease', 'Get-PowerShellReleaseUpdate', 'Get-WingetPath', 'Get-WingetSoftware', 'ConvertFrom-WingetTable', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log", $progressFile, $Params, $CommandId, "$AgentDir/update-result.json" -ScriptBlock {
         param ($OnLinux, $OutputLog, $ProgressFile, $Params, $CommandId, $ResultFile)
 
         # When an update replaces the PowerShell the agent runs in (apt, a GitHub release, snap,
@@ -2630,6 +2653,37 @@ function Start-UpdateJob {
             return $false
         }
         $wingetOk = @(0, -1978335189) # APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE: nothing to update
+        # One package, killed with its installer after the timeout: an installer that waits for a
+        # window nobody sees (SYSTEM has no desktop) or for an application to close would
+        # otherwise hang the whole update forever. Returns the output; $LASTEXITCODE is set.
+        $wingetTimeout = 900
+        function Invoke-WingetUpgrade ([string]$Winget, [string]$Id, [string]$Source) {
+            "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
+            $out = [System.IO.Path]::GetTempFileName()
+            $err = [System.IO.Path]::GetTempFileName()
+            $arguments = @('upgrade', '--id', $Id, '--exact', '--silent', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity')
+            if ($Source -in 'winget', 'msstore') { $arguments += @('--source', $Source) }
+            try {
+                $process = Start-Process -FilePath $Winget -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+                $null = $process.Handle # without it ExitCode stays empty in Windows PowerShell
+                if ($process.WaitForExit($wingetTimeout * 1000)) {
+                    $code = $process.ExitCode
+                } else {
+                    # The installer is a child of winget: end the whole tree.
+                    & taskkill.exe /PID $process.Id /T /F 2>&1 | Out-Null
+                    $code = -1
+                }
+                $output = @(Get-Content -Path $out, $err -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' -and $_ -notmatch '^[\s\-\\|/█▒]*$' })
+                if ($code -eq -1) { $output += "Timed out after $([int]($wingetTimeout / 60)) min, the installer was ended" }
+            }
+            finally {
+                Remove-Item -Path $out, $err -Force -ErrorAction SilentlyContinue
+            }
+            $output | Add-Content -Path $OutputLog -Encoding UTF8
+            "exit code $code" | Add-Content -Path $OutputLog -Encoding UTF8
+            $global:LASTEXITCODE = $code
+            return , $output
+        }
         $env:DEBIAN_FRONTEND = 'noninteractive'
         # Wait for a running apt / unattended-upgrades instead of failing on its lock.
         $lock = '-o', 'DPkg::Lock::Timeout=600'
@@ -2646,7 +2700,7 @@ function Start-UpdateJob {
                     $winget = Get-WingetPath
                     if (-not $winget) { [void]$state.Failures.Add('winget not found'); break }
                     Set-Progress 10 "winget upgrade $id"
-                    $output = Invoke-Logged "winget upgrade $id" { & $winget upgrade --id $id --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity }
+                    $output = Invoke-WingetUpgrade -Winget $winget -Id $id
                     "winget upgrade ${id}: exit $LASTEXITCODE"
                     Add-Result "winget upgrade $id" $LASTEXITCODE $output $wingetOk
                 }
@@ -2738,13 +2792,23 @@ function Start-UpdateJob {
                 Add-Result 'snap refresh' $LASTEXITCODE $output
             }
         } else {
-            Enter-Step 0 40 'winget upgrade --all'
+            Enter-Step 0 40 'winget'
             $winget = Get-WingetPath
             if ($winget) {
-                # winget also updates PowerShell 7 (Microsoft.PowerShell).
-                $output = Invoke-Logged 'winget upgrade --all' { & $winget upgrade --all --silent --accept-source-agreements --accept-package-agreements --disable-interactivity }
-                "winget upgrade: exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
-                Add-Result 'winget upgrade' $LASTEXITCODE $output $wingetOk
+                # One package at a time instead of "upgrade --all": each has a timeout, one that
+                # hangs or fails does not stop the others. winget also updates PowerShell 7
+                # (Microsoft.PowerShell). App Installer is winget itself: replacing it ends winget.
+                $listed = try { @(Get-WingetSoftware -Updatable) } catch { [void]$state.Failures.Add("winget: $($_.Exception.Message)"); @() }
+                $packages = @($listed | Where-Object { $_.Id -and $_.Id -ne 'Microsoft.AppInstaller' -and "$($_.Avaliable)" -ne '' })
+                $done = 0
+                foreach ($package in $packages) {
+                    Set-Progress ([int](40 * $done / [Math]::Max(1, $packages.Count))) "winget upgrade $($package.Id) ($($done + 1)/$($packages.Count))"
+                    $output = Invoke-WingetUpgrade -Winget $winget -Id $package.Id -Source $package.Source
+                    "winget upgrade $($package.Id): exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+                    Add-Result "winget upgrade $($package.Id)" $LASTEXITCODE $output $wingetOk
+                    $done++
+                }
+                if ($packages.Count -eq 0) { 'winget: nothing to update' }
             } else {
                 'winget: not found, application updates skipped'
             }
@@ -2888,6 +2952,43 @@ function Start-NextUpdate {
     }
 }
 
+function Invoke-PowerAction {
+    # Restarts or turns off the device, also while updates are being installed (their job and
+    # installers are ended). Returns the reason when it did not work, $null when it is on its way.
+    param ([switch]$Restart)
+
+    if ($script:UpdateJob) {
+        Write-AgentLog "$(if ($Restart) { 'Restart' } else { 'Turn off' }) while updates are being installed: they are interrupted"
+        Save-CommandState
+    }
+    try {
+        if ($OnLinux) {
+            $output = if ($Restart) { systemctl reboot 2>&1 } else { systemctl poweroff 2>&1 }
+            if ($LASTEXITCODE -ne 0) { throw "systemctl: exit $LASTEXITCODE $output" }
+        } elseif ($Restart) {
+            Restart-Computer -Force -ErrorAction Stop
+        } else {
+            Stop-Computer -Force -ErrorAction Stop
+        }
+        return $null
+    }
+    catch {
+        $first = $_.Exception.Message
+    }
+    # Second try, forced: the cmdlets refuse while an installation holds the shutdown (Windows) or
+    # a unit blocks it (Linux).
+    if ($OnLinux) {
+        $output = if ($Restart) { systemctl reboot --force 2>&1 } else { systemctl poweroff --force 2>&1 }
+    } else {
+        $output = & shutdown.exe $(if ($Restart) { '/r' } else { '/s' }) /f /t 0 /d p:4:1 2>&1
+    }
+    if ($LASTEXITCODE -eq 0) {
+        return $null
+    }
+
+    return "$first; forced: exit $LASTEXITCODE $output".Trim()
+}
+
 function Invoke-DeviceCommand {
     param (
         [Parameter(Mandatory = $true)]
@@ -2963,14 +3064,26 @@ function Invoke-DeviceCommand {
             }
         }
         'turnOff' {
-            [void](Send-CommandStatus -Id $Id -Status succeeded -Message 'Shutting down')
-            if ($OnLinux) { systemctl poweroff } else { Stop-Computer -Force }
+            [void](Send-CommandStatus -Id $Id -Status running -Message 'Shutting down')
+            $failure = Invoke-PowerAction -Restart:$false
+            if ($failure) {
+                Write-AgentLog "Turn off failed: $failure"
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "Turn off failed: $failure")
+            } else {
+                [void](Send-CommandStatus -Id $Id -Status succeeded -Message 'Shutting down')
+            }
         }
         'restart' {
             # Done when the agent is back after the restart.
             Save-PendingCommand -Id $Id -Command 'restart'
             [void](Send-CommandStatus -Id $Id -Status running -Message 'Restarting')
-            if ($OnLinux) { systemctl reboot } else { Restart-Computer -Force }
+            $failure = Invoke-PowerAction -Restart
+            if ($failure) {
+                # Not restarting after all: report it now, so it can be tried again.
+                Remove-Item -Path "$AgentDir/pending-command.json" -Force -ErrorAction SilentlyContinue
+                Write-AgentLog "Restart failed: $failure"
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "Restart failed: $failure")
+            }
         }
     }
 }

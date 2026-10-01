@@ -3,7 +3,7 @@
     $format = fn ($value, $unit) => $value === null ? '–' : rtrim(rtrim(number_format($value, $unit === '%' ? 2 : 1, '.', ''), '0'), '.').' '.$unit;
     $uptimeColor = fn ($value) => $value === null ? '' : ($value >= 99 ? 'text-success' : ($value >= 95 ? 'text-warning-emphasis' : 'text-danger'));
 @endphp
-<div class="card mt-3" wire:poll.30s>
+<div class="card mt-3">
     <div class="card-body">
         <div class="d-flex flex-wrap align-items-center gap-3 mb-3">
             <span class="icon-tile {{ $device->offline ? 'bg-secondary-subtle' : 'bg-success-subtle text-success-emphasis' }}"><i class="fas fa-network-wired"></i></span>

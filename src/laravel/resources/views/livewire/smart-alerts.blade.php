@@ -1,4 +1,4 @@
-<div @if ($busy) wire:poll.3s @else wire:poll.30s @endif>
+<div>
     @if ($alerts->isEmpty())
         <div class="text-body-secondary"><i class="fas fa-check-circle text-success me-2"></i>{{ __('All devices are fine.') }}</div>
     @else

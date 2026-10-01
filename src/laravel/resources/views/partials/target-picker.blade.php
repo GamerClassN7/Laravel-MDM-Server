@@ -1,8 +1,10 @@
 {{-- Which devices: all, the ones with any of the tags, or picked ones. Binds targetMode,
-     targetTags and targetDevices of the Livewire component (App\Livewire\Concerns\PicksTarget). --}}
+     targetTags and targetDevices of the Livewire component (App\Livewire\Concerns\PicksTarget).
+     $agentsOnly leaves out the ping-only devices (scripts need the agent). --}}
 @php
-    $pickerTags = \App\Models\Device::allTags();
-    $pickerDevices = $targetMode === 'devices' ? \App\Models\Device::query()->get()->sortBy(fn ($device) => mb_strtolower($device->displayName)) : collect();
+    $agentsOnly ??= false;
+    $pickerTags = \App\Models\Device::allTags($agentsOnly);
+    $pickerDevices = $targetMode === 'devices' ? \App\Models\Device::query()->when($agentsOnly, fn ($query) => $query->where('kind', 'agent'))->get()->sortBy(fn ($device) => mb_strtolower($device->displayName)) : collect();
     $pickerId = 'target-'.$this->getId();
 @endphp
 <div>

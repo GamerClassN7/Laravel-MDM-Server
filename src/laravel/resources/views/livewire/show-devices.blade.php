@@ -1,5 +1,5 @@
 <div>
-    <div class="container-xl">
+    <div class="container">
         @if ($addDevice)
             <nav aria-label="breadcrumb" class="small mb-2">
                 <a class="text-body-secondary text-decoration-none" href="#" wire:click.prevent="$set('addDevice', false)">{{ __('Devices') }}</a>
@@ -90,7 +90,7 @@
                         <i class="fas fa-list me-2"></i>{{ __('Devices') }} <span class="text-muted ms-1">{{ $total }}</span>
                         <i class="fas fa-chevron-down ms-auto small" x-bind:class="{ 'fa-rotate-180': open }"></i>
                     </button>
-                    <div class="device-switcher d-lg-block mt-2 mt-lg-0" x-bind:class="{ 'd-none': ! open }" wire:poll.30s>
+                    <div class="device-switcher d-lg-block mt-2 mt-lg-0" x-bind:class="{ 'd-none': ! open }">
                         <div class="position-relative mb-2">
                             <i class="fas fa-search position-absolute top-50 translate-middle-y text-body-secondary small" style="left: .75rem"></i>
                             <input aria-label="{{ __('Search devices') }}" class="form-control form-control-sm" placeholder="{{ __('Search devices, OS, IP…') }}" style="padding-left: 2rem" type="search" wire:model.live.debounce.300ms="search">
@@ -98,7 +98,7 @@
                         @if ($tags !== [])
                             <div class="mdm-tags mb-2">
                                 @foreach ($tags as $tagOption)
-                                    <x-tag as="button" :tag="$tagOption" :active="strcasecmp($tag, $tagOption) === 0" wire:click="filterTag(@js($tagOption))" />
+                                    <x-tag as="button" :tag="$tagOption" :active="strcasecmp($tag, $tagOption) === 0" wire:click="filterTag('{{ $tagOption }}')" />
                                 @endforeach
                             </div>
                         @endif

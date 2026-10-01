@@ -1,17 +1,19 @@
 @php
     $hasData = ! empty($selectedDevice->data);
-    // The safe actions are buttons (the most useful one primary), Turn off is in the menu.
+    // Installing the updates is the button (primary when there are some); the other commands are
+    // in the menu.
     $buttons = [
         'doUpdates' => ['icon' => 'fas fa-sync', 'label' => $pendingUpdates > 0 ? trans_choice('Install :count update|Install :count updates', $pendingUpdates, ['count' => $pendingUpdates]) : __('Install updates'), 'confirm' => null, 'primary' => $pendingUpdates > 0],
-        'restart' => ['icon' => 'fas fa-redo', 'label' => __('Restart'), 'confirm' => __('Restart :device now? Unsaved work of its users is lost.', ['device' => $selectedDevice->displayName]), 'primary' => false],
-        // Collects updates, packages and disk health again now instead of on the next schedule.
-        'sync' => ['icon' => 'fas fa-cloud-download-alt', 'label' => __('Sync'), 'confirm' => null, 'primary' => false, 'title' => __('Collect all data on the device again now and report it')],
     ];
-    $turnOffRunning = \App\Models\Device::findActive($active, 'turnOff') ?? \App\Models\Device::findActive($active, 'restart');
-    $turnOffRefusal = $selectedDevice->commandRefusal('turnOff');
+    $menuCommands = [
+        // Collects updates, packages and disk health again now instead of on the next schedule.
+        'sync' => ['icon' => 'fas fa-cloud-download-alt', 'label' => __('Sync'), 'confirm' => null, 'title' => __('Collect all data on the device again now and report it')],
+        'restart' => ['icon' => 'fas fa-redo', 'label' => __('Restart'), 'confirm' => __('Restart :device now? Unsaved work of its users is lost.', ['device' => $selectedDevice->displayName])],
+        'turnOff' => ['icon' => 'fas fa-power-off', 'label' => __('Turn off'), 'confirm' => __('Turn off :device? It can only be started again on site (or with Wake-on-LAN).', ['device' => $selectedDevice->displayName])],
+    ];
 @endphp
-{{-- Polls faster while a command is on its way, so its progress stays current. --}}
-<div class="mt-3" @if ($active->isNotEmpty() || $recentWake?->active) wire:poll.2s @elseif ($hasData) wire:poll.15s @endif>
+{{-- Reloads when the device reports (live updates over Reverb), e.g. the progress of a command. --}}
+<div class="mt-3">
     <div class="d-flex flex-wrap align-items-center gap-2">
         @if ($selectedDevice->offline && ($hasData || $selectedDevice->isPingOnly))
             <button class="btn {{ $wakeRefusal ? 'btn-light' : 'btn-primary' }}" type="button" wire:click="wake" wire:loading.attr="disabled" wire:target="wake"
@@ -26,7 +28,7 @@
         @elseif ($hasData)
             @foreach ($buttons as $command => $button)
                 @php
-                    $running = \App\Models\Device::findActive($active, $command) ?? ($command === 'restart' ? \App\Models\Device::findActive($active, 'turnOff') : null);
+                    $running = \App\Models\Device::findActive($active, $command);
                     $refusal = $selectedDevice->commandRefusal($command);
                 @endphp
                 <button class="btn {{ $button['primary'] && ! $running ? 'btn-primary' : 'btn-light' }}" type="button"
@@ -49,11 +51,12 @@
             x-on:click="Livewire.dispatch('openModal', {livewireComponents: 'notifications.device-rules', title: @js(__('Alerts for :device', ['device' => $selectedDevice->displayName])), parameters: {deviceId: {{ $selectedDevice->id }}}})">
             <i class="far fa-bell"></i>
         </button>
-        <div class="dropdown">
-            <button aria-expanded="false" aria-label="{{ __('More actions') }}" class="btn btn-light btn-sq" data-bs-toggle="dropdown" title="{{ __('More actions') }}" type="button">
+        {{-- Open state in Alpine (not Bootstrap's JS): a live update of the component keeps it open. --}}
+        <div class="dropdown" x-data="{ open: false }" x-on:click.outside="open = false" x-on:keydown.escape.window="open = false">
+            <button x-bind:aria-expanded="open" aria-label="{{ __('More actions') }}" class="btn btn-light btn-sq" title="{{ __('More actions') }}" type="button" x-on:click="open = ! open" x-bind:class="{ show: open }">
                 <i class="fas fa-ellipsis-h"></i>
             </button>
-            <ul class="dropdown-menu dropdown-menu-end">
+            <ul class="dropdown-menu dropdown-menu-end" data-bs-popper="static" x-bind:class="{ show: open }" x-on:click="if ($event.target.closest('button:not([disabled])')) open = false">
                 {{-- The agent update is in the "newer agent" alert, not repeated here. --}}
                 <li>
                     <button class="dropdown-item" type="button" wire:click="$dispatch('rename-device')">
@@ -75,13 +78,30 @@
                 @endif
                 @if ($hasData)
                     <li><hr class="dropdown-divider"></li>
-                    <li>
-                        <button class="dropdown-item" type="button" wire:click="sendCommandToDevice('turnOff')"
-                            wire:confirm="{{ __('Turn off :device? It can only be started again on site (or with Wake-on-LAN).', ['device' => $selectedDevice->displayName]) }}"
-                            @disabled($turnOffRunning || $turnOffRefusal) @if ($turnOffRefusal) title="{{ $turnOffRefusal }}" @endif>
-                            <i class="dropdown-ico fas fa-power-off fa-fw"></i>{{ __('Turn off') }}
-                        </button>
-                    </li>
+                    @foreach ($menuCommands as $command => $item)
+                        @php
+                            // A restart and a shutdown exclude each other.
+                            $running = \App\Models\Device::findActive($active, $command)
+                                ?? (in_array($command, ['restart', 'turnOff'], true) ? (\App\Models\Device::findActive($active, 'restart') ?? \App\Models\Device::findActive($active, 'turnOff')) : null);
+                            $refusal = $selectedDevice->commandRefusal($command);
+                        @endphp
+                        <li>
+                            <button class="dropdown-item d-flex align-items-center" type="button" wire:click="sendCommandToDevice('{{ $command }}')"
+                                @if ($item['confirm']) wire:confirm="{{ $item['confirm'] }}" @endif
+                                @if ($running) title="{{ $running->label }}: {{ $running->statusLabel }}" @elseif ($refusal) title="{{ $refusal }}" @elseif ($item['title'] ?? null) title="{{ $item['title'] }}" @endif
+                                @disabled($running || $refusal)>
+                                @if ($running && $running->command === $command)
+                                    <span aria-hidden="true" class="dropdown-ico spinner-border spinner-border-sm"></span>
+                                @else
+                                    <i class="dropdown-ico {{ $item['icon'] }} fa-fw"></i>
+                                @endif
+                                {{ $item['label'] }}
+                                @if ($running && $running->command === $command)
+                                    <span class="small text-muted ms-2">{{ $running->statusLabel }}</span>
+                                @endif
+                            </button>
+                        </li>
+                    @endforeach
                 @endif
                 <li><hr class="dropdown-divider"></li>
                 <li>
@@ -116,6 +136,12 @@
                     <div class="flex-grow-1 min-w-0">@include('partials.device.command-progress', ['command' => $command])</div>
                     @if ($command->status === 'queued')
                         <button class="btn btn-sm btn-link text-body-secondary p-0" title="{{ __('Cancel') }}" type="button" wire:click="cancel({{ $command->id }})">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    @else
+                        {{-- A command the device took can hang (an installer waiting for a window): giving it up frees the way for Restart or a new try. --}}
+                        <button class="btn btn-sm btn-link text-body-secondary p-0" title="{{ __('Give up waiting') }}" type="button" wire:click="cancel({{ $command->id }})"
+                            wire:confirm="{{ __('Stop waiting for :command? The device may still be working on it, but it no longer blocks other commands (e.g. Restart).', ['command' => $command->label]) }}">
                             <i class="fas fa-times"></i>
                         </button>
                     @endif

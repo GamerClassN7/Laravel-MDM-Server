@@ -5,6 +5,7 @@ namespace App\Livewire;
 use App\Models\DeviceMetric;
 use Carbon\CarbonImmutable;
 use Livewire\Attributes\Url;
+use Livewire\Attributes\On;
 use Livewire\Component;
 
 class DeviceMetrics extends Component
@@ -36,6 +37,10 @@ class DeviceMetrics extends Component
             $this->range = $range;
         }
     }
+
+    /** Live update (resources/js/live.js): this device changed. */
+    #[On('device-changed.{selectedDeviceId}')]
+    public function deviceChanged(): void {}
 
     public function render()
     {

@@ -45,7 +45,8 @@ class Run extends Component
     {
         $script = Script::findOrFail($this->scriptId);
         // Devices the script can run on first, then by name.
-        $devices = Device::query()->get()
+        // Ping-only devices have no agent to run scripts.
+        $devices = Device::query()->where('kind', 'agent')->get()
             ->map(fn (Device $device) => [
                 'id' => $device->id,
                 'name' => $device->displayName,

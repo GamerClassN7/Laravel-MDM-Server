@@ -1,5 +1,5 @@
 {{-- Polls faster while an action is on its way, so its progress stays current. --}}
-<div @if ($busy) wire:poll.3s @else wire:poll.15s @endif>
+<div>
     @if ($alerts)
         {{-- Each smart alert on its own under the device card; the less severe ones behind "Show all". --}}
         <div class="vstack gap-2 mt-3" x-data="{ all: false }">

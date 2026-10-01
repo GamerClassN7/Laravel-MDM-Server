@@ -166,6 +166,10 @@ class ShowDevices extends Component
         ];
     }
 
+    /** Live update (resources/js/live.js): some device changed. */
+    #[On('devices-changed')]
+    public function devicesChanged(): void {}
+
     public function render()
     {
         $selectedDevice = $this->selectedDeviceId ? Device::find($this->selectedDeviceId) : null;

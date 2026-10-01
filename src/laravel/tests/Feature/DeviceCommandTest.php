@@ -139,7 +139,8 @@ class DeviceCommandTest extends TestCase
 
     public function test_queued_commands_can_be_cancelled_and_the_toolbar_shows_progress(): void
     {
-        $this->actingAs(User::factory()->create());
+        $user = User::factory()->create();
+        $this->actingAs($user);
         $device = $this->device();
 
         Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $device->id])
@@ -154,12 +155,18 @@ class DeviceCommandTest extends TestCase
             ->assertSee('35 %')
             ->assertSee('winget upgrade --all')
             ->call('cancel', $command->id);
-        // Taken by the agent: not cancelled anymore.
-        $this->assertSame('running', $command->fresh()->status);
-
-        $command->forceFill(['status' => 'queued'])->save();
-        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $device->id])->call('cancel', $command->id);
+        // A hanging update is given up: it no longer blocks Restart or a new try.
         $this->assertSame('cancelled', $command->fresh()->status);
+        $this->assertStringStartsWith('Given up by', $command->fresh()->message);
+        $this->assertNotNull($device->issueCommand('doUpdates'));
+        // What the agent reports for it later is ignored.
+        $this->signedJson('POST', "/api/device/commands/{$command->id}", ['status' => 'succeeded'], 'secret-token')->assertStatus(409);
+
+        $queued = $device->commands()->where('status', 'queued')->sole();
+        $this->app['auth']->forgetGuards();
+        $this->actingAs($user);
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $device->id])->call('cancel', $queued->id);
+        $this->assertSame(['cancelled', 'Cancelled by '.$user->name], [$queued->fresh()->status, $queued->fresh()->message]);
     }
 
     public function test_one_update_of_the_list_is_installed(): void

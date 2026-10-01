@@ -7,6 +7,15 @@
 
     <!-- CSRF Token -->
     <meta content="{{ csrf_token() }}" name="csrf-token">
+    {{-- Live updates (resources/js/live.js): the public key of the Reverb app, the secret stays on the server. --}}
+    <meta content="{{ config('broadcasting.connections.reverb.key') }}" name="mdm-reverb-key">
+    @php($reverb = config('broadcasting.connections.reverb.options'))
+    @if (filled($reverb['host'] ?? null) && ! in_array(strtolower($reverb['host']), ['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'], true))
+        {{-- Reverb on its own public address (REVERB_HOST), as the agents are told too; otherwise the portal's address. --}}
+        <meta content="{{ $reverb['host'] }}" name="mdm-reverb-host">
+        <meta content="{{ $reverb['port'] ?? '' }}" name="mdm-reverb-port">
+        <meta content="{{ $reverb['scheme'] ?? 'https' }}" name="mdm-reverb-scheme">
+    @endif
 
     <title>{{ config('app.name', 'Laravel') }}</title>
 

@@ -105,7 +105,7 @@
                 </div>
             </div>
         @else
-            <div class="row g-4" wire:poll.30s>
+            <div class="row g-4">
                 <div class="col-12 col-xl-8 vstack gap-4">
                     <section>
                         <h2 class="h6 fw-semibold text-body-secondary mb-2">{{ __('Firing now') }}</h2>

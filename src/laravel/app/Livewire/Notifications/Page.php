@@ -145,6 +145,10 @@ class Page extends Component
         return array_values(array_unique(array_filter(array_map('trim', preg_split('/[\s,;]+/', $this->emails)))));
     }
 
+    /** Live update (resources/js/live.js): some device changed. */
+    #[On('devices-changed')]
+    public function devicesChanged(): void {}
+
     public function render()
     {
         $rules = AlertRule::query()->where('user_id', auth()->id())->orderBy('type')->orderBy('id')->get();

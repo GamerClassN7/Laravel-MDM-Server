@@ -73,7 +73,7 @@ class Schedule extends Component
                 $nextRuns[] = $next;
             }
         }
-        $devices = $this->targetIsEmpty() ? collect() : Device::targeted($this->target());
+        $devices = $this->targetIsEmpty() ? collect() : Device::targeted($this->target())->reject->isPingOnly;
 
         return view('livewire.script.schedule', [
             'script' => $script,
