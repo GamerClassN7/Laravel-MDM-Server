@@ -757,8 +757,20 @@ if ($Update) {
             Update-Module -Name $module.Name -RequiredVersion $module.Available -Force -Confirm:$false -ErrorAction Stop
         }
         catch {
-            $module | Add-Member -NotePropertyName Error -NotePropertyValue $_.Exception.Message
-            $remaining += $module
+            # Update-Module reads the dates of the installation, which modules not installed with
+            # Install-Module lack (Microsoft.WinGet.Client: "Cannot convert null to type
+            # System.DateTime"). Installing the version next to the old one is the same result.
+            $updateError = $_.Exception.Message
+            try {
+                $install = @{ Name = $module.Name; RequiredVersion = $module.Available; Repository = 'PSGallery'; Scope = 'AllUsers'; Force = $true; Confirm = $false; ErrorAction = 'Stop' }
+                $parameters = (Get-Command -Name Install-Module).Parameters
+                foreach ($switch in 'AllowClobber', 'SkipPublisherCheck', 'AcceptLicense') { if ($parameters.ContainsKey($switch)) { $install[$switch] = $true } }
+                Install-Module @install
+            }
+            catch {
+                $module | Add-Member -NotePropertyName Error -NotePropertyValue "$updateError; Install-Module: $($_.Exception.Message)"
+                $remaining += $module
+            }
         }
     }
     $outdated = $remaining
@@ -2929,6 +2941,43 @@ function Start-NextUpdate {
     }
 }
 
+function Invoke-PowerAction {
+    # Restarts or turns off the device, also while updates are being installed (their job and
+    # installers are ended). Returns the reason when it did not work, $null when it is on its way.
+    param ([switch]$Restart)
+
+    if ($script:UpdateJob) {
+        Write-AgentLog "$(if ($Restart) { 'Restart' } else { 'Turn off' }) while updates are being installed: they are interrupted"
+        Save-CommandState
+    }
+    try {
+        if ($OnLinux) {
+            $output = if ($Restart) { systemctl reboot 2>&1 } else { systemctl poweroff 2>&1 }
+            if ($LASTEXITCODE -ne 0) { throw "systemctl: exit $LASTEXITCODE $output" }
+        } elseif ($Restart) {
+            Restart-Computer -Force -ErrorAction Stop
+        } else {
+            Stop-Computer -Force -ErrorAction Stop
+        }
+        return $null
+    }
+    catch {
+        $first = $_.Exception.Message
+    }
+    # Second try, forced: the cmdlets refuse while an installation holds the shutdown (Windows) or
+    # a unit blocks it (Linux).
+    if ($OnLinux) {
+        $output = if ($Restart) { systemctl reboot --force 2>&1 } else { systemctl poweroff --force 2>&1 }
+    } else {
+        $output = & shutdown.exe $(if ($Restart) { '/r' } else { '/s' }) /f /t 0 /d p:4:1 2>&1
+    }
+    if ($LASTEXITCODE -eq 0) {
+        return $null
+    }
+
+    return "$first; forced: exit $LASTEXITCODE $output".Trim()
+}
+
 function Invoke-DeviceCommand {
     param (
         [Parameter(Mandatory = $true)]
@@ -3004,14 +3053,26 @@ function Invoke-DeviceCommand {
             }
         }
         'turnOff' {
-            [void](Send-CommandStatus -Id $Id -Status succeeded -Message 'Shutting down')
-            if ($OnLinux) { systemctl poweroff } else { Stop-Computer -Force }
+            [void](Send-CommandStatus -Id $Id -Status running -Message 'Shutting down')
+            $failure = Invoke-PowerAction -Restart:$false
+            if ($failure) {
+                Write-AgentLog "Turn off failed: $failure"
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "Turn off failed: $failure")
+            } else {
+                [void](Send-CommandStatus -Id $Id -Status succeeded -Message 'Shutting down')
+            }
         }
         'restart' {
             # Done when the agent is back after the restart.
             Save-PendingCommand -Id $Id -Command 'restart'
             [void](Send-CommandStatus -Id $Id -Status running -Message 'Restarting')
-            if ($OnLinux) { systemctl reboot } else { Restart-Computer -Force }
+            $failure = Invoke-PowerAction -Restart
+            if ($failure) {
+                # Not restarting after all: report it now, so it can be tried again.
+                Remove-Item -Path "$AgentDir/pending-command.json" -Force -ErrorAction SilentlyContinue
+                Write-AgentLog "Restart failed: $failure"
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "Restart failed: $failure")
+            }
         }
     }
 }

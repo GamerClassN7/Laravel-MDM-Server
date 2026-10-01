@@ -35,11 +35,23 @@ class DeviceCommands extends Component
         }
     }
 
-    /** A command the agent has not taken yet can be cancelled. */
+    /**
+     * Cancels a command not taken yet, or gives up one the device took (a hanging update): it no
+     * longer blocks a new one (Restart, Install updates again). The device may still be working
+     * on it; what it reports later is ignored.
+     */
     public function cancel(int $commandId)
     {
-        DeviceCommand::query()->whereKey($commandId)->where('device_id', $this->selectedDeviceId)->where('status', 'queued')
-            ->update(['status' => 'cancelled', 'finished_at' => now(), 'message' => __('Cancelled by :user', ['user' => auth()->user()?->name ?? '?'])]);
+        $command = DeviceCommand::query()->whereKey($commandId)->where('device_id', $this->selectedDeviceId)->active()->first();
+        if ($command === null) {
+            return;
+        }
+        $user = auth()->user()?->name ?? '?';
+        DeviceCommand::query()->whereKey($command->id)->active()->update([
+            'status' => 'cancelled',
+            'finished_at' => now(),
+            'message' => $command->status === 'queued' ? __('Cancelled by :user', ['user' => $user]) : __('Given up by :user', ['user' => $user]),
+        ]);
     }
 
     public function deleteDevice()

@@ -137,6 +137,12 @@
                         <button class="btn btn-sm btn-link text-body-secondary p-0" title="{{ __('Cancel') }}" type="button" wire:click="cancel({{ $command->id }})">
                             <i class="fas fa-times"></i>
                         </button>
+                    @else
+                        {{-- A command the device took can hang (an installer waiting for a window): giving it up frees the way for Restart or a new try. --}}
+                        <button class="btn btn-sm btn-link text-body-secondary p-0" title="{{ __('Give up waiting') }}" type="button" wire:click="cancel({{ $command->id }})"
+                            wire:confirm="{{ __('Stop waiting for :command? The device may still be working on it, but it no longer blocks other commands (e.g. Restart).', ['command' => $command->label]) }}">
+                            <i class="fas fa-times"></i>
+                        </button>
                     @endif
                 </div>
             @endforeach
