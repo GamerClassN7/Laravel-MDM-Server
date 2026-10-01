@@ -635,4 +635,104 @@ class FleetFeaturesTest extends TestCase
         $this->assertTrue($printer->fresh()->offline);
         Carbon::setTestNow();
     }
+
+    public function test_wake_is_in_the_menu_of_physical_devices(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $pc = $this->device('pc', ['Networks' => [$this->network('192.168.1.20')]], version: '1.11.0');
+        $vm = $this->device('vm', ['Networks' => [$this->network('192.168.1.21')], 'Virtualization' => ['Type' => 'vm', 'Name' => 'kvm']], version: '1.11.0');
+
+        // Online: in the menu, disabled with the reason.
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $pc->id])
+            ->assertSeeHtml('wire:click="wake"')->assertSee('The device is online');
+        // A virtual machine is not woken by a magic packet.
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $vm->id])
+            ->assertDontSeeHtml('wire:click="wake"');
+    }
+
+    public function test_wake_on_lan_can_be_set_by_hand(): void
+    {
+        // The agent reports only a VPN card: nothing to wake, no network to find a relay in.
+        $pc = $this->device('pc', ['Networks' => [$this->network('10.8.0.2', 24, 'AA-BB-CC-DD-EE-09', 'vpn')]], online: false, version: '1.11.0');
+        $relay = $this->device('relay', ['Networks' => [$this->network('192.168.1.5')]], version: '1.11.0');
+        $this->assertSame(__('No wired or Wi-Fi network card is known'), $pc->wakeRefusal());
+
+        $this->assertNull(Device::sanitizeWakeSettings('nonsense', null, null));
+        $this->assertNull(Device::sanitizeWakeSettings(null, '192.168.1.300', 24));
+        $this->assertNull(Device::sanitizeWakeSettings(null, '192.168.1.20', 31));
+        $this->assertSame(['wake_mac' => null, 'wake_address' => null, 'wake_prefix' => null], Device::sanitizeWakeSettings('', ' ', 24));
+
+        $this->actingAs(User::factory()->create());
+        Livewire::test(\App\Livewire\WakeSettings::class, ['deviceId' => $pc->id])
+            ->set('mac', 'aa-bb-cc-dd-ee-10')->set('address', '192.168.1.20')->set('prefix', 24)
+            ->call('save')->assertHasNoErrors();
+        $pc = $pc->fresh();
+        $this->assertSame(['AA:BB:CC:DD:EE:10'], $pc->wakeMacs);
+        $this->assertSame(['192.168.1.0/24' => ['broadcast' => '192.168.1.255']], $pc->wakeNetworks());
+        [$found, $broadcasts] = $pc->wakeRelay();
+        $this->assertSame([$relay->id, ['192.168.1.255', '255.255.255.255']], [$found->id, $broadcasts]);
+        $this->assertSame(['AA:BB:CC:DD:EE:10'], $pc->wake()->params['macs']);
+
+        // Emptied again: what the agent reports.
+        Livewire::test(\App\Livewire\WakeSettings::class, ['deviceId' => $pc->id])
+            ->set('mac', '')->set('address', '')->call('save')->assertHasNoErrors();
+        $this->assertSame([], $pc->fresh()->wakeMacs);
+        // The settings are in the menu of the device.
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $pc->id])->assertSee('Wake-on-LAN settings');
+    }
+
+    public function test_pings_are_spread_over_all_agents_in_the_network(): void
+    {
+        $a = $this->device('a', ['Networks' => [$this->network('192.168.1.5')]], version: '1.11.0');
+        $b = $this->device('b', ['Networks' => [$this->network('192.168.1.6')]], version: '1.11.0');
+        $far = $this->device('far', ['Networks' => [$this->network('10.0.0.5')]], version: '1.11.0');
+        $printers = collect(range(1, 4))->map(function ($i) {
+            $device = new Device;
+            $device->forceFill(['kind' => 'ping', 'name' => "Printer $i", 'os' => '', 'token' => hash('sha256', "p$i"), 'ping_address' => "192.168.1.5$i", 'ping_prefix' => 24])->save();
+
+            return $device;
+        });
+
+        // Two each, none to the agent in another network.
+        $count = fn (Device $relay) => count(Device::pingTargetsFor($relay));
+        $this->assertSame([2, 2, 0], [$count($a), $count($b), $count($far)]);
+        $this->assertNotSame($printers[0]->pingRelay()->id, $printers[1]->pingRelay()->id);
+
+        // A device stays with the agent that pings it when that is as good (no moving around).
+        $current = Device::pingAssignments();
+        foreach ($current as $id => $relayId) {
+            Device::query()->whereKey($id)->update(['ping_relay_id' => $relayId]);
+        }
+        $this->assertSame($current, Device::pingAssignments());
+
+        // An agent goes offline: the other one takes all of them.
+        $b->forceFill(['last_seen_at' => now()->subHour()])->saveQuietly();
+        $this->assertSame([4, 0], [$count($a), $count($b->fresh())]);
+    }
+
+    public function test_sync_of_a_ping_only_device_pings_it_now(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $printer = new Device;
+        $printer->forceFill(['kind' => 'ping', 'name' => 'Printer', 'os' => '', 'token' => hash('sha256', 'p'), 'ping_address' => '192.168.1.50', 'ping_prefix' => 24])->save();
+        $this->assertSame(__('No agents available to send ping'), $printer->pingNowRefusal());
+
+        $old = $this->device('old', ['Networks' => [$this->network('192.168.1.5')]], version: '1.11.0');
+        $this->assertSame('pc-old: '.__('Needs agent :version or newer', ['version' => '1.12.0']), $printer->pingNowRefusal());
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $printer->id])->assertSee('Sync')->call('pingNow')->assertHasErrors('command');
+
+        $old->forceFill(['data' => json_encode(['machine' => ['Hostname' => 'pc-old', 'AgentVersion' => '1.12.0', 'Platform' => 'linux', 'Drives' => [], 'Networks' => [$this->network('192.168.1.5')]]])])->saveQuietly();
+        $this->assertNull($printer->fresh()->pingNowRefusal());
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $printer->id])->call('pingNow')->assertHasNoErrors();
+        $command = $old->commands()->sole();
+        $this->assertSame(['pingNow', ['device' => $printer->id, 'title' => 'Printer'], 'ping:'.$printer->id], [$command->command, $command->params, $command->target]);
+        // No second one while it is on its way.
+        $this->assertNull($printer->fresh()->pingNow());
+
+        $this->signedJson('POST', '/api/device/commands/take', [], 'old')->assertJsonPath('tasks.0.command', 'pingNow')->assertJsonPath('tasks.0.params.device', $printer->id);
+        $this->signedJson('POST', '/api/device/pings', ['results' => [['id' => $printer->id, 'up' => true, 'rtt' => 1.2]]], 'old')->assertJson(['taken' => 1]);
+        $this->signedJson('POST', "/api/device/commands/{$command->id}", ['status' => 'succeeded', 'message' => '192.168.1.50 answered in 1 ms'], 'old')->assertOk();
+        $this->assertFalse($printer->fresh()->offline);
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $printer->id])->assertSee('192.168.1.50 answered in 1 ms');
+    }
 }

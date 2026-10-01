@@ -105,6 +105,14 @@
                                 <i class="fas fa-pen small"></i>
                             </button>
                         </x-tags>
+                    @else
+                        {{-- Without tags the row stays (same height as with them), with a way to add some. --}}
+                        <div class="mdm-tags align-items-center mt-2">
+                            <span aria-hidden="true" class="invisible" style="width: 0; overflow: hidden"><x-tag tag="-" /></span>
+                            <button class="btn btn-sm btn-link text-body-secondary text-decoration-none p-0 small" type="button" wire:click="startEditTags">
+                                <i class="fas fa-tag me-1"></i>{{ __('Add tags') }}
+                            </button>
+                        </div>
                     @endif
                 </div>
 

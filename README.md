@@ -475,6 +475,11 @@ only send a magic packet when no stationary agent can and they reach the server 
 public address as the sleeping device. Every relay needs a report from the last 11 minutes, so its
 networks are current.
 
+**Wake-on-LAN settings** in the device menu set the MAC address and the IPv4 address with its
+prefix by hand, for a card the agent does not report well (a docking station, another card than the
+one that wakes); empty fields use what the agent reports. **Wake** is in the device menu of every
+physical device (not of virtual machines) and says why it cannot wake it now.
+
 The button says why it cannot wake a device (no known network card, no relay in the network). The
 device has to allow it: Wake-on-LAN enabled in the BIOS / UEFI and for the network card (on Windows
 in the adapter's *Power Management* and *Advanced* settings), usually only over a cable. On
@@ -489,11 +494,17 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
 - An online agent 1.10.0+ in the same network (an interface in that IPv4 network, a report from
   the last 11 minutes) pings it with every heartbeat (30 s, 1 s timeout). Agents on a battery never
   ping: in another network the same address may answer for another machine.
+- The ping-only devices of a network are spread over all agents that can ping them: each goes to
+  the one with the fewest so far, and stays with its agent while that is as good. When an agent goes
+  offline, the others take its devices with their next ping (32 per agent at most).
 - The agent gets the addresses with its report response and sends the results to
   `/api/device/pings` (signed like every request). The server takes results only for the devices
   it gave that agent. An answer is the heartbeat of the ping-only device: online, the round trip
   time and the agent are shown; no answer for 90 seconds means offline.
 - **Wake** works as for agents: an agent of its network sends the magic packet to its MAC.
+- **Sync** in its menu pings it now: the agent that pings it (1.12.0+) gets a `pingNow` command,
+  pings the address it was given for it (2 s timeout) and reports the answer, e.g. `192.168.1.50
+  answered in 2 ms`, shown under the device card.
 - The detail has a monitor in the style of [Uptime Kuma](https://github.com/louislam/uptime-kuma):
   the last 50 pings as a bar (green answered, red not), the response now and on average, the
   uptime of the last 24 hours and 30 days, and the response time over 1 h, 24 h, 7 d or 30 d with

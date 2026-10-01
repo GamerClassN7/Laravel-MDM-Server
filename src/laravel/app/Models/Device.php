@@ -32,6 +32,9 @@ class Device extends Model
     /** Agents from this version ping the ping-only devices of their network. */
     public const PING_VERSION = '1.10.0';
 
+    /** Agents that ping a ping-only device on demand (Sync of the device). */
+    public const PING_NOW_VERSION = '1.12.0';
+
     /** At most this many ping-only devices per agent. */
     public const MAX_PING_TARGETS = 32;
 
@@ -419,6 +422,7 @@ class Device extends Model
             DeviceCommand::sanitizeParams($command, $params) === null => __('Invalid parameters'),
             $command === 'installUpdate' && ! $this->commandTracking => __('The agent is too old for this command'),
             $command === 'wake' && version_compare((string) $this->agent_version, self::WAKE_VERSION, '<') => __('The agent is too old for this command'),
+            $command === 'pingNow' && version_compare((string) $this->agent_version, self::PING_NOW_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::PING_NOW_VERSION]),
             $command === 'sync' && version_compare((string) $this->agent_version, self::SYNC_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::SYNC_VERSION]),
             $command === 'installUpdate' && ($params['kind'] ?? null) === 'pwsh' && version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') => __('The agent is too old for this command'),
             default => null,
@@ -881,12 +885,49 @@ class Device extends Model
     }
 
     /**
+     * The IPv4 networks of the cards a magic packet can wake (network => [broadcast]): the address
+     * set by hand (Wake-on-LAN settings) or the ones the agent reports.
+     */
+    public function wakeNetworks(): array
+    {
+        if (! $this->isPingOnly && $this->wake_address && ($ip = ip2long($this->wake_address)) !== false) {
+            $prefix = (int) ($this->wake_prefix ?? 24);
+            $mask = (-1 << (32 - $prefix)) & 0xFFFFFFFF;
+
+            return [long2ip($ip & $mask).'/'.$prefix => ['broadcast' => long2ip(($ip & $mask) | (~$mask & 0xFFFFFFFF))]];
+        }
+
+        return $this->ipv4Networks(self::WAKE_INTERFACE_TYPES);
+    }
+
+    /**
+     * Checks the Wake-on-LAN settings of a device with the agent; empty fields mean "as the agent
+     * reports". Null when they are not valid.
+     */
+    public static function sanitizeWakeSettings(?string $mac, ?string $address, int|string|null $prefix): ?array
+    {
+        $mac = $mac === null || trim($mac) === '' ? null : strtoupper(str_replace('-', ':', trim($mac)));
+        $address = $address === null || trim($address) === '' ? null : trim($address);
+        $prefix = $address === null ? null : ($prefix === null || $prefix === '' ? 24 : (int) $prefix);
+        if (($mac !== null && (! preg_match(DeviceCommand::MAC_PATTERN, $mac) || $mac === '00:00:00:00:00:00'))
+            || ($address !== null && (! filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) || $prefix < 8 || $prefix > 30))) {
+            return null;
+        }
+
+        return ['wake_mac' => $mac, 'wake_address' => $address, 'wake_prefix' => $prefix];
+    }
+
+    /**
      * MAC addresses a magic packet can wake: wired interfaces first, then Wi-Fi.
      *
      * @return array<int, string>
      */
     public function getWakeMacsAttribute(): array
     {
+        // Set by hand (Wake-on-LAN settings): only that card.
+        if (! $this->isPingOnly && $this->wake_mac) {
+            return [$this->wake_mac];
+        }
         $macs = [];
         foreach (['lan', 'wifi'] as $type) {
             foreach ($this->networks as $network) {
@@ -912,7 +953,7 @@ class Device extends Model
         if ($this->wakeMacs === []) {
             return null;
         }
-        $best = $this->bestRelay(self::WAKE_INTERFACE_TYPES, fn (Device $relay) => $relay->commandRefusal('wake', ['macs' => ['00:00:00:00:00:01'], 'broadcasts' => ['255.255.255.255'], 'device' => $this->id]) === null, true);
+        $best = $this->bestRelay(self::WAKE_INTERFACE_TYPES, fn (Device $relay) => $relay->commandRefusal('wake', ['macs' => ['00:00:00:00:00:01'], 'broadcasts' => ['255.255.255.255'], 'device' => $this->id]) === null, true, $this->wakeNetworks());
         if ($best === null) {
             return null;
         }
@@ -930,16 +971,30 @@ class Device extends Model
      * when $allowMobile, nothing stationary qualifies and they reported the same public address as
      * this device. Every relay needs a recent report, so its networks are current.
      */
-    private function bestRelay(array $types, callable $qualifies, bool $allowMobile = false): ?array
+    private function bestRelay(array $types, callable $qualifies, bool $allowMobile = false, ?array $networks = null): ?array
     {
-        $networks = $this->ipv4Networks($types);
+        $best = $this->relayCandidates($types, $qualifies, $allowMobile, $networks)[0] ?? null;
+
+        return $best === null ? null : [$best[0], $best[1]];
+    }
+
+    /**
+     * The agents that can act for this device in its network ([relay, shared networks, score]),
+     * best first: online, signing, reachable over the API, behind the same public address when
+     * both are known; a mobile one only with $allowMobile and the same public address.
+     *
+     * @param  Collection<int, Device>|null  $agents  the agents to choose from (loaded once by callers that ask for many devices)
+     */
+    private function relayCandidates(array $types, callable $qualifies, bool $allowMobile = false, ?array $networks = null, ?Collection $agents = null): array
+    {
+        $networks ??= $this->ipv4Networks($types);
         if ($networks === []) {
-            return null;
+            return [];
         }
 
-        $best = null;
-        foreach (static::query()->whereKeyNot($this->id)->where('kind', 'agent')->orderBy('id')->get() as $relay) {
-            if ($relay->offline || ! $relay->signsRequests || ! $relay->connectedViaApi || ! $qualifies($relay)) {
+        $candidates = [];
+        foreach ($agents ?? static::query()->where('kind', 'agent')->orderBy('id')->get() as $relay) {
+            if ($relay->id === $this->id || $relay->offline || ! $relay->signsRequests || ! $relay->connectedViaApi || ! $qualifies($relay)) {
                 continue;
             }
             if ($relay->isMobile && (! $allowMobile || $this->public_ip === null || $relay->public_ip !== $this->public_ip)) {
@@ -956,12 +1011,11 @@ class Device extends Model
             $score = ($relay->isMobile ? 0 : 4)
                 + ($this->public_ip !== null && $relay->public_ip === $this->public_ip ? 2 : 0)
                 + ($relay->ipv4Networks(['lan'], true) !== [] ? 1 : 0);
-            if ($best === null || $score > $best[2]) {
-                $best = [$relay, $shared, $score];
-            }
+            $candidates[] = [$relay, $shared, $score];
         }
+        usort($candidates, fn ($a, $b) => [$b[2], $a[0]->id] <=> [$a[2], $b[0]->id]);
 
-        return $best === null ? null : [$best[0], $best[1]];
+        return $candidates;
     }
 
     /** Runs on a battery (laptops, tablets): it may be in another network than last time. */
@@ -982,7 +1036,47 @@ class Device extends Model
             return null;
         }
 
-        return $this->bestRelay(['lan'], fn (Device $relay) => version_compare((string) $relay->agent_version, self::PING_VERSION, '>='))[0] ?? null;
+        $relayId = self::pingAssignments()[$this->id] ?? null;
+
+        return $relayId === null ? null : static::query()->find($relayId);
+    }
+
+    /**
+     * Which agent pings which ping-only device (device id => agent id), spread over all agents
+     * that can ping it: each device goes to the one of its candidates (online, 1.10.0+, in its
+     * network, not on a battery) with the fewest devices so far, staying with its current agent
+     * on a tie so the work does not move around; at most MAX_PING_TARGETS per agent.
+     *
+     * @return array<int, int>
+     */
+    public static function pingAssignments(): array
+    {
+        $agents = static::query()->where('kind', 'agent')->orderBy('id')->get()
+            ->filter(fn (Device $agent) => version_compare((string) $agent->agent_version, self::PING_VERSION, '>='))->values();
+        if ($agents->isEmpty()) {
+            return [];
+        }
+        $load = [];
+        $assignments = [];
+        foreach (static::query()->where('kind', 'ping')->whereNotNull('ping_address')->orderBy('id')->get() as $device) {
+            $best = null;
+            foreach ($device->relayCandidates(['lan'], fn () => true, false, null, $agents) as [$relay]) {
+                $count = $load[$relay->id] ?? 0;
+                if ($count >= self::MAX_PING_TARGETS) {
+                    continue;
+                }
+                $rank = [$count, $relay->id === $device->ping_relay_id ? 0 : 1];
+                if ($best === null || $rank < $best[1]) {
+                    $best = [$relay->id, $rank];
+                }
+            }
+            if ($best !== null) {
+                $assignments[$device->id] = $best[0];
+                $load[$best[0]] = ($load[$best[0]] ?? 0) + 1;
+            }
+        }
+
+        return $assignments;
     }
 
     /**
@@ -996,8 +1090,9 @@ class Device extends Model
             return [];
         }
 
-        return static::query()->where('kind', 'ping')->whereNotNull('ping_address')->orderBy('id')->get()
-            ->filter(fn (Device $device) => $device->pingRelay()?->id === $relay->id)
+        $mine = array_keys(array_filter(self::pingAssignments(), fn ($relayId) => $relayId === $relay->id));
+
+        return static::query()->whereKey($mine)->orderBy('id')->get()
             ->take(self::MAX_PING_TARGETS)
             ->map(fn (Device $device) => ['id' => $device->id, 'address' => $device->ping_address])
             ->values()->all();
@@ -1096,7 +1191,7 @@ class Device extends Model
         return match (true) {
             ! $this->offline => __('The device is online'),
             $this->wakeMacs === [] => $this->isPingOnly ? __('Add its MAC address to wake it') : __('No wired or Wi-Fi network card is known'),
-            $this->ipv4Networks(self::WAKE_INTERFACE_TYPES) === [] => __('Its network is not known yet (agent 1.9.0+ reports it)'),
+            $this->wakeNetworks() === [] => __('Its network is not known yet (agent 1.9.0+ reports it, or set it in the Wake-on-LAN settings)'),
             $this->wakeRelay() === null => __('No online agent 1.9.0+ in the same network'),
             default => null,
         };
@@ -1116,6 +1211,38 @@ class Device extends Model
             'device' => $this->id,
             'title' => $this->displayName,
         ], $user);
+    }
+
+    /** Why a ping-only device cannot be pinged now (Sync), or null when its agent can do it. */
+    public function pingNowRefusal(): ?string
+    {
+        if (! $this->isPingOnly) {
+            return __('Unknown command');
+        }
+        $relay = $this->pingRelay();
+        if ($relay === null) {
+            return __('No agents available to send ping');
+        }
+        $refusal = $relay->commandRefusal('pingNow', ['device' => $this->id]);
+
+        return $refusal === null ? null : $relay->displayName.': '.$refusal;
+    }
+
+    /** Sync of a ping-only device: the agent that pings it pings it now; the command is the agent's. */
+    public function pingNow(?User $user = null): ?DeviceCommand
+    {
+        if ($this->pingNowRefusal() !== null) {
+            return null;
+        }
+
+        return $this->pingRelay()->issueCommand('pingNow', ['device' => $this->id, 'title' => $this->displayName], $user);
+    }
+
+    /** The latest Sync (ping now) of this ping-only device in the last 10 minutes. */
+    public function recentPingNow(): ?DeviceCommand
+    {
+        return DeviceCommand::query()->with('device')->where('command', 'pingNow')->where('target', 'ping:'.$this->id)
+            ->where('created_at', '>=', now()->subMinutes(10))->latest('id')->first();
     }
 
     /** The latest wake of this device in the last 10 minutes (sent through another agent). */

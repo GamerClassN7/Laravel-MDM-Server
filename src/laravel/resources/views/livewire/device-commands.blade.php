@@ -8,7 +8,9 @@
         'restart' => ['icon' => 'fas fa-redo', 'label' => __('Restart'), 'confirm' => __('Restart :device now? Unsaved work of its users is lost.', ['device' => $selectedDevice->displayName])],
         'turnOff' => ['icon' => 'fas fa-power-off', 'label' => __('Turn off'), 'confirm' => __('Turn off :device? It can only be started again on site (or with Wake-on-LAN).', ['device' => $selectedDevice->displayName])],
     ];
-    $canWake = $selectedDevice->offline && ($hasData || $selectedDevice->isPingOnly);
+    // Wake in the menu of every device a magic packet can wake (not virtual machines), disabled
+    // with the reason while it cannot (online, no relay in its network, …).
+    $canWake = $selectedDevice->isPingOnly || ($hasData && $selectedDevice->virtualization === null);
 @endphp
 {{-- Reloads when the device reports (live updates over Reverb), e.g. the progress of a command.
      The bell and the menu sit in the top right corner of the device card (position-relative). --}}
@@ -62,6 +64,14 @@
                         </button>
                     </li>
                 @endif
+                @if ($canWake && ! $selectedDevice->isPingOnly)
+                    <li>
+                        <button class="dropdown-item" type="button"
+                            x-on:click="Livewire.dispatch('openModal', {livewireComponents: 'wake-settings', title: @js(__('Wake-on-LAN of :device', ['device' => $selectedDevice->displayName])), parameters: {deviceId: {{ $selectedDevice->id }}}})">
+                            <i class="dropdown-ico fas fa-sliders-h fa-fw"></i>{{ __('Wake-on-LAN settings') }}
+                        </button>
+                    </li>
+                @endif
                 @if ($canWake)
                     <li><hr class="dropdown-divider"></li>
                     <li>
@@ -73,6 +83,26 @@
                                 <i class="dropdown-ico fas fa-sun fa-fw"></i>
                             @endif
                             {{ __('Wake') }}
+                            @if ($wakeRefusal)
+                                <span class="small text-muted ms-2 text-truncate" style="max-width: 12rem">{{ $wakeRefusal }}</span>
+                            @endif
+                        </button>
+                    </li>
+                @endif
+                @if ($selectedDevice->isPingOnly)
+                    {{-- Sync of a ping-only device: the agent that pings it pings it now. --}}
+                    <li>
+                        <button class="dropdown-item d-flex align-items-center" type="button" wire:click="pingNow"
+                            title="{{ $pingNowRefusal ?? __('Ping it now') }}" @disabled($pingNowRefusal || $recentPing?->active)>
+                            @if ($recentPing?->active)
+                                <span aria-hidden="true" class="dropdown-ico spinner-border spinner-border-sm"></span>
+                            @else
+                                <i class="dropdown-ico fas fa-cloud-download-alt fa-fw"></i>
+                            @endif
+                            {{ __('Sync') }}
+                            @if ($pingNowRefusal)
+                                <span class="small text-muted ms-2 text-truncate" style="max-width: 12rem">{{ $pingNowRefusal }}</span>
+                            @endif
                         </button>
                     </li>
                 @endif
@@ -123,6 +153,13 @@
         </div>
     @elseif ($selectedDevice->offline && ($hasData || $selectedDevice->isPingOnly) && $wakeRefusal)
         <div class="small text-muted mt-2"><i class="fas fa-sun me-1"></i>{{ __('Wake-on-LAN') }}: {{ $wakeRefusal }}</div>
+    @endif
+
+    @if ($recentPing)
+        <div class="small mt-2 {{ in_array($recentPing->status, ['failed', 'expired'], true) ? 'text-danger' : 'text-muted' }}">
+            <i class="fas fa-network-wired me-1"></i>{{ __('Ping through :relay', ['relay' => $recentPing->device?->displayName]) }}:
+            {{ in_array($recentPing->status, ['queued', 'sent'], true) ? __('waiting for :relay', ['relay' => $recentPing->device?->displayName]) : ($recentPing->message ?: $recentPing->statusLabel) }}
+        </div>
     @endif
 
     @error('command')
