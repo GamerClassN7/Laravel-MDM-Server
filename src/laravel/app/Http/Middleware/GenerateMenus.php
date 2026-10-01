@@ -56,14 +56,6 @@ class GenerateMenus
                 'fas fa-users',
                 'system.user.index',
             ],
-            'Subscriptions' => [
-                'fas fa-dollar-sign',
-                'system.subscription.index',
-            ],
-            'File' => [
-                'fas fa-folder',
-                'system.file.index',
-            ],
             'Logs' => [
                 'fas fa-bug',
                 'system.log.index',
@@ -89,9 +81,10 @@ class GenerateMenus
             ];
         }
 
+        // One flat menu (navigation.blade.php): the system pages after the others, for system admins only.
         $menus = [
             'main-menu'   => $menuRoutes,
-            'system-menu' => $systemRoutes,
+            'system-menu' => \Illuminate\Support\Facades\Gate::allows('is-system-admin') ? $systemRoutes : [],
         ];
 
         foreach ($menus as $menuKey => $MenuItems) {

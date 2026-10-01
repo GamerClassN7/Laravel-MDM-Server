@@ -12,7 +12,6 @@ Route::auth();
 
 Route::get('/home', [App\Http\Controllers\HomeController::class, 'index'])->name('home');
 
-Route::get('/files/{path}/{file_name}/{public?}', [App\Http\Controllers\FileController::class, 'serv'])->where('path', '.*')->middleware(['auth'])->name('file.serv');
 Route::get('/changelog', [App\Http\Controllers\ChangelogController::class, 'index'])->middleware(['auth'])->name('changelog');
 
 Route::prefix('profile')->name('profile.')->middleware(['auth'])->group(function () {
@@ -26,13 +25,10 @@ Route::prefix('profile')->name('profile.')->middleware(['auth'])->group(function
 Route::prefix('system')->name('system.')->middleware(['auth', 'is-system-admin'])->group(function () {
 	Route::get('/settings', [App\Http\Controllers\System\SettingController::class, 'index'])->name('setting.index');
 
-	Route::get('/files', [App\Http\Controllers\System\FileController::class, 'index'])->name('file.index');
 
     Route::get('/audit', [App\Http\Controllers\System\AuditController::class, 'index'])->name('audit.index');
 
     Route::get('/user', [App\Http\Controllers\System\UserController::class, 'index'])->name('user.index');
-
-    Route::get('/subscription', [App\Http\Controllers\System\SubscriptionController::class, 'index'])->name('subscription.index');
 
     Route::get('/api', [App\Http\Controllers\System\ApiController::class, 'index'])->name('api.index');
 

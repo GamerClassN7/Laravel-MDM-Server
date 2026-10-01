@@ -28,30 +28,16 @@
                         </a>
                     </li>
                 @endforeach
+                {{-- The system pages in the same list (system admins only, see GenerateMenus). --}}
+                @foreach ($systemMenuItems as $item)
+                    <li class="nav-item {{ ($item->isActive() || $item->isUse()) ? 'is-active' : '' }}">
+                        <a class="nav-link" href="{{ route($item->route) }}">
+                            <i class="nav-link-ico {{ $item->icon }}"></i>
+                            <div class="nav-link-title">{{ __($item->title) }}</div>
+                        </a>
+                    </li>
+                @endforeach
             </ul>
-
-            @if($systemMenuItems)
-                {{-- MAIN NAVIGATION ALL --}}
-                <div>
-                    <div class="text-body-tertiary nav-collapsed-hide d-flex align-items-center small nav-title-toggle py-2 {{ getToggleState('nav-system') == 'open' ? '' : 'collapsed' }}" data-bs-toggle="collapse" data-bs-target="#nav-system">
-                        <i class="fas fa-angle-down collapse-icon"></i>
-                        <span class="fw-medium">{{ __('System') }}</span>
-                    </div>
-                    <div class="remember collapse {{ getToggleState('nav-system') == 'open' ? 'show' : '' }}" id="nav-system">
-                        <ul class="app-nav nav flex-column">
-                            @foreach ($systemMenuItems as $item)
-                                <li class="nav-item {{ ($item->isActive() || $item->isUse()) ? 'is-active' : '' }}">
-                                    <a class="nav-link" href="{{ route($item->route) }}">
-                                        <i class="nav-link-ico {{ $item->icon }}"></i>
-                                        <div class="nav-link-title">{{ __($item->title) }}</div>
-                                    </a>
-                                </li>
-                            @endforeach
-                        </ul>
-                    </div>
-                </div>
-                {{-- MAIN NAVIGATION SYSTEM --}}
-            @endif
         </div>
 
         <div class="sidebar-footer">

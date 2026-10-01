@@ -547,7 +547,7 @@
             @endif
             @if ($scriptRuns->isNotEmpty())
                 <div aria-labelledby="scripts-tab" class="tab-pane fade {{ $activeTab === 'scripts' ? 'show active' : '' }}" id="scripts-tab-pane" role="tabpanel" tabindex="0">
-                    @include('livewire.script.runs', ['runs' => $scriptRuns, 'showDevice' => false])
+                    @livewire('script-run.data-table', ['deviceId' => $selectedDevice->id], key('device-script-runs-'.$selectedDevice->id))
                     @unless ($selectedDevice->scriptsEnabled)
                         <p class="small text-muted mt-3 mb-0">{{ __('Remediation scripts are disabled on this device.') }}</p>
                     @endunless
