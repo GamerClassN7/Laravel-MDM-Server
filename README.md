@@ -502,6 +502,9 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
   it gave that agent. An answer is the heartbeat of the ping-only device: online, the round trip
   time and the agent are shown; no answer for 90 seconds means offline.
 - **Wake** works as for agents: an agent of its network sends the magic packet to its MAC.
+- **Sync** in its menu pings it now: the agent that pings it (1.12.0+) gets a `pingNow` command,
+  pings the address it was given for it (2 s timeout) and reports the answer, e.g. `192.168.1.50
+  answered in 2 ms`, shown under the device card.
 - The detail has a monitor in the style of [Uptime Kuma](https://github.com/louislam/uptime-kuma):
   the last 50 pings as a bar (green answered, red not), the response now and on average, the
   uptime of the last 24 hours and 30 days, and the response time over 1 h, 24 h, 7 d or 30 d with

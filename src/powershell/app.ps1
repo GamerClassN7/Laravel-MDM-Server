@@ -91,8 +91,8 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.11.0'
-$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake')
+$AgentVersion = '1.12.0'
+$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
     windows = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
@@ -3265,6 +3265,30 @@ function Invoke-DeviceCommand {
             catch {
                 Write-AgentLog "Wake-on-LAN failed: $($_.Exception.Message)"
                 [void](Send-CommandStatus -Id $Id -Status failed -Message "Wake-on-LAN failed: $($_.Exception.Message)")
+            }
+        }
+        'pingNow' {
+            # Sync of a ping-only device: pinged now. Only an address the server gave this agent
+            # for it (Set-PingTargets), the parameters carry just its id.
+            $target = @($script:PingTargets | Where-Object { "$($_.Id)" -eq "$($Params.device)" }) | Select-Object -First 1
+            if (-not $target) {
+                [void](Send-CommandStatus -Id $Id -Status failed -Message 'It is not one of the devices this agent pings')
+                return
+            }
+            $ping = New-Object System.Net.NetworkInformation.Ping
+            try {
+                $reply = try { $ping.Send($target.Address, 2000) } catch { $null }
+            }
+            finally {
+                $ping.Dispose()
+            }
+            $up = $reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
+            $result = @{ id = $target.Id; up = [bool]$up; rtt = $(if ($up) { [double]$reply.RoundtripTime } else { $null }); at = Get-UnixTime }
+            try { Invoke-MdmApi -Method Post -Path 'device/pings' -Token $script:AgentToken -Body @{ results = @($result) } | Out-Null } catch { Write-AgentLog "Ping result not sent: $($_.Exception.Message)" }
+            if ($up) {
+                [void](Send-CommandStatus -Id $Id -Status succeeded -Message "$($target.Address) answered in $($reply.RoundtripTime) ms")
+            } else {
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "$($target.Address) did not answer within 2 s")
             }
         }
         'turnOff' {

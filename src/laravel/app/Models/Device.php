@@ -32,6 +32,9 @@ class Device extends Model
     /** Agents from this version ping the ping-only devices of their network. */
     public const PING_VERSION = '1.10.0';
 
+    /** Agents that ping a ping-only device on demand (Sync of the device). */
+    public const PING_NOW_VERSION = '1.12.0';
+
     /** At most this many ping-only devices per agent. */
     public const MAX_PING_TARGETS = 32;
 
@@ -419,6 +422,7 @@ class Device extends Model
             DeviceCommand::sanitizeParams($command, $params) === null => __('Invalid parameters'),
             $command === 'installUpdate' && ! $this->commandTracking => __('The agent is too old for this command'),
             $command === 'wake' && version_compare((string) $this->agent_version, self::WAKE_VERSION, '<') => __('The agent is too old for this command'),
+            $command === 'pingNow' && version_compare((string) $this->agent_version, self::PING_NOW_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::PING_NOW_VERSION]),
             $command === 'sync' && version_compare((string) $this->agent_version, self::SYNC_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::SYNC_VERSION]),
             $command === 'installUpdate' && ($params['kind'] ?? null) === 'pwsh' && version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') => __('The agent is too old for this command'),
             default => null,
@@ -1207,6 +1211,38 @@ class Device extends Model
             'device' => $this->id,
             'title' => $this->displayName,
         ], $user);
+    }
+
+    /** Why a ping-only device cannot be pinged now (Sync), or null when its agent can do it. */
+    public function pingNowRefusal(): ?string
+    {
+        if (! $this->isPingOnly) {
+            return __('Unknown command');
+        }
+        $relay = $this->pingRelay();
+        if ($relay === null) {
+            return __('No agents available to send ping');
+        }
+        $refusal = $relay->commandRefusal('pingNow', ['device' => $this->id]);
+
+        return $refusal === null ? null : $relay->displayName.': '.$refusal;
+    }
+
+    /** Sync of a ping-only device: the agent that pings it pings it now; the command is the agent's. */
+    public function pingNow(?User $user = null): ?DeviceCommand
+    {
+        if ($this->pingNowRefusal() !== null) {
+            return null;
+        }
+
+        return $this->pingRelay()->issueCommand('pingNow', ['device' => $this->id, 'title' => $this->displayName], $user);
+    }
+
+    /** The latest Sync (ping now) of this ping-only device in the last 10 minutes. */
+    public function recentPingNow(): ?DeviceCommand
+    {
+        return DeviceCommand::query()->with('device')->where('command', 'pingNow')->where('target', 'ping:'.$this->id)
+            ->where('created_at', '>=', now()->subMinutes(10))->latest('id')->first();
     }
 
     /** The latest wake of this device in the last 10 minutes (sent through another agent). */

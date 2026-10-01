@@ -709,4 +709,30 @@ class FleetFeaturesTest extends TestCase
         $b->forceFill(['last_seen_at' => now()->subHour()])->saveQuietly();
         $this->assertSame([4, 0], [$count($a), $count($b->fresh())]);
     }
+
+    public function test_sync_of_a_ping_only_device_pings_it_now(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $printer = new Device;
+        $printer->forceFill(['kind' => 'ping', 'name' => 'Printer', 'os' => '', 'token' => hash('sha256', 'p'), 'ping_address' => '192.168.1.50', 'ping_prefix' => 24])->save();
+        $this->assertSame(__('No agents available to send ping'), $printer->pingNowRefusal());
+
+        $old = $this->device('old', ['Networks' => [$this->network('192.168.1.5')]], version: '1.11.0');
+        $this->assertSame('pc-old: '.__('Needs agent :version or newer', ['version' => '1.12.0']), $printer->pingNowRefusal());
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $printer->id])->assertSee('Sync')->call('pingNow')->assertHasErrors('command');
+
+        $old->forceFill(['data' => json_encode(['machine' => ['Hostname' => 'pc-old', 'AgentVersion' => '1.12.0', 'Platform' => 'linux', 'Drives' => [], 'Networks' => [$this->network('192.168.1.5')]]])])->saveQuietly();
+        $this->assertNull($printer->fresh()->pingNowRefusal());
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $printer->id])->call('pingNow')->assertHasNoErrors();
+        $command = $old->commands()->sole();
+        $this->assertSame(['pingNow', ['device' => $printer->id, 'title' => 'Printer'], 'ping:'.$printer->id], [$command->command, $command->params, $command->target]);
+        // No second one while it is on its way.
+        $this->assertNull($printer->fresh()->pingNow());
+
+        $this->signedJson('POST', '/api/device/commands/take', [], 'old')->assertJsonPath('tasks.0.command', 'pingNow')->assertJsonPath('tasks.0.params.device', $printer->id);
+        $this->signedJson('POST', '/api/device/pings', ['results' => [['id' => $printer->id, 'up' => true, 'rtt' => 1.2]]], 'old')->assertJson(['taken' => 1]);
+        $this->signedJson('POST', "/api/device/commands/{$command->id}", ['status' => 'succeeded', 'message' => '192.168.1.50 answered in 1 ms'], 'old')->assertOk();
+        $this->assertFalse($printer->fresh()->offline);
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $printer->id])->assertSee('192.168.1.50 answered in 1 ms');
+    }
 }

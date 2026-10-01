@@ -27,6 +27,15 @@ class DeviceCommands extends Component
         }
     }
 
+    /** Sync of a ping-only device: the agent that pings it pings it now. */
+    public function pingNow()
+    {
+        $device = Device::find($this->selectedDeviceId);
+        if ($device && ! $device->pingNow(auth()->user())) {
+            $this->addError('command', $device->pingNowRefusal() ?? __('Already on its way.'));
+        }
+    }
+
     /** Wake-on-LAN: another agent in the same network sends the magic packet. */
     public function wake()
     {
@@ -83,6 +92,8 @@ class DeviceCommands extends Component
             'wakeRefusal' => $device->wakeRefusal(),
             'wakeRelay' => $device->offline ? $device->wakeRelay()[0] ?? null : null,
             'recentWake' => $device->offline ? $device->recentWake() : null,
+            'pingNowRefusal' => $device->isPingOnly ? $device->pingNowRefusal() : null,
+            'recentPing' => $device->isPingOnly ? $device->recentPingNow() : null,
             'pendingUpdates' => count($device->installableUpdates) + count($device->apps_packages_updates) + count($device->moduleUpdates),
         ]);
     }

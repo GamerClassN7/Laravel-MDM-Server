@@ -19,7 +19,7 @@ class DeviceCommand extends Model
     /** Finished commands are kept this many days (the device history). */
     public const KEEP_DAYS = 90;
 
-    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake'];
+    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow'];
 
     public const STATUSES = ['queued', 'sent', 'running', 'succeeded', 'failed', 'delivered', 'expired', 'cancelled'];
 
@@ -47,6 +47,7 @@ class DeviceCommand extends Model
         'runScripts' => 600,
         'sync' => 1800,
         'wake' => 300,
+        'pingNow' => 120,
     ];
 
     /** A MAC address as the agents report it (Windows AA-BB-..., Linux aa:bb:...). */
@@ -104,6 +105,15 @@ class DeviceCommand extends Model
     {
         if ($command === 'wake') {
             return self::sanitizeWakeParams($params);
+        }
+        if ($command === 'pingNow') {
+            // A ping-only device the agent pings: it pings the address it was given for it.
+            $device = $params['device'] ?? null;
+            if (! is_int($device) || $device < 1) {
+                return null;
+            }
+
+            return ['device' => $device] + (isset($params['title']) && is_string($params['title']) ? ['title' => mb_substr($params['title'], 0, 200)] : []);
         }
         if ($command !== 'installUpdate') {
             return $params === [] ? [] : null;
@@ -169,6 +179,9 @@ class DeviceCommand extends Model
         if ($command === 'wake') {
             return 'device:'.$params['device'];
         }
+        if ($command === 'pingNow') {
+            return 'ping:'.$params['device'];
+        }
         if ($command !== 'installUpdate') {
             return null;
         }
@@ -213,6 +226,7 @@ class DeviceCommand extends Model
             'runScripts' => __('Run scripts'),
             'sync' => __('Sync'),
             'wake' => __('Wake :name', ['name' => $this->params['title'] ?? '?']),
+            'pingNow' => __('Ping :name', ['name' => $this->params['title'] ?? '?']),
             default => $this->command,
         };
     }
@@ -227,6 +241,7 @@ class DeviceCommand extends Model
             'runScripts' => 'fas fa-scroll',
             'sync' => 'fas fa-cloud-download-alt',
             'wake' => 'fas fa-sun',
+            'pingNow' => 'fas fa-network-wired',
             default => 'fas fa-terminal',
         };
     }
