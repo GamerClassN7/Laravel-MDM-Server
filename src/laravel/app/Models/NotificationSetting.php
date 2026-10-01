@@ -40,6 +40,24 @@ class NotificationSetting extends Model
         return array_values(array_filter((array) ($this->urls ?? []), fn ($url) => is_string($url) && Notifier::validUrl($url)));
     }
 
+    /**
+     * The user's channels for pickers: key ("email" or the URL) => label ("E-mail", "ntfy · ntfy.sh/topic").
+     *
+     * @return array<string, string>
+     */
+    public function getChannelOptionsAttribute(): array
+    {
+        $options = [];
+        if ($this->emailList !== []) {
+            $options['email'] = __('E-mail').' · '.implode(', ', $this->emailList);
+        }
+        foreach ($this->urlList as $url) {
+            $options[$url] = Notifier::serviceName($url).' · '.Notifier::redact($url);
+        }
+
+        return $options;
+    }
+
     public function getHasChannelsAttribute(): bool
     {
         return $this->emailList !== [] || $this->urlList !== [];

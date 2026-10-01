@@ -147,7 +147,7 @@ class DeviceFlowTest extends TestCase
             ->assertSet('selectedDeviceId', null);
     }
 
-    public function test_first_device_is_opened_without_selection(): void
+    public function test_overview_without_selection_and_detail_with_one(): void
     {
         $this->actingAs(User::factory()->create());
         $devices = collect(['a', 'b'])->map(function ($token) {
@@ -159,16 +159,17 @@ class DeviceFlowTest extends TestCase
         });
 
         Livewire::test(ShowDevices::class)
-            ->assertSet('selectedDeviceId', $devices[0]->id);
+            ->assertSet('selectedDeviceId', null)
+            ->assertViewHas('rows', fn ($rows) => $rows->count() === 2);
         Livewire::test(ShowDevices::class, ['selectedDeviceId' => $devices[1]->id])
             ->assertSet('selectedDeviceId', $devices[1]->id);
-        // A link to a deleted device opens the first one instead of an empty page.
+        // A link to a deleted device shows the overview instead of an empty page.
         Livewire::test(ShowDevices::class, ['selectedDeviceId' => 999])
-            ->assertSet('selectedDeviceId', $devices[0]->id);
+            ->assertSet('selectedDeviceId', null);
 
         $devices[0]->delete();
         Livewire::test(ShowDevices::class, ['selectedDeviceId' => $devices[0]->id])
             ->dispatch('device-deleted')
-            ->assertSet('selectedDeviceId', $devices[1]->id);
+            ->assertSet('selectedDeviceId', null);
     }
 }

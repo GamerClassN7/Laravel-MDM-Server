@@ -105,3 +105,11 @@ label.mdm-tag {
     flex-wrap: wrap;
     gap: 0.25rem;
 }
+
+// Phones and tablets: the bottom navigation (layout-nav-mobile) is fixed over the page; keep the
+// end of the content above it (its height plus the home indicator of the phone).
+@include mobile() {
+    .layout-content {
+        padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
+    }
+}

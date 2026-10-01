@@ -16,6 +16,17 @@ class AlertEvent extends Model
         'resolved_at' => 'datetime',
     ];
 
+    /** Open alerts of the user's rules (the badge in the menu), counted once per request. */
+    public static function firingCountFor(?User $user): int
+    {
+        if ($user === null) {
+            return 0;
+        }
+
+        return once(fn () => static::query()->whereNull('resolved_at')
+            ->whereIn('alert_rule_id', AlertRule::query()->where('user_id', $user->id)->select('id'))->count());
+    }
+
     public function rule(): BelongsTo
     {
         return $this->belongsTo(AlertRule::class, 'alert_rule_id');

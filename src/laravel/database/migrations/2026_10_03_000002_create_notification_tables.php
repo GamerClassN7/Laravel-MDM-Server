@@ -28,6 +28,8 @@ return new class extends Migration
             $table->decimal('limit_gb', 10, 1)->nullable();
             $table->unsignedSmallInteger('minutes')->nullable();
             $table->json('target');
+            // The channels it sends to ("email" or a saved URL), null: all of the user's channels.
+            $table->json('channels')->nullable();
             $table->boolean('enabled')->default(true);
             $table->timestamps();
         });

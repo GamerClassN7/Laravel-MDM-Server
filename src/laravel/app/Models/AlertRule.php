@@ -36,10 +36,11 @@ class AlertRule extends Model
 
     public const MAX_LIMIT_GB = 100000;
 
-    protected $fillable = ['user_id', 'type', 'threshold', 'unit', 'limit_gb', 'minutes', 'target', 'enabled'];
+    protected $fillable = ['user_id', 'type', 'threshold', 'unit', 'limit_gb', 'minutes', 'target', 'channels', 'enabled'];
 
     protected $casts = [
         'target' => 'array',
+        'channels' => 'array',
         'enabled' => 'boolean',
         'threshold' => 'integer',
         'minutes' => 'integer',

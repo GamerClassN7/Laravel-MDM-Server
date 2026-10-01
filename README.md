@@ -40,9 +40,17 @@ kept in the `storage` volume. For access from outside your network put it behind
 
 ## Screenshots
 
-Device detail with status, commands and CPU/memory history:
+Fleet overview: every device with its state, updates, fullest drive and what needs attention, filters and bulk actions:
+
+![Fleet overview](docs/screenshots/overview.png)
+
+Device detail with actions, summary, CPU/memory history and tabs:
 
 ![Device detail](docs/screenshots/device.png)
+
+Notifications: firing alerts, rules and channels (ntfy, Discord, Telegram, e-mail, …):
+
+![Notifications](docs/screenshots/notifications.png)
 
 | Pending updates | Enrolling a new device |
 |---|---|

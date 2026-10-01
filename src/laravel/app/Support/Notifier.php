@@ -94,19 +94,21 @@ class Notifier
      *
      * @return array<string, string>
      */
-    public static function notify(User $user, string $title, string $message): array
+    public static function notify(User $user, string $title, string $message, ?array $only = null): array
     {
         $settings = NotificationSetting::for($user);
         $errors = [];
+        // Only these channels ("email" or a URL) when the alert picked some.
+        $allowed = fn (string $channel) => $only === null || in_array($channel, $only, true);
 
-        if ($settings->emailList !== []) {
+        if ($settings->emailList !== [] && $allowed('email')) {
             try {
                 Mail::raw($message, fn ($mail) => $mail->to($settings->emailList)->subject($title));
             } catch (Throwable $e) {
                 $errors['email'] = $e->getMessage();
             }
         }
-        foreach ($settings->urlList as $url) {
+        foreach (array_filter($settings->urlList, $allowed) as $url) {
             try {
                 self::send($url, $title, $message);
             } catch (Throwable $e) {
@@ -119,6 +121,20 @@ class Notifier
         }
 
         return $errors;
+    }
+
+    /** "ntfy", "Discord", … for a notification URL. */
+    public static function serviceName(string $url): string
+    {
+        return match (strtolower((string) parse_url($url, PHP_URL_SCHEME))) {
+            'ntfy' => 'ntfy',
+            'discord' => 'Discord',
+            'telegram' => 'Telegram',
+            'gotify' => 'Gotify',
+            'slack' => 'Slack',
+            'pushover' => 'Pushover',
+            default => __('Webhook'),
+        };
     }
 
     /** The URL without its secrets, for logs and the settings page. */

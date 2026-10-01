@@ -222,7 +222,7 @@ class AlertEvaluator
         $title = $rule->type === 'status'
             ? "🔴 {$device->displayName} ".__('is down')
             : "🔴 {$device->displayName}: {$rule->label}";
-        Notifier::notify($rule->user, $title, $result['message']."\n".url('/devices?selectedDeviceId='.$device->id));
+        Notifier::notify($rule->user, $title, $result['message']."\n".url('/devices?selectedDeviceId='.$device->id), $rule->channels);
     }
 
     private function resolve(AlertRule $rule, Device $device, AlertEvent $event): void
@@ -233,6 +233,6 @@ class AlertEvaluator
             ? "✅ {$device->displayName} ".__('is up')
             : "✅ {$device->displayName}: {$rule->label} ".__('resolved');
         $duration = $event->triggered_at->diffForHumans(now(), ['syntax' => CarbonInterface::DIFF_ABSOLUTE, 'parts' => 2]);
-        Notifier::notify($rule->user, $title, __('Resolved after :duration.', ['duration' => $duration])."\n".url('/devices?selectedDeviceId='.$device->id));
+        Notifier::notify($rule->user, $title, __('Resolved after :duration.', ['duration' => $duration])."\n".url('/devices?selectedDeviceId='.$device->id), $rule->channels);
     }
 }

@@ -74,13 +74,69 @@ class FleetFeaturesTest extends TestCase
 
         Livewire::test(ShowDevices::class)
             ->call('filterTag', 'servers')
-            ->assertViewHas('visibleDevices', fn ($devices) => $devices->pluck('id')->all() === [$server->id])
-            ->assertSet('selectedDeviceId', $server->id);
+            ->assertViewHas('rows', fn ($rows) => $rows->pluck('device.id')->all() === [$server->id])
+            ->assertSet('selectedDeviceId', null);
 
         $this->assertTrue($server->fresh()->matchesTarget(['tags' => ['SERVERS']]));
         $this->assertFalse($laptop->matchesTarget(['tags' => ['servers']]));
         $this->assertTrue($laptop->matchesTarget(['devices' => [$laptop->id]]));
         $this->assertSame([$server->id, $laptop->id], Device::targeted(['all' => true])->pluck('id')->all());
+    }
+
+    public function test_fleet_overview_filters_and_bulk_actions(): void
+    {
+        $gb = 1073741824;
+        $user = User::factory()->create();
+        $nas = $this->device('nas', ['Drives' => [['FriendlyName' => 'System', 'DriveLetter' => '/', 'Size' => 100 * $gb, 'SizeRemaining' => 4 * $gb, 'DriveType' => 3]]]);
+        $nas->forceFill(['tags' => ['servers']])->save();
+        $sleeping = $this->device('pc', online: false);
+        $fine = $this->device('ok');
+        $this->actingAs($user);
+
+        $page = Livewire::test(ShowDevices::class)
+            ->assertSet('selectedDeviceId', null)
+            ->assertViewHas('counts', fn ($counts) => [$counts['all'], $counts['online'], $counts['offline'], $counts['attention']] === [3, 2, 1, 2])
+            ->assertSee('Disk 96 %');
+        $page->call('filterStatus', 'attention')
+            ->assertViewHas('rows', fn ($rows) => $rows->pluck('device.id')->sort()->values()->all() === [$nas->id, $sleeping->id])
+            ->call('filterStatus', 'offline')
+            ->assertViewHas('rows', fn ($rows) => $rows->pluck('device.id')->all() === [$sleeping->id])
+            ->call('filterStatus', 'offline')
+            ->assertSet('status', '')
+            ->set('search', 'PC-OK')
+            ->assertViewHas('rows', fn ($rows) => $rows->pluck('device.id')->all() === [$fine->id])
+            ->set('search', '');
+
+        $page->set('selected', [(string) $nas->id, (string) $sleeping->id])
+            ->call('bulkCommand', 'restart');
+        $this->assertSame(['restart'], $nas->fresh()->queuedCommands);
+        $this->assertSame([], $sleeping->fresh()->queuedCommands, 'Offline devices are skipped');
+
+        $page->set('bulkTag', 'lab')->call('bulkTagChange', true);
+        $this->assertSame(['servers', 'lab'], $nas->fresh()->tags);
+        $this->assertSame(['lab'], $sleeping->fresh()->tags);
+        $page->set('bulkTag', 'LAB')->call('bulkTagChange', false);
+        $this->assertSame(['servers'], $nas->fresh()->tags);
+        $this->assertNull($sleeping->fresh()->tags);
+
+        // The detail opens for a device, a deleted one shows the overview.
+        Livewire::test(ShowDevices::class, ['selectedDeviceId' => $nas->id])->assertSee('pc-nas')->call('showList')->assertSet('selectedDeviceId', null);
+        Livewire::test(ShowDevices::class, ['selectedDeviceId' => 999])->assertSet('selectedDeviceId', null);
+    }
+
+    public function test_bulk_script_run_picks_a_script(): void
+    {
+        $admin = User::factory()->create();
+        config(['boilerplate.system_admins' => [(string) $admin->id]]);
+        $device = $this->device('a');
+        $script = Script::create(['name' => 'Check', 'platform' => 'all', 'detection' => 'exit 0', 'timeout' => 60]);
+        $this->actingAs($admin);
+
+        Livewire::test(\App\Livewire\Script\Pick::class, ['deviceIds' => [$device->id]])
+            ->assertSee('Check')
+            ->call('run', $script->id)
+            ->assertDispatched('closeModal');
+        $this->assertSame([$device->id], $script->runs()->pluck('device_id')->all());
     }
 
     // Scheduled remediations
@@ -328,6 +384,55 @@ class FleetFeaturesTest extends TestCase
         Livewire::test(Page::class)->assertViewHas('rules', fn ($rules) => $rules->isEmpty());
         Livewire::test(Page::class)->call('deleteRule', AlertRule::first()->id);
         $this->assertSame(1, AlertRule::count());
+    }
+
+    public function test_alert_channels_preview_and_delete(): void
+    {
+        Http::fake();
+        $user = User::factory()->create();
+        NotificationSetting::create(['user_id' => $user->id, 'urls' => ['ntfy://ntfy.sh/a', 'discord://tok@1']]);
+        $down = $this->device('a', online: false);
+        $this->device('b');
+        $this->actingAs($user);
+
+        // The form shows where the alert would fire now and picks the channels.
+        $form = Livewire::test(RuleForm::class)
+            ->set('type', 'status')
+            ->set('minutes', 5)
+            ->assertSee('Would fire now on: pc-a.')
+            ->assertSet('channels', ['ntfy://ntfy.sh/a', 'discord://tok@1'])
+            ->set('channels', [])
+            ->call('save')
+            ->assertHasErrors('channels')
+            ->set('channels', ['discord://tok@1'])
+            ->call('save')
+            ->assertHasNoErrors();
+        $rule = AlertRule::sole();
+        $this->assertSame(['discord://tok@1'], $rule->channels);
+
+        AlertEvaluator::run();
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request) => str_contains($request->url(), 'discord.com'));
+
+        // All channels picked: saved as "all", so channels added later are used too.
+        Livewire::test(RuleForm::class, ['ruleId' => $rule->id])
+            ->set('channels', ['ntfy://ntfy.sh/a', 'discord://tok@1'])->call('save');
+        $this->assertNull($rule->fresh()->channels);
+
+        // A channel that is removed is taken out of the alerts that picked it.
+        $rule->update(['channels' => ['discord://tok@1']]);
+        Livewire::test(Page::class)->set('tab', 'channels')->set('urls', ['ntfy://ntfy.sh/a'])->call('save');
+        $this->assertNull($rule->fresh()->channels);
+
+        Livewire::test(Page::class)
+            ->assertSee('Firing now')
+            ->assertSee('pc-a')
+            ->set('tab', 'history')
+            ->assertViewHas('events', fn ($events) => $events->count() === 1);
+        $this->assertSame(1, \App\Models\AlertEvent::firingCountFor($user));
+
+        Livewire::test(RuleForm::class, ['ruleId' => $rule->id])->call('delete')->assertDispatched('closeModal');
+        $this->assertSame(0, AlertRule::count());
     }
 
     // Wake-on-LAN

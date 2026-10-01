@@ -2,18 +2,36 @@
     <div class="container-xl">
         <div class="page-header">
             <div class="me-auto min-w-0">
-                <h1 class="mb-1">{{ __('Notifications') }}</h1>
-                <div class="small text-muted">{{ __('Get told when a device goes down, runs out of disk space or a service fails.') }}</div>
+                <h1>{{ __('Notifications') }}</h1>
+                <div class="text-muted">{{ __('Get told when a device goes down, runs out of disk space or a service fails.') }}</div>
             </div>
+            <button class="btn btn-primary" type="button" wire:click="addRule">
+                <i class="fas fa-plus me-2"></i>{{ __('Add alert') }}
+            </button>
         </div>
         <x-boilerplate::alerts />
 
-        <div class="row g-4">
-            <div class="col-12 col-xl-5">
-                <div class="card card-body">
-                    <h5 class="card-title">{{ __('Where to send') }}</h5>
+        <ul class="nav nav-tabs mb-4" role="tablist">
+            @foreach (['alerts' => __('Alerts'), 'channels' => __('Channels'), 'history' => __('History')] as $value => $label)
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link d-flex align-items-center gap-2 {{ $tab === $value ? 'active' : '' }}" role="tab" type="button" aria-selected="{{ $tab === $value ? 'true' : 'false' }}" wire:click="$set('tab', '{{ $value }}')">
+                        {{ $label }}
+                        @if ($value === 'alerts' && $firing->isNotEmpty())
+                            <x-badge color="danger" size="sm" variant="subtle">{{ trans_choice(':count firing|:count firing', $firing->count(), ['count' => $firing->count()]) }}</x-badge>
+                        @elseif ($value === 'channels')
+                            <x-badge color="secondary" size="sm" variant="subtle">{{ count($channelOptions) }}</x-badge>
+                        @endif
+                    </button>
+                </li>
+            @endforeach
+        </ul>
 
-                    <form wire:submit="save">
+        @if ($tab === 'channels')
+            <div class="row">
+                <div class="col-12 col-xl-7">
+                    <div class="card card-body">
+                        <h5 class="card-title">{{ __('Where to send') }}</h5>
+                        <form wire:submit="save">
                         <label class="form-label" for="notification-emails">{{ __('E-mail addresses') }}</label>
                         <div class="d-flex gap-2 align-items-start">
                             <textarea class="form-control @error('emails') is-invalid @enderror" id="notification-emails" placeholder="admin@example.com" rows="2" wire:model="emails"></textarea>
@@ -73,69 +91,119 @@
                             <button class="btn btn-primary" type="submit">{{ __('Save') }}</button>
                         </div>
                     </form>
+                    </div>
                 </div>
             </div>
-
-            <div class="col-12 col-xl-7">
-                <div class="card card-body">
-                    <div class="d-flex align-items-center mb-2">
-                        <h5 class="card-title mb-0 me-auto">{{ __('Alerts') }}</h5>
-                        <button class="btn btn-primary btn-sm" type="button" wire:click="addRule">
-                            <i class="fas fa-plus me-1"></i>{{ __('Add alert') }}
-                        </button>
-                    </div>
-                    @if (! $hasChannels && $rules->isNotEmpty())
-                        <div class="alert alert-warning small py-2">{{ __('No e-mail address or URL saved yet: alerts are recorded, but not sent.') }}</div>
-                    @endif
-
-                    <div class="list-group list-group-flush">
-                        @forelse ($rules as $rule)
-                            <div class="list-group-item px-0 d-flex align-items-center gap-3" wire:key="alert-rule-{{ $rule->id }}">
-                                <i class="{{ $rule->icon }} fa-fw text-body-secondary"></i>
-                                <div class="flex-grow-1 min-w-0 {{ $rule->enabled ? '' : 'opacity-50' }}">
-                                    <div class="fw-semibold">{{ $rule->label }}</div>
-                                    <div class="small text-muted d-flex flex-wrap align-items-center gap-1">{{ $rule->condition }} · <x-target-summary :target="$rule->target ?? []" /></div>
-                                </div>
-                                <div class="form-check form-switch m-0" title="{{ $rule->enabled ? __('Enabled') : __('Disabled') }}">
-                                    <input class="form-check-input" type="checkbox" wire:click="toggleRule({{ $rule->id }})" @checked($rule->enabled)>
-                                </div>
-                                <button class="btn btn-sm btn-light btn-sq" type="button" wire:click="editRule({{ $rule->id }})" title="{{ __('Edit') }}"><i class="fas fa-pen"></i></button>
-                                <button class="btn btn-sm btn-light btn-sq" type="button" wire:click="deleteRule({{ $rule->id }})" wire:confirm="{{ __('Delete this alert?') }}" title="{{ __('Delete') }}"><i class="fas fa-trash"></i></button>
-                            </div>
-                        @empty
-                            <div class="text-muted small py-2">{{ __('No alerts yet. Add one, e.g. Status for all devices, or use the bell on a device.') }}</div>
-                        @endforelse
-                    </div>
+        @elseif ($tab === 'history')
+            <div class="card overflow-hidden">
+                <div class="list-group list-group-flush">
+                    @forelse ($events as $event)
+                        @include('livewire.notifications.partials.event', ['event' => $event])
+                    @empty
+                        <div class="list-group-item text-muted py-4 text-center">{{ __('Nothing happened yet.') }}</div>
+                    @endforelse
                 </div>
-
-                <div class="card card-body mt-4" wire:poll.30s>
-                    <h5 class="card-title">{{ __('Recent alerts') }}</h5>
-                    <div class="list-group list-group-flush">
-                        @forelse ($events as $event)
-                            <div class="list-group-item px-0 d-flex align-items-start gap-3" wire:key="alert-event-{{ $event->id }}">
-                                <i class="fas fa-circle small mt-1 {{ $event->resolved_at ? 'text-success' : 'text-danger' }}"></i>
+            </div>
+        @else
+            <div class="row g-4" wire:poll.30s>
+                <div class="col-12 col-xl-8 vstack gap-4">
+                    <section>
+                        <h2 class="h6 fw-semibold text-body-secondary mb-2">{{ __('Firing now') }}</h2>
+                        @forelse ($firing as $event)
+                            <div class="smart-alert mb-2 {{ $event->rule?->type === 'status' ? 'border-danger-subtle' : 'border-warning-subtle' }}" wire:key="firing-{{ $event->id }}">
+                                <span class="icon-tile {{ $event->rule?->type === 'status' ? 'bg-danger-subtle text-danger-emphasis' : 'bg-warning-subtle text-warning-emphasis' }}"><i class="{{ $event->rule?->icon }}"></i></span>
                                 <div class="flex-grow-1 min-w-0">
                                     <div>
-                                        <a href="{{ route('devices', ['selectedDeviceId' => $event->device_id]) }}">{{ $event->device?->displayName }}</a>
-                                        · {{ $event->rule?->label }}
+                                        <a class="fw-semibold text-body" href="{{ route('devices', ['selectedDeviceId' => $event->device_id]) }}">{{ $event->device?->displayName }}</a>
+                                        <span class="text-body-secondary">· {{ $event->rule?->label }}</span>
                                     </div>
                                     <div class="small text-muted text-break">{{ $event->message }}</div>
                                 </div>
-                                <div class="small text-muted text-end text-nowrap">
-                                    <div title="{{ $event->triggered_at }}">{{ $event->triggered_at->diffForHumans() }}</div>
-                                    @if ($event->resolved_at)
-                                        <div title="{{ $event->resolved_at }}">{{ __('resolved') }} {{ $event->resolved_at->diffForHumans() }}</div>
-                                    @else
-                                        <x-badge color="danger" size="sm" variant="subtle">{{ __('Active') }}</x-badge>
-                                    @endif
-                                </div>
+                                <div class="small text-muted text-end text-nowrap" title="{{ $event->triggered_at }}">{{ __('since :time', ['time' => $event->triggered_at->diffForHumans()]) }}</div>
                             </div>
                         @empty
-                            <div class="text-muted small py-2">{{ __('Nothing happened yet.') }}</div>
+                            <div class="smart-alert text-muted">
+                                <span class="icon-tile bg-success-subtle text-success-emphasis"><i class="fas fa-check"></i></span>
+                                <div class="align-self-center">{{ __('All quiet: no alert is firing.') }}</div>
+                            </div>
                         @endforelse
-                    </div>
+                    </section>
+
+                    <section class="card overflow-hidden">
+                        <div class="d-flex align-items-center px-3 py-2 border-bottom">
+                            <h2 class="h6 fw-semibold mb-0 me-auto">{{ __('Rules') }}</h2>
+                            <span class="small text-muted">{{ __('Checked every minute') }}</span>
+                        </div>
+                        @if (! $hasChannels && $rules->isNotEmpty())
+                            <div class="alert alert-warning small py-2 m-3 mb-0">
+                                {{ __('No e-mail address or URL saved yet: alerts are recorded, but not sent.') }}
+                                <a href="#" wire:click.prevent="$set('tab', 'channels')">{{ __('Add a channel') }}</a>
+                            </div>
+                        @endif
+                        <div class="table-responsive">
+                            <table class="table align-middle mb-0">
+                                <thead>
+                                    <tr class="small text-body-secondary">
+                                        <th class="ps-3">{{ __('Alert') }}</th>
+                                        <th>{{ __('Condition') }}</th>
+                                        <th class="d-none d-md-table-cell">{{ __('Devices') }}</th>
+                                        <th class="d-none d-lg-table-cell">{{ __('Send to') }}</th>
+                                        <th>{{ __('On') }}</th>
+                                        <th class="pe-3"><span class="visually-hidden">{{ __('Actions') }}</span></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @forelse ($rules as $rule)
+                                        <tr wire:key="alert-rule-{{ $rule->id }}" class="{{ $rule->enabled ? '' : 'opacity-50' }}">
+                                            <td class="ps-3 text-nowrap fw-medium"><i class="{{ $rule->icon }} fa-fw text-body-secondary me-2"></i>{{ $rule->label }}</td>
+                                            <td class="small">{{ $rule->condition }}</td>
+                                            <td class="d-none d-md-table-cell small"><x-target-summary :target="$rule->target ?? []" /></td>
+                                            <td class="d-none d-lg-table-cell small text-muted">
+                                                {{ $rule->channels === null ? __('All channels') : collect($rule->channels)->map(fn ($channel) => $channel === 'email' ? __('E-mail') : \App\Support\Notifier::serviceName($channel))->implode(', ') }}
+                                            </td>
+                                            <td>
+                                                <div class="form-check form-switch m-0">
+                                                    <input aria-label="{{ __('Enabled') }}" class="form-check-input" type="checkbox" wire:click="toggleRule({{ $rule->id }})" @checked($rule->enabled)>
+                                                </div>
+                                            </td>
+                                            <td class="pe-3 text-end text-nowrap">
+                                                <button class="btn btn-sm btn-light" type="button" wire:click="editRule({{ $rule->id }})">{{ __('Edit') }}</button>
+                                            </td>
+                                        </tr>
+                                    @empty
+                                        <tr>
+                                            <td class="text-muted small py-4 text-center" colspan="6">{{ __('No alerts yet. Add one, e.g. Status for all devices, or use the bell on a device.') }}</td>
+                                        </tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
                 </div>
+
+                <aside class="col-12 col-xl-4">
+                    <div class="card card-body">
+                        <div class="d-flex align-items-center mb-2">
+                            <h2 class="h6 fw-semibold mb-0 me-auto">{{ __('Channels') }}</h2>
+                            <a href="#" class="small" wire:click.prevent="$set('tab', 'channels')">{{ __('Manage') }}</a>
+                        </div>
+                        <div class="vstack gap-2">
+                            @forelse ($channelOptions as $channel => $label)
+                                <div class="d-flex align-items-center gap-2 rounded bg-body-tertiary p-2">
+                                    <span class="icon-tile"><i class="{{ $channel === 'email' ? 'fas fa-envelope' : 'fas fa-paper-plane' }}"></i></span>
+                                    <div class="min-w-0">
+                                        <div class="fw-medium">{{ $channel === 'email' ? __('E-mail') : \App\Support\Notifier::serviceName($channel) }}</div>
+                                        <div class="small text-muted text-truncate">{{ \Illuminate\Support\Str::after($label, ' · ') }}</div>
+                                    </div>
+                                </div>
+                            @empty
+                                <div class="small text-muted">{{ __('No channels yet.') }} <a href="#" wire:click.prevent="$set('tab', 'channels')">{{ __('Add one') }}</a></div>
+                            @endforelse
+                        </div>
+                        <div class="small text-muted mt-3">{{ __('Each alert sends one message when it starts and one when it is resolved, never in between.') }}</div>
+                    </div>
+                </aside>
             </div>
-        </div>
+        @endif
     </div>
 </div>

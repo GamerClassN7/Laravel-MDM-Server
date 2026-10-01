@@ -8,6 +8,7 @@ use App\Models\NotificationSetting;
 use App\Support\Notifier;
 use Illuminate\Support\Facades\Mail;
 use Livewire\Attributes\On;
+use Livewire\Attributes\Url;
 use Livewire\Component;
 use Throwable;
 
@@ -17,6 +18,10 @@ use Throwable;
  */
 class Page extends Component
 {
+    /** alerts, channels or history */
+    #[Url(except: 'alerts')]
+    public string $tab = 'alerts';
+
     public string $emails = '';
 
     /** @var array<int, string> */
@@ -71,6 +76,12 @@ class Page extends Component
 
         $settings = NotificationSetting::for(auth()->user());
         $settings->fill(['emails' => $emails, 'urls' => $urls])->save();
+        // Alerts that picked a channel that is gone: they keep the others, or send to all again.
+        $available = array_keys($settings->channelOptions);
+        foreach (AlertRule::query()->where('user_id', auth()->id())->whereNotNull('channels')->get() as $rule) {
+            $kept = array_values(array_intersect($rule->channels, $available));
+            $rule->update(['channels' => $kept === [] ? null : $kept]);
+        }
         $this->urls = $urls ?: [''];
         $this->tests = [];
         alert()->success(__('Saved'))->now();
@@ -137,13 +148,15 @@ class Page extends Component
     public function render()
     {
         $rules = AlertRule::query()->where('user_id', auth()->id())->orderBy('type')->orderBy('id')->get();
+        $settings = NotificationSetting::for(auth()->user());
+        $events = AlertEvent::query()->with(['rule', 'device'])->whereIn('alert_rule_id', $rules->pluck('id'));
 
         return view('livewire.notifications.page', [
             'rules' => $rules,
-            'events' => AlertEvent::query()->with(['rule', 'device'])
-                ->whereIn('alert_rule_id', $rules->pluck('id'))
-                ->latest('triggered_at')->limit(30)->get(),
-            'hasChannels' => NotificationSetting::for(auth()->user())->hasChannels,
+            'firing' => (clone $events)->whereNull('resolved_at')->latest('triggered_at')->get(),
+            'events' => $this->tab === 'history' ? (clone $events)->latest('triggered_at')->limit(100)->get() : collect(),
+            'channelOptions' => $settings->channelOptions,
+            'hasChannels' => $settings->hasChannels,
         ])->title(__('Notifications'));
     }
 }
