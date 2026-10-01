@@ -40,9 +40,13 @@ kept in the `storage` volume. For access from outside your network put it behind
 
 ## Screenshots
 
-Devices: the list (search, tags, online state, what needs attention) beside the detail with actions, summary, CPU/memory history and tabs:
+Devices: the list (search, tags, online state, what needs attention) beside the detail with its alerts, CPU/memory history (1h to 30d) and tabs:
 
 ![Device detail](docs/screenshots/device.png)
+
+A ping-only device (a printer, a NAS without the agent): an agent in its network pings it every 30 s and wakes it with Wake-on-LAN:
+
+![Ping-only device](docs/screenshots/ping.png)
 
 Notifications: firing alerts, rules and channels (ntfy, Discord, Telegram, e-mail, …):
 

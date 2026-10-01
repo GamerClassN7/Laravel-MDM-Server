@@ -35,8 +35,8 @@
 
     <div class="card">
         <div class="card-body position-relative">
-            {{-- Room for the bell and the menu of device-commands in the top right corner. --}}
-            <div class="d-flex align-items-start gap-3" style="padding-right: 6rem">
+            {{-- Room for the power state, the bell and the menu of device-commands in the top right corner. --}}
+            <div class="device-head d-flex align-items-start gap-3 {{ $selectedDevice->offline || $selectedDevice->isPingOnly ? '' : ($power !== null ? 'has-battery' : 'has-plug') }}">
                 <div class="flex-grow-1 min-w-0">
                     @if ($editMode)
                         <div class="d-flex gap-2">
@@ -45,9 +45,10 @@
                             <button class="btn btn-light" type="button" wire:click="$set('editMode', false)">{{ __('Cancel') }}</button>
                         </div>
                     @else
-                        <h2 class="mb-1 text-break">
-                            {{-- Renamed from the device menu (⋯). --}}
-                            <i class="{{ $selectedDevice->typeIcon }} fa-fw fs-4 align-middle text-body-secondary me-2" title="{{ __(ucfirst($selectedDevice->type)) }}"></i>{{ $selectedDevice->DisplayName }}
+                        {{-- Renamed from the device menu (⋯). --}}
+                        <h2 class="d-flex align-items-center gap-3 mb-2 text-break">
+                            <span class="icon-tile icon-tile-lg bg-primary-subtle text-primary-emphasis" title="{{ __(ucfirst($selectedDevice->type)) }}"><i class="{{ $selectedDevice->typeIcon }}"></i></span>
+                            <span class="min-w-0">{{ $selectedDevice->DisplayName }}</span>
                         </h2>
                     @endif
 
@@ -58,6 +59,12 @@
                             </x-badge>
                         @else
                             <x-badge color="success" size="sm" variant="subtle">{{ __('Online') }}</x-badge>
+                        @endif
+                        @if (! $selectedDevice->offline && $power !== null)
+                            {{-- On phones here, beside the buttons on wider screens. --}}
+                            <span class="d-sm-none" title="{{ $pluggedIn ? __('Charging') : ($pluggedIn === false ? __('On battery') : __('Battery')) }}">
+                                @if ($pluggedIn)<i class="fas fa-bolt text-warning me-1"></i>@endif<i class="fas {{ $power < 20 ? 'fa-battery-quarter' : ($power < 85 ? 'fa-battery-half' : 'fa-battery-full') }} me-1"></i>{{ $power }} %
+                            </span>
                         @endif
                         @if (!empty($selectedDevice->os))
                             <span><i class="fas fa-info-circle me-1"></i>{{ $selectedDevice->os }}</span>
@@ -101,27 +108,6 @@
                     @endif
                 </div>
 
-                @if (!$selectedDevice->offline)
-                    <div class="fs-5 text-nowrap lh-1 pt-2">
-                        @if ($power !== null)
-                            <span title="{{ $pluggedIn ? __('Charging') : ($pluggedIn === false ? __('On battery') : '') }}">
-                                @if ($pluggedIn)
-                                    <i class="fas fa-bolt text-warning"></i>
-                                @endif
-                                @if ($power < 20)
-                                    <i class="fas fa-battery-quarter {{ $pluggedIn ? '' : 'text-danger' }}"></i>
-                                @elseif ($power < 85)
-                                    <i class="fas fa-battery-half"></i>
-                                @else
-                                    <i class="fas fa-battery-full"></i>
-                                @endif
-                                {{ $power }} %
-                            </span>
-                        @else
-                            <i class="fas fa-plug text-body-secondary" title="{{ __('Plugged in') }}"></i>
-                        @endif
-                    </div>
-                @endif
             </div>
 
             @livewire('device-commands', ['selectedDeviceId' => $selectedDevice->id], key('device-commands' . $selectedDevice->id))
