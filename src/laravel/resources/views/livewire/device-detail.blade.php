@@ -136,10 +136,6 @@
         @livewire('device-alerts', ['selectedDeviceId' => $selectedDevice->id], key('device-alerts' . $selectedDevice->id))
     @endif
 
-    @if (!empty($selectedDevice->data))
-        @include('partials.device.summary', ['pendingUpdates' => $pendingUpdates])
-    @endif
-
     @unless ($selectedDevice->isPingOnly)
     <div class="mt-3">
         @livewire('device-metrics', ['selectedDeviceId' => $selectedDevice->id], key('device-metrics' . $selectedDevice->id))

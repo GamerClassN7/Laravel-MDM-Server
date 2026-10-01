@@ -67,7 +67,11 @@ class PingMonitor extends Component
         $points = array_map(fn ($bucket) => $bucket['count'] > 0 ? round($bucket['sum'] / $bucket['count'], 1) : null, $buckets);
         $answered = PingResult::query()->where('device_id', $device->id)->where('created_at', '>=', $since)->where('up', true);
 
+        $format = $hours <= 24 ? 'H:i' : 'j. n. H:i';
+        $labels = array_map(fn ($i) => $since->copy()->addSeconds((int) (($i + 1) * $bucketSeconds))->format($format), range(0, self::BUCKETS - 1));
+
         return view('livewire.ping-monitor', [
+            'labels' => $labels,
             'device' => $device,
             'relay' => $device->pingRelay(),
             'beats' => $beats,

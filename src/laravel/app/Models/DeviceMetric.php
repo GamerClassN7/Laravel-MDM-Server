@@ -13,7 +13,7 @@ class DeviceMetric extends Model
     public const UPDATED_AT = null;
 
     /** Days the samples are kept. */
-    public const RETENTION_DAYS = 7;
+    public const RETENTION_DAYS = 30;
 
     protected $fillable = ['device_id', 'cpu', 'memory_used', 'memory_total'];
 
