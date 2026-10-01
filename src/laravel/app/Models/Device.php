@@ -571,7 +571,8 @@ class Device extends Model
     public function getNiceUptimeAttribute()
     {
         if (isset($this->data->machine->uptime)) {
-            return CarbonInterval::seconds($this->data->machine->uptime)->cascade()->forHumans();
+            // The two largest units ("1 day 16 hours", "5 minutes 3 seconds"), the full one is the title.
+            return CarbonInterval::seconds($this->data->machine->uptime)->cascade()->forHumans(['parts' => 2]);
         }
         return false;
     }

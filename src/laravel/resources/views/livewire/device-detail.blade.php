@@ -34,8 +34,9 @@
     @endphp
 
     <div class="card">
-        <div class="card-body">
-            <div class="d-flex align-items-start gap-3">
+        <div class="card-body position-relative">
+            {{-- Room for the bell and the menu of device-commands in the top right corner. --}}
+            <div class="d-flex align-items-start gap-3" style="padding-right: 6rem">
                 <div class="flex-grow-1 min-w-0">
                     @if ($editMode)
                         <div class="d-flex gap-2">
@@ -66,11 +67,8 @@
                                 <span title="{{ __('Last logged on user') }}"><i class="fas fa-user me-1"></i>{{ $selectedDevice->lastLogonUser }}</span>
                             @endif
                             @if (!empty($selectedDevice->NiceUptime))
-                                <span title="{{ __('Uptime') }}"><i class="far fa-clock me-1"></i>{{ $selectedDevice->NiceUptime }}</span>
+                                <span title="{{ __('Uptime') }}: {{ \Carbon\CarbonInterval::seconds($selectedDevice->data->machine->uptime)->cascade()->forHumans() }}"><i class="far fa-clock me-1"></i>{{ $selectedDevice->NiceUptime }}</span>
                             @endif
-                        @endif
-                        @if ($publicAddresses = $selectedDevice->publicAddresses)
-                            <span title="{{ __('Public address') }}: {{ implode(', ', $publicAddresses) }}"><i class="fas fa-globe me-1"></i><span class="font-monospace">{{ $publicAddresses[0] }}</span>@if (count($publicAddresses) > 1) <span class="text-body-tertiary">+{{ count($publicAddresses) - 1 }}</span>@endif</span>
                         @endif
                         @if (!empty($selectedDevice->data->machine->Processor))
                             <span><i class="fas fa-microchip me-1"></i>{{ $selectedDevice->data->machine->Processor }} ({{ __(':count cores', ['count' => $selectedDevice->data->machine->Cores ?? '?']) }})</span>
@@ -104,7 +102,7 @@
                 </div>
 
                 @if (!$selectedDevice->offline)
-                    <div class="fs-5 text-nowrap">
+                    <div class="fs-5 text-nowrap lh-1 pt-2">
                         @if ($power !== null)
                             <span title="{{ $pluggedIn ? __('Charging') : ($pluggedIn === false ? __('On battery') : '') }}">
                                 @if ($pluggedIn)
