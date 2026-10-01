@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.10.3'
+$AgentVersion = '1.10.4'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -479,9 +479,25 @@ function Install-PowerShellRelease {
             # their open files.
             $new = "$dir.mdm-new"
             Remove-Item -Path $new, "$dir.mdm-old" -Recurse -Force -ErrorAction SilentlyContinue
+            # Unpacked it is about three times the archive (7.6: 75 MB -> 200 MB), next to the
+            # installed one until the swap.
+            $parent = Split-Path -Path $dir -Parent
+            $neededMb = [int][Math]::Ceiling((Get-Item -Path $file).Length * 3.5 / 1MB)
+            $freeKb = "$(df -Pk $parent 2>$null | Select-Object -Last 1)" -split '\s+' | Select-Object -Index 3
+            if ($freeKb -match '^\d+$' -and [long]$freeKb / 1024 -lt $neededMb) {
+                [void]$State.Failures.Add("PowerShell ${Version}: not enough disk space in ${parent}: $([int]([long]$freeKb / 1024)) MB free, about $neededMb MB needed")
+                return
+            }
             New-Item -ItemType Directory -Path $new -Force | Out-Null
-            tar -xzf $file -C $new
-            if ($LASTEXITCODE -or -not (Test-Path -Path "$new/pwsh")) { [void]$State.Failures.Add("PowerShell ${Version}: unpacking failed"); return }
+            $output = @(tar -xzf $file -C $new 2>&1 | ForEach-Object { "$_" })
+            $code = $LASTEXITCODE
+            if ($code -or -not (Test-Path -Path "$new/pwsh")) {
+                $reason = if ($code) { "tar exit $code" } else { 'no pwsh in the archive' }
+                $tail = (@($output | Where-Object { $_.Trim() }) | Select-Object -Last 2) -join ' | '
+                [void]$State.Failures.Add("PowerShell ${Version}: unpacking into $new failed ($reason)$(if ($tail) { ": $tail" })")
+                Remove-Item -Path $new -Recurse -Force -ErrorAction SilentlyContinue
+                return
+            }
             chmod +x "$new/pwsh"
             Move-Item -Path $dir -Destination "$dir.mdm-old"
             Move-Item -Path $new -Destination $dir
