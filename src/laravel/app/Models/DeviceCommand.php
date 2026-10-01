@@ -291,9 +291,15 @@ class DeviceCommand extends Model
      * The agent's message when it adds something to the status: not the plain "Done" of a
      * finished update ("Done, restart required" becomes "Restart required").
      */
+    /** The message with the meaning of winget exit codes (App\Support\WingetCodes). */
+    public function getDisplayMessageAttribute(): ?string
+    {
+        return \App\Support\WingetCodes::explain($this->message);
+    }
+
     public function getResultNoteAttribute(): ?string
     {
-        $message = trim((string) $this->message);
+        $message = trim((string) $this->displayMessage);
         if ($this->status === 'succeeded' && preg_match('/^Done\b[,.\s]*/i', $message)) {
             $message = ucfirst(trim(preg_replace('/^Done\b[,.\s]*/i', '', $message)));
         }

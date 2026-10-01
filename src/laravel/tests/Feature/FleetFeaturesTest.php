@@ -758,4 +758,15 @@ class FleetFeaturesTest extends TestCase
         $this->assertArrayNotHasKey('source', $device->updateTarget('app', ['Id' => 'Git.Git', 'Source' => '']));
         $this->assertArrayNotHasKey('source', DeviceCommand::sanitizeParams('installUpdate', ['kind' => 'winget', 'id' => 'Git.Git', 'source' => 'evil; rm']));
     }
+
+    public function test_winget_exit_codes_are_explained(): void
+    {
+        $device = $this->device('pc', ['Platform' => 'windows'], version: '1.12.4');
+        $command = $device->commands()->create(['command' => 'installUpdate', 'params' => ['kind' => 'winget', 'id' => 'Heroic'], 'status' => 'failed', 'message' => 'winget upgrade Heroic: exit -1978335090, Found Heroic']);
+        $this->assertSame('winget upgrade Heroic: exit 0x8A15008E (An upgrade is available but uses a different install technology than the current installation: uninstall it and install the new version), Found Heroic', $command->resultNote);
+        $this->assertStringContainsString('HTTP 404 when downloading the installer', \App\Support\WingetCodes::explain('exit -2145844844'));
+        // Not a winget code, or no code at all: unchanged.
+        $this->assertSame('exit 1', \App\Support\WingetCodes::explain('exit 1'));
+        $this->assertSame('Updated to 1.12.4', \App\Support\WingetCodes::explain('Updated to 1.12.4'));
+    }
 }

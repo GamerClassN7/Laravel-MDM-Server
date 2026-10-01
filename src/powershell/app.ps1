@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.12.3'
+$AgentVersion = '1.13.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -2886,14 +2886,80 @@ function Start-UpdateJob {
                 $code = $LASTEXITCODE
                 $output = @($output) + @($fallback)
             }
+            if ($code -eq -1978335090) {
+                # 0x8A15008E: the new version uses another install technology: the old one is
+                # uninstalled first (as winget does on its own for packages that ask for it).
+                "winget upgrade ${Id}: another install technology, uninstalling the previous version first" | Add-Content -Path $OutputLog -Encoding UTF8
+                $again = Invoke-WingetUpgradeOnce -Winget $Winget -Id $Id -Source 'winget' -Extra @('--uninstall-previous')
+                $code = $LASTEXITCODE
+                $output = @($output) + @($again)
+            }
+            if ($code -in -1978335226, -1978334964) {
+                # 0x8A150006 / 0x8A15010C: the installer does not run (or gives up) as SYSTEM, which
+                # has no desktop: tried again in the session of the user who is logged on.
+                $asUser = Invoke-WingetUpgradeAsUser -Id $Id
+                if ($null -ne $asUser) {
+                    $code = $LASTEXITCODE
+                    $output = @($output) + @($asUser)
+                }
+            }
             $global:LASTEXITCODE = $code
             return , $output
         }
-        function Invoke-WingetUpgradeOnce ([string]$Winget, [string]$Id, [string]$Source) {
-            "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id ($Source)" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
+        function Invoke-WingetUpgradeAsUser ([string]$Id) {
+            # A one-off task of the logged-on user (interactive, highest privileges, no password
+            # needed), the way the user would run it; $null when nobody is logged on. The id is of
+            # the checked form (Test-UpdateParams), so it is safe in the command line.
+            $user = try { (Get-CimInstance -ClassName Win32_ComputerSystem -Property UserName).UserName } catch { $null }
+            if (-not $user) {
+                "winget upgrade ${Id}: nobody is logged on, not tried in a user session" | Add-Content -Path $OutputLog -Encoding UTF8
+                return $null
+            }
+            "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id (in the session of $user)" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
+            $tag = [guid]::NewGuid().ToString('N')
+            $name = "Laravel-MDM-Winget-$($tag.Substring(0, 12))"
+            # Windows\Temp: the user can create the file, SYSTEM reads it.
+            $log = Join-Path $env:SystemRoot "Temp\mdm-winget-$tag.log"
+            $arguments = "/c winget upgrade --id `"$Id`" --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity --source winget > `"$log`" 2>&1"
+            $code = -1
+            $output = @()
+            try {
+                $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" -Argument $arguments
+                $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+                $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds $wingetTimeout) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+                Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+                Start-ScheduledTask -TaskName $name -ErrorAction Stop
+                $deadline = (Get-Date).AddSeconds($wingetTimeout + 60)
+                do {
+                    Start-Sleep -Seconds 3
+                    $info = Get-ScheduledTaskInfo -TaskName $name -ErrorAction Stop
+                    $state = (Get-ScheduledTask -TaskName $name -ErrorAction Stop).State
+                } while (("$state" -eq 'Running' -or $info.LastTaskResult -eq 267011) -and (Get-Date) -lt $deadline)
+                # The exit code of cmd (winget's) as a signed number.
+                $code = [BitConverter]::ToInt32([BitConverter]::GetBytes([uint32]$info.LastTaskResult), 0)
+                if ("$state" -eq 'Running') {
+                    Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+                    $code = -1
+                }
+                $output = @(Get-Content -Path $log -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' -and $_ -notmatch '^[\s\-\\|/\u2588\u2592]*$' })
+            }
+            catch {
+                $output = @("Not run in the session of ${user}: $($_.Exception.Message)")
+            }
+            finally {
+                Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+                Remove-Item -Path $log -Force -ErrorAction SilentlyContinue
+            }
+            $output | Add-Content -Path $OutputLog -Encoding UTF8
+            "exit code $code" | Add-Content -Path $OutputLog -Encoding UTF8
+            $global:LASTEXITCODE = $code
+            return , $output
+        }
+        function Invoke-WingetUpgradeOnce ([string]$Winget, [string]$Id, [string]$Source, [string[]]$Extra = @()) {
+            "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id ($Source $($Extra -join ' '))" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
             $out = [System.IO.Path]::GetTempFileName()
             $err = [System.IO.Path]::GetTempFileName()
-            $arguments = @('upgrade', '--id', $Id, '--exact', '--silent', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity')
+            $arguments = @('upgrade', '--id', $Id, '--exact', '--silent', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity') + @($Extra)
             if ($Source -in 'winget', 'msstore') { $arguments += @('--source', $Source) }
             try {
                 $process = Start-Process -FilePath $Winget -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
@@ -3031,7 +3097,9 @@ function Start-UpdateJob {
                 # hangs or fails does not stop the others. winget also updates PowerShell 7
                 # (Microsoft.PowerShell). App Installer is winget itself: replacing it ends winget.
                 $listed = try { @(Get-WingetSoftware -Updatable) } catch { [void]$state.Failures.Add("winget: $($_.Exception.Message)"); @() }
-                $packages = @($listed | Where-Object { $_.Id -and $_.Id -ne 'Microsoft.AppInstaller' -and "$($_.Avaliable)" -ne '' })
+                # Frameworks of Store apps (VCLibs, UI.Xaml, Windows App Runtime) are updated by the Store,
+                # winget fails on them as SYSTEM (0x8A15005C).
+                $packages = @($listed | Where-Object { $_.Id -and $_.Id -notmatch '^Microsoft\.(AppInstaller|VCLibs|UI\.Xaml|WindowsAppRuntime)' -and "$($_.Avaliable)" -ne '' })
                 $done = 0
                 foreach ($package in $packages) {
                     Set-Progress ([int](40 * $done / [Math]::Max(1, $packages.Count))) "winget upgrade $($package.Id) ($($done + 1)/$($packages.Count))"

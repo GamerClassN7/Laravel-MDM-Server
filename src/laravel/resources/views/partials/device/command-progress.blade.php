@@ -9,7 +9,7 @@
             @unless ($compact ?? false)
                 <i class="{{ $command->icon }} me-1 text-body-secondary"></i>{{ $command->label }} ·
             @endunless
-            <span class="text-body-secondary">{{ $command->message ?: $command->statusLabel }}</span>
+            <span class="text-body-secondary">{{ $command->displayMessage ?: $command->statusLabel }}</span>
         </span>
         @if ($percent !== null && $command->status === 'running')
             <span class="text-nowrap fw-semibold">{{ $percent }} %</span>
