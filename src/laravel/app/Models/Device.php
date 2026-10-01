@@ -21,7 +21,10 @@ class Device extends Model
     public const TRACKING_VERSION = '1.8.0';
 
     /** Agents from this version update PowerShell 7 from its GitHub release (installUpdate "pwsh"). */
-    public const PWSH_UPDATE_VERSION = '1.8.1';
+    public const PWSH_UPDATE_VERSION = '1.8.2';
+
+    /** Agents from this version collect and report everything on request (sync). */
+    public const SYNC_VERSION = '1.8.2';
 
     /** Agents from this version report prefix lengths and send Wake-on-LAN magic packets. */
     public const WAKE_VERSION = '1.9.0';
@@ -394,6 +397,7 @@ class Device extends Model
             DeviceCommand::sanitizeParams($command, $params) === null => __('Invalid parameters'),
             $command === 'installUpdate' && ! $this->commandTracking => __('The agent is too old for this command'),
             $command === 'wake' && version_compare((string) $this->agent_version, self::WAKE_VERSION, '<') => __('The agent is too old for this command'),
+            $command === 'sync' && version_compare((string) $this->agent_version, self::SYNC_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::SYNC_VERSION]),
             $command === 'installUpdate' && ($params['kind'] ?? null) === 'pwsh' && version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') => __('The agent is too old for this command'),
             default => null,
         };

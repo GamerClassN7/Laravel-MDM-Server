@@ -19,7 +19,7 @@ class DeviceCommand extends Model
     /** Finished commands are kept this many days (the device history). */
     public const KEEP_DAYS = 90;
 
-    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'wake'];
+    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake'];
 
     public const STATUSES = ['queued', 'sent', 'running', 'succeeded', 'failed', 'delivered', 'expired', 'cancelled'];
 
@@ -45,6 +45,7 @@ class DeviceCommand extends Model
         'installUpdate' => 7200,
         'updateAgent' => 1800,
         'runScripts' => 600,
+        'sync' => 1800,
         'wake' => 300,
     ];
 
@@ -210,6 +211,7 @@ class DeviceCommand extends Model
             'installUpdate' => __('Update :name', ['name' => $this->params['title'] ?? $this->params['id'] ?? '?']),
             'updateAgent' => __('Update agent'),
             'runScripts' => __('Run scripts'),
+            'sync' => __('Sync'),
             'wake' => __('Wake :name', ['name' => $this->params['title'] ?? '?']),
             default => $this->command,
         };
@@ -223,6 +225,7 @@ class DeviceCommand extends Model
             'doUpdates', 'installUpdate' => 'fas fa-sync',
             'updateAgent' => 'fas fa-robot',
             'runScripts' => 'fas fa-scroll',
+            'sync' => 'fas fa-cloud-download-alt',
             'wake' => 'fas fa-sun',
             default => 'fas fa-terminal',
         };

@@ -242,7 +242,7 @@ The agent is designed to stay out of the way:
 | Newer PowerShell 7 release | ✅ installed from GitHub (MSI, SHA-256 checked) | ✅ installed from GitHub (.deb or tar.gz, SHA-256 checked) |
 | **Commands** | | |
 | Install updates | ✅ Windows Update, winget, modules | ✅ apt, flatpak, snap, modules |
-| Install a single update (agent 1.8.0+, PowerShell 7 from GitHub 1.8.1+) | ✅ Windows Update, winget, modules, PowerShell 7 | ✅ apt, flatpak, snap, modules, PowerShell 7 |
+| Install a single update (agent 1.8.0+, PowerShell 7 from GitHub 1.8.2+) | ✅ Windows Update, winget, modules, PowerShell 7 | ✅ apt, flatpak, snap, modules, PowerShell 7 |
 | Progress and result of commands (agent 1.8.0+) | ✅ | ✅ |
 | Restart / Turn off | ✅ | ✅ |
 | Wake-on-LAN through another agent in the network (agent 1.9.0+) | ✅ sends and is woken | ✅ sends and is woken |

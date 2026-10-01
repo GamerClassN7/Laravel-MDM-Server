@@ -92,7 +92,7 @@ param (
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
 $AgentVersion = '1.10.0'
-$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'wake')
+$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
     windows = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
@@ -383,12 +383,19 @@ function Install-PowerShellRelease {
         $file = Join-Path $temp $asset
         $ProgressPreference = 'SilentlyContinue'
         Invoke-WebRequest -Uri "$base/$asset" -OutFile $file -UseBasicParsing -TimeoutSec 600
-        $hashes = (Invoke-WebRequest -Uri "$base/hashes.sha256" -UseBasicParsing -TimeoutSec 60).Content
-        if ($hashes -is [byte[]]) { $hashes = [System.Text.Encoding]::UTF8.GetString($hashes) }
-        $expected = foreach ($line in ("$hashes" -split "`n")) { if ($line -match "^([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($asset))\s*$") { $Matches[1] } }
+        # The list is UTF-16 in some releases (7.6), ASCII in others: read it by its byte order mark.
+        $hashFile = Join-Path $temp 'hashes.sha256'
+        Invoke-WebRequest -Uri "$base/hashes.sha256" -OutFile $hashFile -UseBasicParsing -TimeoutSec 60
+        $reader = New-Object System.IO.StreamReader($hashFile, [System.Text.Encoding]::UTF8, $true)
+        try { $hashes = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        $expected = foreach ($line in ($hashes -split "`r?`n")) { if ($line.Trim() -match "^([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($asset))$") { $Matches[1] } }
+        if (-not $expected) {
+            [void]$State.Failures.Add("PowerShell ${Version}: $asset is not listed in the release hashes")
+            return
+        }
         $actual = (Get-FileHash -Path $file -Algorithm SHA256).Hash
-        if (-not $expected -or $actual -ne "$expected".ToUpperInvariant()) {
-            [void]$State.Failures.Add("PowerShell ${Version}: $asset does not match the release hashes")
+        if ($actual -ne "$(@($expected)[0])".ToUpperInvariant()) {
+            [void]$State.Failures.Add("PowerShell ${Version}: $asset does not match the release hashes (SHA-256 $actual)")
             return
         }
         "PowerShell ${Version}: $asset downloaded, SHA-256 verified"
@@ -2913,6 +2920,12 @@ function Invoke-DeviceCommand {
             # Only a trigger: the runs are taken, verified and run by the main loop.
             $script:ScriptsRequested = $true
         }
+        'sync' {
+            # Everything collected again now (inventory, disk health) and reported right away; the
+            # main loop does it (it owns the collection jobs) and reports the result.
+            $script:SyncRequest = @{ Id = $Id; Phase = 'requested' }
+            [void](Send-CommandStatus -Id $Id -Status running -Progress 5 -Message 'Collecting the inventory')
+        }
         { $_ -in 'doUpdates', 'installUpdate' } {
             $updateParams = $null
             if ($Command -eq 'installUpdate') {
@@ -3432,8 +3445,16 @@ function Start-Agent {
                     Save-CachedInventory -Data $data
                     $inventory = @{ CollectedAt = Get-Date; Data = $data }
                     $lastReport = [DateTime]::MinValue
+                    if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'collecting') {
+                        $script:SyncRequest.InventoryDone = $true
+                        [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status running -Progress 60 -Message 'Inventory collected')
+                    }
                 } else {
                     Write-AgentLog "Inventory collection failed: $($inventoryJob.ChildJobs[0].JobStateInfo.Reason)"
+                    if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'collecting') {
+                        [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status failed -Message "Inventory collection failed: $($inventoryJob.ChildJobs[0].JobStateInfo.Reason)")
+                        $script:SyncRequest = $null
+                    }
                 }
                 Remove-Job -Job $inventoryJob -Force
                 $inventoryJob = $null
@@ -3463,6 +3484,14 @@ function Start-Agent {
                     $nextInventory = Get-Date
                 }
             }
+            if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'requested') {
+                # Sync: collect everything now. A collection already running is waited for.
+                Write-AgentLog 'Sync requested: collecting the inventory and disk health now'
+                $script:SyncRequest.Phase = 'collecting'
+                $script:SyncRequest.InventoryDone = $false
+                if (-not $inventoryJob) { $nextInventory = Get-Date }
+                if (-not $virtualization -and -not $healthJob) { $nextHealth = Get-Date }
+            }
             if (-not $inventoryJob -and (Get-Date) -ge $nextInventory) {
                 Write-AgentLog 'Inventory collection started'
                 $inventoryJob = Start-InventoryCollection
@@ -3486,14 +3515,29 @@ function Start-Agent {
                 $nextHealth = (Get-Date).AddSeconds($HealthInterval)
             }
 
+            if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'collecting' -and $script:SyncRequest.InventoryDone -and -not $healthJob) {
+                # Collected: the full report goes now.
+                $script:SyncRequest.Phase = 'report'
+                [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status running -Progress 90 -Message 'Sending the report')
+                $lastReport = [DateTime]::MinValue
+            }
+
             if (((Get-Date) - $lastReport).TotalSeconds -ge $ReportInterval) {
                 $lastReport = Get-Date
                 try {
                     Send-Report -Data (Get-Report -Inventory $inventory.Data -Health $health.Data) -Token $Token
+                    if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'report') {
+                        [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status succeeded -Progress 100 -Message 'Synced')
+                        $script:SyncRequest = $null
+                    }
                 }
                 catch {
                     # HTTP problems must not tear down the WebSocket connection.
                     Write-AgentLog "Report failed: $($_.Exception.Message)"
+                    if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'report') {
+                        [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status failed -Message "Report failed: $($_.Exception.Message)")
+                        $script:SyncRequest = $null
+                    }
                 }
                 if ($Once) {
                     return

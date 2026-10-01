@@ -4,6 +4,8 @@
     $buttons = [
         'doUpdates' => ['icon' => 'fas fa-sync', 'label' => $pendingUpdates > 0 ? trans_choice('Install :count update|Install :count updates', $pendingUpdates, ['count' => $pendingUpdates]) : __('Install updates'), 'confirm' => null, 'primary' => $pendingUpdates > 0],
         'restart' => ['icon' => 'fas fa-redo', 'label' => __('Restart'), 'confirm' => __('Restart :device now? Unsaved work of its users is lost.', ['device' => $selectedDevice->displayName]), 'primary' => false],
+        // Collects updates, packages and disk health again now instead of on the next schedule.
+        'sync' => ['icon' => 'fas fa-cloud-download-alt', 'label' => __('Sync'), 'confirm' => null, 'primary' => false, 'title' => __('Collect all data on the device again now and report it')],
     ];
     $turnOffRunning = \App\Models\Device::findActive($active, 'turnOff') ?? \App\Models\Device::findActive($active, 'restart');
     $turnOffRefusal = $selectedDevice->commandRefusal('turnOff');
@@ -31,7 +33,7 @@
                     wire:click="sendCommandToDevice('{{ $command }}')"
                     wire:loading.attr="disabled" wire:target="sendCommandToDevice('{{ $command }}')"
                     @if ($button['confirm']) wire:confirm="{{ $button['confirm'] }}" @endif
-                    @if ($running) title="{{ $running->label }}: {{ $running->statusLabel }}" @elseif ($refusal) title="{{ $refusal }}" @endif
+                    @if ($running) title="{{ $running->label }}: {{ $running->statusLabel }}" @elseif ($refusal) title="{{ $refusal }}" @elseif ($button['title'] ?? null) title="{{ $button['title'] }}" @endif
                     @disabled($running || $refusal)>
                     @if ($running && $running->command === $command)
                         <span aria-hidden="true" class="spinner-border spinner-border-sm me-2" role="status"></span>
