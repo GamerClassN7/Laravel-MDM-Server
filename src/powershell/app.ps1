@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.12.2'
+$AgentVersion = '1.12.3'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -320,7 +320,9 @@ function Install-WindowsUpdate {
             $waiting += $update.Title
             continue
         }
-        if ($update.InstallationBehavior.CanRequestUserInput) {
+        # Drivers (Type 2) are flagged so (graphics drivers) but install without a window, as Windows
+        # Update itself installs them as SYSTEM.
+        if ($update.InstallationBehavior.CanRequestUserInput -and [int]$update.Type -ne 2) {
             # Would wait for a window nobody sees (SYSTEM has no desktop).
             [void]$State.Failures.Add("$($update.Title): asks for user input, install it on the device")
             continue
@@ -2676,7 +2678,10 @@ function Test-UpdateParams {
         throw "'$kind' updates are not available on this platform"
     }
 
-    return @{ kind = $kind; id = "$($Params.id)"; user = "$($Params.user)"; edition = "$($Params.edition)"; version = "$($Params.version)" }
+    # winget: the source of the package in the inventory (servers before 1.12.3 do not send it).
+    $source = if ($kind -eq 'winget' -and "$($Params.source)" -in 'winget', 'msstore') { "$($Params.source)" } else { '' }
+
+    return @{ kind = $kind; id = "$($Params.id)"; user = "$($Params.user)"; edition = "$($Params.edition)"; version = "$($Params.version)"; source = $source }
 }
 
 function Test-WakeParams {
@@ -2871,7 +2876,21 @@ function Start-UpdateJob {
         # otherwise hang the whole update forever. Returns the output; $LASTEXITCODE is set.
         $wingetTimeout = 900
         function Invoke-WingetUpgrade ([string]$Winget, [string]$Id, [string]$Source) {
-            "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
+            # The Microsoft Store first; only when it fails (not there, its REST API down:
+            # 0x8A15003B) the winget repository, whatever source the inventory listed.
+            $output = Invoke-WingetUpgradeOnce -Winget $Winget -Id $Id -Source 'msstore'
+            $code = $LASTEXITCODE
+            if ($wingetOk -notcontains $code) {
+                "winget upgrade ${Id}: msstore failed (exit $code), trying the winget source" | Add-Content -Path $OutputLog -Encoding UTF8
+                $fallback = Invoke-WingetUpgradeOnce -Winget $Winget -Id $Id -Source 'winget'
+                $code = $LASTEXITCODE
+                $output = @($output) + @($fallback)
+            }
+            $global:LASTEXITCODE = $code
+            return , $output
+        }
+        function Invoke-WingetUpgradeOnce ([string]$Winget, [string]$Id, [string]$Source) {
+            "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id ($Source)" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
             $out = [System.IO.Path]::GetTempFileName()
             $err = [System.IO.Path]::GetTempFileName()
             $arguments = @('upgrade', '--id', $Id, '--exact', '--silent', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity')
@@ -2913,7 +2932,7 @@ function Start-UpdateJob {
                     $winget = Get-WingetPath
                     if (-not $winget) { [void]$state.Failures.Add('winget not found'); break }
                     Set-Progress 10 "winget upgrade $id"
-                    $output = Invoke-WingetUpgrade -Winget $winget -Id $id
+                    $output = Invoke-WingetUpgrade -Winget $winget -Id $id -Source $Params.source
                     "winget upgrade ${id}: exit $LASTEXITCODE"
                     Add-Result "winget upgrade $id" $LASTEXITCODE $output $wingetOk
                 }
