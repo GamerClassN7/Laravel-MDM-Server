@@ -748,4 +748,14 @@ class FleetFeaturesTest extends TestCase
         $this->assertSame('lan', Device::guessNetworkType('Ethernet', 'Realtek PCIe GbE Family Controller'));
         $this->assertSame(['58:11:22:A1:59:F0'], $device->wakeMacs);
     }
+
+    public function test_a_winget_update_carries_its_source(): void
+    {
+        $device = $this->device('pc', ['Platform' => 'windows'], version: '1.12.3');
+        $this->assertSame('winget', $device->updateTarget('app', ['Id' => 'BlenderFoundation.Blender', 'Source' => 'winget'])['source']);
+        $this->assertSame('msstore', $device->updateTarget('app', ['Id' => '9NBLGGH4NNS1', 'Source' => 'msstore'])['source']);
+        // Unknown: the agent tries the Microsoft Store, then the winget repository.
+        $this->assertArrayNotHasKey('source', $device->updateTarget('app', ['Id' => 'Git.Git', 'Source' => '']));
+        $this->assertArrayNotHasKey('source', DeviceCommand::sanitizeParams('installUpdate', ['kind' => 'winget', 'id' => 'Git.Git', 'source' => 'evil; rm']));
+    }
 }

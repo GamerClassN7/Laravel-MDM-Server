@@ -142,6 +142,10 @@ class DeviceCommand extends Model
             $clean['edition'] = $edition;
             $clean['version'] = $version;
         }
+        // winget: the source of the package (without it winget also asks the Microsoft Store).
+        if ($kind === 'winget' && in_array($params['source'] ?? null, ['winget', 'msstore'], true)) {
+            $clean['source'] = $params['source'];
+        }
         // Only shown in the portal, never used by the agent.
         if (isset($params['title']) && is_string($params['title'])) {
             $clean['title'] = mb_substr($params['title'], 0, 200);
