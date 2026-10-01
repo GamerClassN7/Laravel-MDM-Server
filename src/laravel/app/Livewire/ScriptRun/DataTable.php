@@ -8,18 +8,18 @@ use Illuminate\Support\Facades\Gate;
 use SteelAnts\DataTable\Livewire\DataTableComponent;
 use SteelAnts\DataTable\Traits\UseDatabaseEloquent;
 
-/** Runs of one script (detail page), newest first. */
+/** Runs of one script (its detail page) or of one device (its Scripts tab), newest first. */
 class DataTable extends DataTableComponent
 {
     use UseDatabaseEloquent;
 
-    public $listeners = ['scriptSaved' => '$refresh'];
+    public ?int $scriptId = null;
 
-    public int $scriptId;
+    public ?int $deviceId = null;
 
     public bool $filterable = true;
 
-    public array $sortableColumns = ['status', 'version', 'issued_at', 'finished_at'];
+    public array $sortableColumns = ['script_id', 'status', 'version', 'issued_at', 'finished_at'];
 
     public string $sortBy = 'issued_at';
 
@@ -29,17 +29,42 @@ class DataTable extends DataTableComponent
 
     public function mount()
     {
-        Gate::authorize('is-system-admin');
+        // The script pages are for system admins; a device's runs are shown to whoever sees it.
+        if ($this->deviceId === null) {
+            Gate::authorize('is-system-admin');
+        }
         parent::mount();
+    }
+
+    /** Refreshed with the script (saved) or the device (live updates, resources/js/live.js). */
+    protected function getListeners(): array
+    {
+        return $this->deviceId === null
+            ? ['scriptSaved' => '$refresh']
+            : ["device-changed.{$this->deviceId}" => '$refresh'];
     }
 
     public function query(): Builder
     {
-        return ScriptRun::query()->with('device')->where('script_id', $this->scriptId);
+        return $this->deviceId === null
+            ? ScriptRun::query()->with(['device', 'script'])->where('script_id', $this->scriptId)
+            : ScriptRun::query()->with(['script', 'device'])->where('device_id', $this->deviceId);
     }
 
     public function headers(): array
     {
+        // On a device: which script ran.
+        if ($this->deviceId !== null) {
+            return [
+                'script_id' => __('Script'),
+                'version' => __('Version'),
+                'status' => __('Status'),
+                'issued_at' => __('Issued'),
+                'finished_at' => __('Finished'),
+                'output' => __('Output'),
+            ];
+        }
+
         return [
             'device_id' => __('Device'),
             'version' => __('Version'),
@@ -60,6 +85,11 @@ class DataTable extends DataTableComponent
     public function renderColumnDeviceId($value, $row): string
     {
         return '<a href="'.e(route('devices', ['selectedDeviceId' => $value, 'tab' => 'scripts'])).'">'.e($row->device?->displayName ?? "#$value").'</a>';
+    }
+
+    public function renderColumnScriptId($value, $row): string
+    {
+        return '<a href="'.e(route('script.show', $value)).'">'.e($row->script?->name ?? "#$value").'</a>';
     }
 
     public function renderColumnVersion($value, $row): string
@@ -87,12 +117,19 @@ class DataTable extends DataTableComponent
         return $value ? '<span title="'.e($value).'">'.e($value->diffForHumans()).'</span>' : '';
     }
 
-    public function renderColumnOutput($value): string
+    /** A button opening the output in a modal (script-run.output). */
+    public function renderColumnOutput($value, $row): string
     {
-        if (! $value) {
+        if (! $value && ! $row->error) {
             return '';
         }
+        $modal = json_encode([
+            'livewireComponents' => 'script-run.output',
+            'title' => __('Output of :script on :device', ['script' => $row->script?->name ?? '#'.$row->script_id, 'device' => $row->device?->displayName ?? '#'.$row->device_id]),
+            'parameters' => ['runId' => $row->id],
+        ]);
 
-        return '<details><summary class="small text-muted">'.e(__('Show')).'</summary><pre class="small bg-body-tertiary p-2 rounded mb-0" style="max-height: 20rem; max-width: 40rem; white-space: pre-wrap;">'.e($value).'</pre></details>';
+        return '<button class="btn btn-sm btn-light text-nowrap" type="button" x-on:click="Livewire.dispatch(\'openModal\', '.e($modal).')">'
+            .'<i class="fas fa-terminal me-1"></i>'.e(__('Output')).'</button>';
     }
 }

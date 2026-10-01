@@ -219,6 +219,11 @@ updates) or goes away and comes back. The **Smart alerts** dashboard widget list
 devices, with one button per alert for all devices that can take the action now.
 A device without a heartbeat for 90 seconds is shown as offline.
 
+When the agent cannot reach the server (network outage, server down), it keeps the CPU and memory
+samples, and the results of the ping-only devices it pings, in `backlog-metrics.json` /
+`backlog-pings.json` (a day of samples, 10 000 pings at most, also over a restart). Once the server
+answers again it sends them with the time each was taken, so the charts have no gap (agents 1.11.0+).
+
 The agent is designed to stay out of the way:
 
 - it runs with below-normal priority (`Nice=10` and idle I/O priority on Linux),

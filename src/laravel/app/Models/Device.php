@@ -1034,6 +1034,49 @@ class Device extends Model
         return $taken;
     }
 
+    /** Ping results one backfill request may carry. */
+    public const PING_BACKFILL_MAX = 2000;
+
+    /**
+     * Pings a relay made while it could not reach the server (agents 1.11.0+), each with the time
+     * it was made: [{id, up, rtt, at}]. Only for its current targets, from the last 30 days; a
+     * result next to one already stored for that device (a batch sent again) is skipped. They fill
+     * the history only, the current state comes from the live pings.
+     */
+    public static function backfillPings(Device $relay, mixed $results): int
+    {
+        if (! is_array($results)) {
+            return 0;
+        }
+        $allowed = collect(self::pingTargetsFor($relay))->pluck('id')->all();
+        $oldest = now()->subDays(PingResult::RETENTION_DAYS)->getTimestamp();
+        $newest = now()->addMinute()->getTimestamp();
+        $taken = 0;
+        $touched = [];
+        foreach (array_slice($results, 0, self::PING_BACKFILL_MAX) as $result) {
+            $id = is_array($result) && is_int($result['id'] ?? null) ? $result['id'] : null;
+            $at = is_array($result) && is_numeric($result['at'] ?? null) ? (int) $result['at'] : null;
+            if ($id === null || $at === null || ! in_array($id, $allowed, true) || $at < $oldest || $at > $newest) {
+                continue;
+            }
+            $near = PingResult::query()->where('device_id', $id)
+                ->whereBetween('created_at', [\Illuminate\Support\Carbon::createFromTimestamp($at - 10, config('app.timezone')), \Illuminate\Support\Carbon::createFromTimestamp($at + 10, config('app.timezone'))])->exists();
+            if ($near) {
+                continue;
+            }
+            $up = filter_var($result['up'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            $rtt = is_numeric($result['rtt'] ?? null) ? max(0, min(60000, round((float) $result['rtt'], 1))) : null;
+            PingResult::query()->insert(['device_id' => $id, 'up' => $up, 'rtt' => $up ? $rtt : null, 'relay_id' => $relay->id, 'created_at' => \Illuminate\Support\Carbon::createFromTimestamp($at, config('app.timezone'))]);
+            $touched[$id] = true;
+            $taken++;
+        }
+        foreach (array_keys($touched) as $id) {
+            \App\Support\LiveUpdates::device($id, 'ping');
+        }
+
+        return $taken;
+    }
+
     /** Checks and cleans the settings of a ping-only device; null when they are not valid. */
     public static function sanitizePingSettings(string $address, int|string|null $prefix, ?string $mac): ?array
     {
