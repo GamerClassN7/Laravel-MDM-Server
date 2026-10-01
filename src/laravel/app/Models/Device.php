@@ -881,12 +881,49 @@ class Device extends Model
     }
 
     /**
+     * The IPv4 networks of the cards a magic packet can wake (network => [broadcast]): the address
+     * set by hand (Wake-on-LAN settings) or the ones the agent reports.
+     */
+    public function wakeNetworks(): array
+    {
+        if (! $this->isPingOnly && $this->wake_address && ($ip = ip2long($this->wake_address)) !== false) {
+            $prefix = (int) ($this->wake_prefix ?? 24);
+            $mask = (-1 << (32 - $prefix)) & 0xFFFFFFFF;
+
+            return [long2ip($ip & $mask).'/'.$prefix => ['broadcast' => long2ip(($ip & $mask) | (~$mask & 0xFFFFFFFF))]];
+        }
+
+        return $this->ipv4Networks(self::WAKE_INTERFACE_TYPES);
+    }
+
+    /**
+     * Checks the Wake-on-LAN settings of a device with the agent; empty fields mean "as the agent
+     * reports". Null when they are not valid.
+     */
+    public static function sanitizeWakeSettings(?string $mac, ?string $address, int|string|null $prefix): ?array
+    {
+        $mac = $mac === null || trim($mac) === '' ? null : strtoupper(str_replace('-', ':', trim($mac)));
+        $address = $address === null || trim($address) === '' ? null : trim($address);
+        $prefix = $address === null ? null : ($prefix === null || $prefix === '' ? 24 : (int) $prefix);
+        if (($mac !== null && (! preg_match(DeviceCommand::MAC_PATTERN, $mac) || $mac === '00:00:00:00:00:00'))
+            || ($address !== null && (! filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) || $prefix < 8 || $prefix > 30))) {
+            return null;
+        }
+
+        return ['wake_mac' => $mac, 'wake_address' => $address, 'wake_prefix' => $prefix];
+    }
+
+    /**
      * MAC addresses a magic packet can wake: wired interfaces first, then Wi-Fi.
      *
      * @return array<int, string>
      */
     public function getWakeMacsAttribute(): array
     {
+        // Set by hand (Wake-on-LAN settings): only that card.
+        if (! $this->isPingOnly && $this->wake_mac) {
+            return [$this->wake_mac];
+        }
         $macs = [];
         foreach (['lan', 'wifi'] as $type) {
             foreach ($this->networks as $network) {
@@ -912,7 +949,7 @@ class Device extends Model
         if ($this->wakeMacs === []) {
             return null;
         }
-        $best = $this->bestRelay(self::WAKE_INTERFACE_TYPES, fn (Device $relay) => $relay->commandRefusal('wake', ['macs' => ['00:00:00:00:00:01'], 'broadcasts' => ['255.255.255.255'], 'device' => $this->id]) === null, true);
+        $best = $this->bestRelay(self::WAKE_INTERFACE_TYPES, fn (Device $relay) => $relay->commandRefusal('wake', ['macs' => ['00:00:00:00:00:01'], 'broadcasts' => ['255.255.255.255'], 'device' => $this->id]) === null, true, $this->wakeNetworks());
         if ($best === null) {
             return null;
         }
@@ -930,9 +967,9 @@ class Device extends Model
      * when $allowMobile, nothing stationary qualifies and they reported the same public address as
      * this device. Every relay needs a recent report, so its networks are current.
      */
-    private function bestRelay(array $types, callable $qualifies, bool $allowMobile = false): ?array
+    private function bestRelay(array $types, callable $qualifies, bool $allowMobile = false, ?array $networks = null): ?array
     {
-        $networks = $this->ipv4Networks($types);
+        $networks ??= $this->ipv4Networks($types);
         if ($networks === []) {
             return null;
         }
@@ -1096,7 +1133,7 @@ class Device extends Model
         return match (true) {
             ! $this->offline => __('The device is online'),
             $this->wakeMacs === [] => $this->isPingOnly ? __('Add its MAC address to wake it') : __('No wired or Wi-Fi network card is known'),
-            $this->ipv4Networks(self::WAKE_INTERFACE_TYPES) === [] => __('Its network is not known yet (agent 1.9.0+ reports it)'),
+            $this->wakeNetworks() === [] => __('Its network is not known yet (agent 1.9.0+ reports it, or set it in the Wake-on-LAN settings)'),
             $this->wakeRelay() === null => __('No online agent 1.9.0+ in the same network'),
             default => null,
         };

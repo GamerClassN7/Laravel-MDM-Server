@@ -64,6 +64,14 @@
                         </button>
                     </li>
                 @endif
+                @if ($canWake && ! $selectedDevice->isPingOnly)
+                    <li>
+                        <button class="dropdown-item" type="button"
+                            x-on:click="Livewire.dispatch('openModal', {livewireComponents: 'wake-settings', title: @js(__('Wake-on-LAN of :device', ['device' => $selectedDevice->displayName])), parameters: {deviceId: {{ $selectedDevice->id }}}})">
+                            <i class="dropdown-ico fas fa-sliders-h fa-fw"></i>{{ __('Wake-on-LAN settings') }}
+                        </button>
+                    </li>
+                @endif
                 @if ($canWake)
                     <li><hr class="dropdown-divider"></li>
                     <li>

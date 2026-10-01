@@ -649,4 +649,35 @@ class FleetFeaturesTest extends TestCase
         Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $vm->id])
             ->assertDontSeeHtml('wire:click="wake"');
     }
+
+    public function test_wake_on_lan_can_be_set_by_hand(): void
+    {
+        // The agent reports only a VPN card: nothing to wake, no network to find a relay in.
+        $pc = $this->device('pc', ['Networks' => [$this->network('10.8.0.2', 24, 'AA-BB-CC-DD-EE-09', 'vpn')]], online: false, version: '1.11.0');
+        $relay = $this->device('relay', ['Networks' => [$this->network('192.168.1.5')]], version: '1.11.0');
+        $this->assertSame(__('No wired or Wi-Fi network card is known'), $pc->wakeRefusal());
+
+        $this->assertNull(Device::sanitizeWakeSettings('nonsense', null, null));
+        $this->assertNull(Device::sanitizeWakeSettings(null, '192.168.1.300', 24));
+        $this->assertNull(Device::sanitizeWakeSettings(null, '192.168.1.20', 31));
+        $this->assertSame(['wake_mac' => null, 'wake_address' => null, 'wake_prefix' => null], Device::sanitizeWakeSettings('', ' ', 24));
+
+        $this->actingAs(User::factory()->create());
+        Livewire::test(\App\Livewire\WakeSettings::class, ['deviceId' => $pc->id])
+            ->set('mac', 'aa-bb-cc-dd-ee-10')->set('address', '192.168.1.20')->set('prefix', 24)
+            ->call('save')->assertHasNoErrors();
+        $pc = $pc->fresh();
+        $this->assertSame(['AA:BB:CC:DD:EE:10'], $pc->wakeMacs);
+        $this->assertSame(['192.168.1.0/24' => ['broadcast' => '192.168.1.255']], $pc->wakeNetworks());
+        [$found, $broadcasts] = $pc->wakeRelay();
+        $this->assertSame([$relay->id, ['192.168.1.255', '255.255.255.255']], [$found->id, $broadcasts]);
+        $this->assertSame(['AA:BB:CC:DD:EE:10'], $pc->wake()->params['macs']);
+
+        // Emptied again: what the agent reports.
+        Livewire::test(\App\Livewire\WakeSettings::class, ['deviceId' => $pc->id])
+            ->set('mac', '')->set('address', '')->call('save')->assertHasNoErrors();
+        $this->assertSame([], $pc->fresh()->wakeMacs);
+        // The settings are in the menu of the device.
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $pc->id])->assertSee('Wake-on-LAN settings');
+    }
 }
