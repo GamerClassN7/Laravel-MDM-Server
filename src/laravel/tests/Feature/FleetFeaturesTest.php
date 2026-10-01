@@ -680,4 +680,33 @@ class FleetFeaturesTest extends TestCase
         // The settings are in the menu of the device.
         Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $pc->id])->assertSee('Wake-on-LAN settings');
     }
+
+    public function test_pings_are_spread_over_all_agents_in_the_network(): void
+    {
+        $a = $this->device('a', ['Networks' => [$this->network('192.168.1.5')]], version: '1.11.0');
+        $b = $this->device('b', ['Networks' => [$this->network('192.168.1.6')]], version: '1.11.0');
+        $far = $this->device('far', ['Networks' => [$this->network('10.0.0.5')]], version: '1.11.0');
+        $printers = collect(range(1, 4))->map(function ($i) {
+            $device = new Device;
+            $device->forceFill(['kind' => 'ping', 'name' => "Printer $i", 'os' => '', 'token' => hash('sha256', "p$i"), 'ping_address' => "192.168.1.5$i", 'ping_prefix' => 24])->save();
+
+            return $device;
+        });
+
+        // Two each, none to the agent in another network.
+        $count = fn (Device $relay) => count(Device::pingTargetsFor($relay));
+        $this->assertSame([2, 2, 0], [$count($a), $count($b), $count($far)]);
+        $this->assertNotSame($printers[0]->pingRelay()->id, $printers[1]->pingRelay()->id);
+
+        // A device stays with the agent that pings it when that is as good (no moving around).
+        $current = Device::pingAssignments();
+        foreach ($current as $id => $relayId) {
+            Device::query()->whereKey($id)->update(['ping_relay_id' => $relayId]);
+        }
+        $this->assertSame($current, Device::pingAssignments());
+
+        // An agent goes offline: the other one takes all of them.
+        $b->forceFill(['last_seen_at' => now()->subHour()])->saveQuietly();
+        $this->assertSame([4, 0], [$count($a), $count($b->fresh())]);
+    }
 }

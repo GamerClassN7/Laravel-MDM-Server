@@ -969,14 +969,28 @@ class Device extends Model
      */
     private function bestRelay(array $types, callable $qualifies, bool $allowMobile = false, ?array $networks = null): ?array
     {
+        $best = $this->relayCandidates($types, $qualifies, $allowMobile, $networks)[0] ?? null;
+
+        return $best === null ? null : [$best[0], $best[1]];
+    }
+
+    /**
+     * The agents that can act for this device in its network ([relay, shared networks, score]),
+     * best first: online, signing, reachable over the API, behind the same public address when
+     * both are known; a mobile one only with $allowMobile and the same public address.
+     *
+     * @param  Collection<int, Device>|null  $agents  the agents to choose from (loaded once by callers that ask for many devices)
+     */
+    private function relayCandidates(array $types, callable $qualifies, bool $allowMobile = false, ?array $networks = null, ?Collection $agents = null): array
+    {
         $networks ??= $this->ipv4Networks($types);
         if ($networks === []) {
-            return null;
+            return [];
         }
 
-        $best = null;
-        foreach (static::query()->whereKeyNot($this->id)->where('kind', 'agent')->orderBy('id')->get() as $relay) {
-            if ($relay->offline || ! $relay->signsRequests || ! $relay->connectedViaApi || ! $qualifies($relay)) {
+        $candidates = [];
+        foreach ($agents ?? static::query()->where('kind', 'agent')->orderBy('id')->get() as $relay) {
+            if ($relay->id === $this->id || $relay->offline || ! $relay->signsRequests || ! $relay->connectedViaApi || ! $qualifies($relay)) {
                 continue;
             }
             if ($relay->isMobile && (! $allowMobile || $this->public_ip === null || $relay->public_ip !== $this->public_ip)) {
@@ -993,12 +1007,11 @@ class Device extends Model
             $score = ($relay->isMobile ? 0 : 4)
                 + ($this->public_ip !== null && $relay->public_ip === $this->public_ip ? 2 : 0)
                 + ($relay->ipv4Networks(['lan'], true) !== [] ? 1 : 0);
-            if ($best === null || $score > $best[2]) {
-                $best = [$relay, $shared, $score];
-            }
+            $candidates[] = [$relay, $shared, $score];
         }
+        usort($candidates, fn ($a, $b) => [$b[2], $a[0]->id] <=> [$a[2], $b[0]->id]);
 
-        return $best === null ? null : [$best[0], $best[1]];
+        return $candidates;
     }
 
     /** Runs on a battery (laptops, tablets): it may be in another network than last time. */
@@ -1019,7 +1032,47 @@ class Device extends Model
             return null;
         }
 
-        return $this->bestRelay(['lan'], fn (Device $relay) => version_compare((string) $relay->agent_version, self::PING_VERSION, '>='))[0] ?? null;
+        $relayId = self::pingAssignments()[$this->id] ?? null;
+
+        return $relayId === null ? null : static::query()->find($relayId);
+    }
+
+    /**
+     * Which agent pings which ping-only device (device id => agent id), spread over all agents
+     * that can ping it: each device goes to the one of its candidates (online, 1.10.0+, in its
+     * network, not on a battery) with the fewest devices so far, staying with its current agent
+     * on a tie so the work does not move around; at most MAX_PING_TARGETS per agent.
+     *
+     * @return array<int, int>
+     */
+    public static function pingAssignments(): array
+    {
+        $agents = static::query()->where('kind', 'agent')->orderBy('id')->get()
+            ->filter(fn (Device $agent) => version_compare((string) $agent->agent_version, self::PING_VERSION, '>='))->values();
+        if ($agents->isEmpty()) {
+            return [];
+        }
+        $load = [];
+        $assignments = [];
+        foreach (static::query()->where('kind', 'ping')->whereNotNull('ping_address')->orderBy('id')->get() as $device) {
+            $best = null;
+            foreach ($device->relayCandidates(['lan'], fn () => true, false, null, $agents) as [$relay]) {
+                $count = $load[$relay->id] ?? 0;
+                if ($count >= self::MAX_PING_TARGETS) {
+                    continue;
+                }
+                $rank = [$count, $relay->id === $device->ping_relay_id ? 0 : 1];
+                if ($best === null || $rank < $best[1]) {
+                    $best = [$relay->id, $rank];
+                }
+            }
+            if ($best !== null) {
+                $assignments[$device->id] = $best[0];
+                $load[$best[0]] = ($load[$best[0]] ?? 0) + 1;
+            }
+        }
+
+        return $assignments;
     }
 
     /**
@@ -1033,8 +1086,9 @@ class Device extends Model
             return [];
         }
 
-        return static::query()->where('kind', 'ping')->whereNotNull('ping_address')->orderBy('id')->get()
-            ->filter(fn (Device $device) => $device->pingRelay()?->id === $relay->id)
+        $mine = array_keys(array_filter(self::pingAssignments(), fn ($relayId) => $relayId === $relay->id));
+
+        return static::query()->whereKey($mine)->orderBy('id')->get()
             ->take(self::MAX_PING_TARGETS)
             ->map(fn (Device $device) => ['id' => $device->id, 'address' => $device->ping_address])
             ->values()->all();
