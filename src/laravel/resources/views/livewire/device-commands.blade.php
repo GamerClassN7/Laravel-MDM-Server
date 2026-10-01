@@ -8,7 +8,9 @@
         'restart' => ['icon' => 'fas fa-redo', 'label' => __('Restart'), 'confirm' => __('Restart :device now? Unsaved work of its users is lost.', ['device' => $selectedDevice->displayName])],
         'turnOff' => ['icon' => 'fas fa-power-off', 'label' => __('Turn off'), 'confirm' => __('Turn off :device? It can only be started again on site (or with Wake-on-LAN).', ['device' => $selectedDevice->displayName])],
     ];
-    $canWake = $selectedDevice->offline && ($hasData || $selectedDevice->isPingOnly);
+    // Wake in the menu of every device a magic packet can wake (not virtual machines), disabled
+    // with the reason while it cannot (online, no relay in its network, …).
+    $canWake = $selectedDevice->isPingOnly || ($hasData && $selectedDevice->virtualization === null);
 @endphp
 {{-- Reloads when the device reports (live updates over Reverb), e.g. the progress of a command.
      The bell and the menu sit in the top right corner of the device card (position-relative). --}}
@@ -73,6 +75,9 @@
                                 <i class="dropdown-ico fas fa-sun fa-fw"></i>
                             @endif
                             {{ __('Wake') }}
+                            @if ($wakeRefusal)
+                                <span class="small text-muted ms-2 text-truncate" style="max-width: 12rem">{{ $wakeRefusal }}</span>
+                            @endif
                         </button>
                     </li>
                 @endif

@@ -635,4 +635,18 @@ class FleetFeaturesTest extends TestCase
         $this->assertTrue($printer->fresh()->offline);
         Carbon::setTestNow();
     }
+
+    public function test_wake_is_in_the_menu_of_physical_devices(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $pc = $this->device('pc', ['Networks' => [$this->network('192.168.1.20')]], version: '1.11.0');
+        $vm = $this->device('vm', ['Networks' => [$this->network('192.168.1.21')], 'Virtualization' => ['Type' => 'vm', 'Name' => 'kvm']], version: '1.11.0');
+
+        // Online: in the menu, disabled with the reason.
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $pc->id])
+            ->assertSeeHtml('wire:click="wake"')->assertSee('The device is online');
+        // A virtual machine is not woken by a magic packet.
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $vm->id])
+            ->assertDontSeeHtml('wire:click="wake"');
+    }
 }

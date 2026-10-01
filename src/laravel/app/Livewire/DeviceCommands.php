@@ -80,7 +80,7 @@ class DeviceCommands extends Component
         return view('livewire.device-commands', [
             'selectedDevice' => $device,
             'active' => $active,
-            'wakeRefusal' => $device->offline ? $device->wakeRefusal() : null,
+            'wakeRefusal' => $device->wakeRefusal(),
             'wakeRelay' => $device->offline ? $device->wakeRelay()[0] ?? null : null,
             'recentWake' => $device->offline ? $device->recentWake() : null,
             'pendingUpdates' => count($device->installableUpdates) + count($device->apps_packages_updates) + count($device->moduleUpdates),
