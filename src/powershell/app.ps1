@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.13.0'
+$AgentVersion = '1.13.1'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -2920,28 +2920,50 @@ function Start-UpdateJob {
             $name = "Laravel-MDM-Winget-$($tag.Substring(0, 12))"
             # Windows\Temp: the user can create the file, SYSTEM reads it.
             $log = Join-Path $env:SystemRoot "Temp\mdm-winget-$tag.log"
-            $arguments = "/c winget upgrade --id `"$Id`" --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity --source winget > `"$log`" 2>&1"
+            # cmd writes winget's exit code into the log itself (MDMEXIT=; the redirection goes first,
+            # "=0>>" would redirect handle 0), so the result does not
+            # depend on when Task Scheduler updates LastTaskResult (267009 = still running).
+            $winget = "winget upgrade --id `"$Id`" --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity --source winget > `"$log`" 2>&1"
+            $command = "title Laravel MDM - updating $Id & echo Laravel MDM is updating $Id. This window closes by itself. & $winget & >>`"$log`" echo MDMEXIT=!errorlevel!"
+            # conhost --headless (Windows 10 1809+) runs cmd without a window; older systems show
+            # the window, with the text above saying what it is.
+            if ([Environment]::OSVersion.Version.Build -ge 17763 -and (Test-Path "$env:SystemRoot\System32\conhost.exe")) {
+                $execute = "$env:SystemRoot\System32\conhost.exe"
+                $arguments = "--headless `"$env:SystemRoot\System32\cmd.exe`" /v:on /c `"$command`""
+            } else {
+                $execute = "$env:SystemRoot\System32\cmd.exe"
+                $arguments = "/v:on /c `"$command`""
+            }
             $code = -1
             $output = @()
             try {
-                $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" -Argument $arguments
+                $action = New-ScheduledTaskAction -Execute $execute -Argument $arguments
                 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
                 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds $wingetTimeout) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
                 Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
                 Start-ScheduledTask -TaskName $name -ErrorAction Stop
                 $deadline = (Get-Date).AddSeconds($wingetTimeout + 60)
+                $exit = $null
                 do {
                     Start-Sleep -Seconds 3
+                    $lines = @(Get-Content -Path $log -ErrorAction SilentlyContinue)
+                    $exit = $lines | Where-Object { $_ -match '^MDMEXIT=(-?\d+)' } | Select-Object -Last 1
                     $info = Get-ScheduledTaskInfo -TaskName $name -ErrorAction Stop
                     $state = (Get-ScheduledTask -TaskName $name -ErrorAction Stop).State
-                } while (("$state" -eq 'Running' -or $info.LastTaskResult -eq 267011) -and (Get-Date) -lt $deadline)
-                # The exit code of cmd (winget's) as a signed number.
-                $code = [BitConverter]::ToInt32([BitConverter]::GetBytes([uint32]$info.LastTaskResult), 0)
-                if ("$state" -eq 'Running') {
+                    # 267009 = still running, 267011 = not started yet.
+                    $busy = "$state" -eq 'Running' -or $info.LastTaskResult -in 267009, 267011
+                } while (-not $exit -and $busy -and (Get-Date) -lt $deadline)
+                $lines = @(Get-Content -Path $log -ErrorAction SilentlyContinue)
+                if ($exit -match '^MDMEXIT=(-?\d+)') {
+                    $code = [int]$Matches[1]
+                } elseif ($busy) {
                     Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
                     $code = -1
+                } else {
+                    # The exit code of the task as a signed number.
+                    $code = [BitConverter]::ToInt32([BitConverter]::GetBytes([uint32]$info.LastTaskResult), 0)
                 }
-                $output = @(Get-Content -Path $log -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' -and $_ -notmatch '^[\s\-\\|/\u2588\u2592]*$' })
+                $output = @($lines | Where-Object { $_ -match '\S' -and $_ -notmatch '^MDMEXIT=' -and $_ -notmatch '^[\s\-\\|/\u2588\u2592]*$' })
             }
             catch {
                 $output = @("Not run in the session of ${user}: $($_.Exception.Message)")
