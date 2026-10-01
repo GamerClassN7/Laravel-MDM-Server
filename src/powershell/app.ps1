@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.10.1'
+$AgentVersion = '1.10.2'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -2115,6 +2115,71 @@ function Register-AgentTask {
     Start-ScheduledTask -TaskName "Laravel-MDM-Agent"
 }
 
+function Restart-AgentTask {
+    # Starts the agent again once this instance has exited (the caller exits right after). With
+    # -Watch (agent update) it also rolls the update back: when the new agent has not reported to
+    # the server within 5 minutes (agent-update.json is still there), app.ps1.previous is restored.
+    # On Windows the task ignores a start while it runs and a process started from it counts as part
+    # of it, so a separate one-off task does this; otherwise only the 15 minute watchdog would start
+    # the new agent. On Linux systemd restarts the agent, the watcher runs in its own unit.
+    param ([switch]$Watch)
+
+    $dir = $AgentDir.Replace("'", "''")
+    $script = @"
+`$ErrorActionPreference = 'SilentlyContinue'
+`$dir = '$dir'
+`$onLinux = `$$([bool]$OnLinux)
+function Write-Log(`$message) { '{0:yyyy-MM-dd HH:mm:ss} {1}' -f (Get-Date), `$message | Add-Content -Path "`$dir/agent.log" -Encoding UTF8 }
+function Start-AgentNow {
+    if (`$onLinux) { systemctl start laravel-mdm-agent.service; return }
+    for (`$i = 0; `$i -lt 60; `$i++) {
+        if ((Get-ScheduledTask -TaskName 'Laravel-MDM-Agent').State -eq 'Running') { return }
+        Start-ScheduledTask -TaskName 'Laravel-MDM-Agent'
+        Start-Sleep -Seconds 2
+    }
+    Write-Log 'Restart: the agent task did not start'
+}
+Wait-Process -Id $PID -Timeout 120
+Start-AgentNow
+if (`$$([bool]$Watch) -and (Test-Path -Path "`$dir/app.ps1.previous")) {
+    `$deadline = (Get-Date).AddMinutes(5)
+    while ((Get-Date) -lt `$deadline -and (Test-Path -Path "`$dir/agent-update.json")) { Start-Sleep -Seconds 5 }
+    if (Test-Path -Path "`$dir/agent-update.json") {
+        Write-Log 'Agent update: the new version did not report to the server within 5 minutes, rolling back'
+        if (`$onLinux) { systemctl stop laravel-mdm-agent.service } else { Stop-ScheduledTask -TaskName 'Laravel-MDM-Agent'; Start-Sleep -Seconds 3 }
+        Copy-Item -Path "`$dir/app.ps1.previous" -Destination "`$dir/app.ps1" -Force
+        `$pending = Get-Content -Path "`$dir/pending-command.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (`$pending) {
+            `$pending | Add-Member -NotePropertyName rolled_back -NotePropertyValue (Get-Content -Path "`$dir/agent-update.json" -Raw -Encoding UTF8 | ConvertFrom-Json).to -Force
+            `$pending | ConvertTo-Json -Compress | Set-Content -Path "`$dir/pending-command.json" -Encoding UTF8
+        }
+        Remove-Item -Path "`$dir/agent-update.json" -Force
+        Start-AgentNow
+    }
+}
+if (-not `$onLinux) { Unregister-ScheduledTask -TaskName 'Laravel-MDM-Agent-Restart' -Confirm:`$false }
+"@
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script))
+    if ($OnLinux) {
+        if (-not $Watch) { return }
+        $pwsh = (Get-Process -Id $PID).Path
+        # Not in the agent's cgroup: systemd would stop it together with the agent.
+        systemd-run --unit="laravel-mdm-agent-restart-$PID" --collect --quiet $pwsh -NoProfile -NonInteractive -EncodedCommand $encoded 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-AgentLog 'Agent update: systemd-run failed, no rollback watcher' }
+        return
+    }
+    try {
+        $action = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand $encoded"
+        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        Register-ScheduledTask -TaskName 'Laravel-MDM-Agent-Restart' -Action $action -Settings $settings -User 'NT AUTHORITY\SYSTEM' -RunLevel Highest -Force -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName 'Laravel-MDM-Agent-Restart' -ErrorAction Stop
+    }
+    catch {
+        Write-AgentLog "Restart task not available ($($_.Exception.Message)), restarting directly"
+        Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+    }
+}
+
 function Start-AgentJob {
     # Start-Job with the given agent functions defined in the job. Windows PowerShell passes an
     # -InitializationScript on the command line of the job process (32767 characters at most), so
@@ -2349,6 +2414,9 @@ function Update-Agent {
             throw "the server offers version '$version', not newer than $AgentVersion"
         }
 
+        # Kept for the rollback (see Restart-AgentTask), confirmed by the new agent once it reached the server.
+        Copy-Item -Path (Join-Path $AgentDir 'app.ps1') -Destination (Join-Path $AgentDir 'app.ps1.previous') -Force
+        @{ from = $AgentVersion; to = $version; at = (Get-Date).ToString('o') } | ConvertTo-Json -Compress | Set-Content -Path "$AgentDir/agent-update.json" -Encoding UTF8
         [System.IO.File]::WriteAllBytes((Join-Path $AgentDir 'app.ps1'), $bytes)
     }
     catch {
@@ -2361,11 +2429,8 @@ function Update-Agent {
     # The new agent reports the result when it runs (see Complete-PendingCommand).
     Save-PendingCommand -Id $CommandId -Command 'updateAgent'
     [void](Send-CommandStatus -Id $CommandId -Status running -Progress 80 -Message 'Restarting the agent')
-    if (-not $OnLinux) {
-        # The scheduled task does not start a second instance, start it again once this one has exited.
-        Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile -Command "Start-Sleep -Seconds 5; Start-ScheduledTask -TaskName Laravel-MDM-Agent"'
-    }
-    # systemd (Restart=always) starts the new version on Linux.
+    # systemd (Restart=always) starts the new version on Linux, the task is started again on Windows.
+    Restart-AgentTask -Watch
     exit 0
 }
 
@@ -2422,7 +2487,12 @@ function Complete-PendingCommand {
             'restart' { Send-CommandStatus -Id $pending.id -Status succeeded -Message 'Restarted' }
             'updateAgent' {
                 if ([version]$AgentVersion -gt [version]$pending.agent_version) {
-                    Send-CommandStatus -Id $pending.id -Status succeeded -Message "Updated to $AgentVersion"
+                    $sent = Send-CommandStatus -Id $pending.id -Status succeeded -Message "Updated to $AgentVersion"
+                    # The server is reached: no rollback (see Restart-AgentTask).
+                    if ($sent) { Remove-Item -Path "$AgentDir/agent-update.json" -Force -ErrorAction SilentlyContinue }
+                    $sent
+                } elseif ($pending.rolled_back) {
+                    Send-CommandStatus -Id $pending.id -Status failed -Message "Rolled back to ${AgentVersion}: version $($pending.rolled_back) did not report to the server within 5 minutes"
                 } else {
                     Send-CommandStatus -Id $pending.id -Status failed -Message "Still version $AgentVersion after the update"
                 }
@@ -2925,7 +2995,7 @@ function Complete-UpdateJob {
         # the waiting updates go on after the restart (commands-state.json).
         Write-AgentLog 'PowerShell updated, restarting the agent'
         if (-not $OnLinux) {
-            Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile -Command "Start-Sleep -Seconds 5; Start-ScheduledTask -TaskName Laravel-MDM-Agent"'
+            Restart-AgentTask
         }
         exit 0
     }
