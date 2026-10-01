@@ -559,4 +559,40 @@ class FleetFeaturesTest extends TestCase
         $this->signedJson('POST', '/api/device', ['machine' => ['Hostname' => 'pc', 'Drives' => [], 'AgentVersion' => '1.9.0']], 'a', ['server' => ['HTTP_X_FORWARDED_FOR' => '203.0.113.7, 10.0.0.1']])->assertOk();
         $this->assertSame('203.0.113.7', $device->fresh()->public_ip);
     }
+
+    public function test_public_addresses_are_shown(): void
+    {
+        foreach (['8.8.8.8' => true, '2a00:1450:4014::1' => true, '10.0.0.1' => false, '192.168.1.5' => false, '100.64.1.1' => false, 'fe80::1%12' => false, 'fd00::1' => false, '::1' => false, 'nonsense' => false] as $address => $public) {
+            $this->assertSame($public, Device::isPublicIp($address), $address);
+        }
+
+        $device = $this->device('a', ['Networks' => [
+            ['Name' => 'Ethernet', 'Status' => 'Up', 'Connected' => true, 'IPAddresses' => ['192.168.1.5', 'fe80::1%12', '2a00:1450:4014::1']],
+            ['Name' => 'Wi-Fi', 'Status' => 'Down', 'Connected' => false, 'IPAddresses' => ['2a00:1450:4014::2']],
+        ]]);
+        $device->forceFill(['public_ip' => '8.8.8.8'])->save();
+        $this->assertSame(['8.8.8.8', '2a00:1450:4014::1'], $device->fresh()->publicAddresses);
+
+        // The server in the same network sees a private address: not shown.
+        $device->forceFill(['public_ip' => '192.168.1.5'])->save();
+        $this->assertSame(['2a00:1450:4014::1'], $device->fresh()->publicAddresses);
+
+        $device->forceFill(['public_ip' => '8.8.8.8'])->save();
+        $this->actingAs(User::factory()->create());
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('Public address')->assertSee('8.8.8.8');
+        Livewire::test(ShowDevices::class)->set('search', '8.8.8')->assertSee('pc-a');
+    }
+
+    public function test_windows_updates_waiting_for_a_restart_are_not_installable(): void
+    {
+        $device = $this->device('a', ['Platform' => 'windows', 'RestartRequired' => true]);
+        $data = json_decode($device->getRawOriginal('data'), true);
+        $data['os_updates'] = [['Id' => 'u1', 'Title' => 'Cumulative Update', 'RebootRequired' => true], ['Id' => 'u2', 'Title' => 'Defender', 'RebootRequired' => false]];
+        $device->forceFill(['data' => json_encode($data)])->save();
+
+        $device = $device->fresh();
+        $this->assertSame(['installable', 'restart'], array_column($device->updates, 'Status'));
+        $this->assertSame(['u2'], array_column($device->installableUpdates, 'Id'));
+    }
 }

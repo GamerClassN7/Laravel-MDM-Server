@@ -180,6 +180,12 @@ address.
    }
    ```
 
+The portal can be installed as an app (PWA, `steelants/laravel-general`): open it in Chrome,
+Edge or Safari over HTTPS and choose *Install* / *Add to Home Screen*. The service worker caches
+nothing but an offline page. Change the icon with
+`php artisan pwa:make-icons --icon=resources/images/icon.png` (the vector source is
+`resources/images/icon.svg`, also served as `favicon.svg`).
+
 ## Agent
 
 The agent (`src/powershell/app.ps1`) runs on Windows (Windows PowerShell 5.1 or PowerShell 7) and on
@@ -325,7 +331,8 @@ the device's disk.
   commands over the signed API, so nothing can be injected or replayed over the WebSocket.
   Heartbeats sent over the WebSocket are signed with the device key.
 - **Agent updates:** the agent downloads the new version into memory, checks its signature
-  (`/agent/app.ps1.sig`) and only then writes it to disk.
+  (`/agent/app.ps1.sig`) and only then writes it to disk. The previous version is kept: when the
+  new one has not reported to the server within 5 minutes, it is restored (agents 1.10.2+).
 
 The agent keeps the pinned key and its settings in `config.json`, which only `SYSTEM` / root and
 administrators can read. The server has no way to change this file. Agents older than 1.7.0 keep

@@ -10,8 +10,10 @@
 
     <title>{{ config('app.name', 'Laravel') }}</title>
 
-    <link href="{{ asset('/manifest.json') }}" rel="manifest">
+    {{-- Installable as an app (steelants/laravel-general): manifest, icons, service worker. --}}
+    @pwa('Laravel-MDM', 'Laravel-MDM', '#f9fbfc')
     <link href="{{ asset('/favicon.ico') }}" rel="shortcut icon" type="image/x-icon">
+    <link href="{{ asset('/favicon.svg') }}" rel="icon" type="image/svg+xml">
 
     <!-- Fonts -->
     <link href="https://fonts.googleapis.com" rel="preconnect">
@@ -28,7 +30,7 @@
             <div class="align-content-center col-md-6 d-none d-md-flex flex-column justify-content-center bg-body-tertiary">
                 <div class="container py-4 text-center">
                     <a class="d-inline-block mb-3" href="{{ url('/') }}">
-                        <i class="fas fa-desktop fa-4x text-body-secondary w-auto"></i>
+                        <img alt="" height="96" src="{{ asset('/favicon.svg') }}" width="96">
                     </a>
                     <h1>{{ config('app.name', 'Laravel') }}</h1>
                     <p class="text-black-50">

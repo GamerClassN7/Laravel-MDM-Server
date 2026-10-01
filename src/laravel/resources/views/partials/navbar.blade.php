@@ -1,7 +1,7 @@
 <nav class="navbar navbar-main navbar-expand" style="z-index: 100;">
     <div class="container-xl">
         <a class="navbar-brand me-auto" href="{{ url('/') }}">
-            <i class="fas fa-desktop me-2"></i>
+            <img alt="" class="me-2 align-text-bottom" height="24" src="{{ asset('/favicon.svg') }}" width="24">
             <span class="fw-semibold">{{ config('app.name', 'Laravel') }}</span>
         </a>
 

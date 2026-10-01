@@ -691,6 +691,7 @@ class Device extends Model
     /**
      * OS updates, installable ones first. Status (Linux agents 1.6+): installable, phased (apt
      * defers it, rolled out gradually) or held (apt will not install it now); missing means installable.
+     * restart: installed on Windows, the restart finishes it.
      */
     public function getUpdatesAttribute()
     {
@@ -698,10 +699,16 @@ class Device extends Model
             return [];
         }
 
-        $order = ['installable' => 0, 'phased' => 1, 'held' => 2];
-        $updates = array_map(function ($update) {
+        $order = ['installable' => 0, 'restart' => 1, 'phased' => 2, 'held' => 3];
+        // Windows lists an installed update until the restart finishes it (RebootRequired).
+        $restartPending = $this->platform === 'windows' && $this->restartPending;
+        $updates = array_map(function ($update) use ($restartPending) {
             $update = (array) $update;
-            $update['Status'] = in_array($update['Status'] ?? null, ['phased', 'held'], true) ? $update['Status'] : 'installable';
+            $update['Status'] = match (true) {
+                in_array($update['Status'] ?? null, ['phased', 'held'], true) => $update['Status'],
+                $restartPending && filter_var($update['RebootRequired'] ?? false, FILTER_VALIDATE_BOOLEAN) => 'restart',
+                default => 'installable',
+            };
 
             return $update;
         }, (array) self::stdToArray($this->data->os_updates));
@@ -764,6 +771,39 @@ class Device extends Model
         'cellular' => ['icon' => 'fas fa-signal', 'label' => 'Mobile'],
         'bluetooth' => ['icon' => 'fab fa-bluetooth-b', 'label' => 'Bluetooth'],
     ];
+
+    /** Whether the address is reachable from the internet (not private, loopback, link-local …). */
+    public static function isPublicIp(?string $address): bool
+    {
+        $address = $address === null ? '' : explode('%', $address)[0];
+
+        if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
+            return false;
+        }
+        // The shared address space of carrier-grade NAT (100.64.0.0/10) is not reachable either.
+        $ipv4 = filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? ip2long($address) : false;
+
+        return $ipv4 === false || ($ipv4 & 0xFFC00000) !== (ip2long('100.64.0.0') & 0xFFC00000);
+    }
+
+    /**
+     * The public addresses of the device: the one it reaches the server from (behind NAT the
+     * address of its router; none when the server is in the same network) first, then the public
+     * ones of its connected interfaces (IPv6 mostly).
+     *
+     * @return list<string>
+     */
+    public function getPublicAddressesAttribute(): array
+    {
+        if ($this->isPingOnly) {
+            return [];
+        }
+        $interfaces = collect($this->networks)->where('Connected', true)->pluck('IPAddresses')->flatten()
+            ->map(fn ($address) => explode('%', (string) $address)[0]);
+
+        return collect([$this->public_ip])->merge($interfaces)
+            ->filter(fn ($address) => self::isPublicIp($address))->unique()->values()->all();
+    }
 
     /**
      * Network interfaces, connected first: Name, Description, Type (see NETWORK_TYPES, guessed

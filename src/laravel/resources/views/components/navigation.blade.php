@@ -4,8 +4,8 @@
             <div class="dropdown">
                 <div class="d-flex align-items-center">
                     <div class="app-nav-header flex-grow-1">
-                        <div class="app-nav-logo random-bg-2">
-                            <i class="fas fa-desktop"></i>
+                        <div class="app-nav-logo">
+                            <img alt="" src="{{ asset('/favicon.svg') }}">
                         </div>
                         <div class="app-nav-header-content nav-collapsed-hide">
                             <div class="fw-semibold">{{ config('app.name', 'Laravel') }}</div>

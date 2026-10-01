@@ -1,32 +1,17 @@
 {
+    "name": "Laravel-MDM",
+    "short_name": "MDM",
+    "description": "Self-hosted device management for Windows and Linux",
     "theme_color": "#f9fbfc",
     "background_color": "#ffffff",
     "display": "standalone",
     "scope": "./",
-    "start_url": "./",
-    "name": "Laravel-MDM",
-    "short_name": "Laravel-MDM",
-    "description": "Laravel-MDM",
+    "start_url": "./devices",
     "icons": [
-        {
-            "src": "images/icon-192x192.png",
-            "sizes": "192x192",
-            "type": "image/png"
-        },
-        {
-            "src": "images/icon-256x256.png",
-            "sizes": "256x256",
-            "type": "image/png"
-        },
-        {
-            "src": "images/icon-384x384.png",
-            "sizes": "384x384",
-            "type": "image/png"
-        },
-        {
-            "src": "images/icon-512x512.png",
-            "sizes": "512x512",
-            "type": "image/png"
-        }
+        { "src": "pwa/icon-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+        { "src": "pwa/icon-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+        { "src": "pwa/maskable-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+        { "src": "pwa/maskable-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+        { "src": "pwa/ios/180.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }
     ]
 }
