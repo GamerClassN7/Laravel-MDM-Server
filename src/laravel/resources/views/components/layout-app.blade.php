@@ -19,7 +19,8 @@
 
     <title>{{ config('app.name', 'Laravel') }}</title>
 
-    {{-- <link href="{{ asset('/manifest.json') }}" rel="manifest"> --}}
+    {{-- Installable as an app (steelants/laravel-general): manifest, icons, service worker. --}}
+    @pwa('Laravel-MDM', 'Laravel-MDM', '#f9fbfc')
     <link href="{{ asset('/favicon.ico') }}" rel="shortcut icon" type="image/x-icon">
 
     <!-- Fonts -->
