@@ -470,8 +470,13 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
   it gave that agent. An answer is the heartbeat of the ping-only device: online, the round trip
   time and the agent are shown; no answer for 90 seconds means offline.
 - **Wake** works as for agents: an agent of its network sends the magic packet to its MAC.
-- In the overview it shows as *Ping only*; alerts offer the status only (offline for *n* minutes).
-  Its address and MAC can be changed in the detail.
+- The detail has a monitor in the style of [Uptime Kuma](https://github.com/louislam/uptime-kuma):
+  the last 50 pings as a bar (green answered, red not), the response now and on average, the
+  uptime of the last 24 hours and 30 days, and the response time over 1 h, 24 h, 7 d or 30 d with
+  the unanswered periods marked. Every ping is kept for 30 days (`ping_results`, pruned daily).
+- In the overview it shows as *Ping only* with the last 20 pings and the uptime of the day; alerts
+  offer the status only (offline for *n* minutes). Its address, prefix and MAC are changed in
+  **Ping settings** in the device menu.
 
 ### Dashboard
 

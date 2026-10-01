@@ -959,6 +959,7 @@ class Device extends Model
                 $values['last_seen_at'] = now();
             }
             static::query()->whereKey($id)->toBase()->update($values);
+            PingResult::query()->create(['device_id' => $id, 'up' => $up, 'rtt' => $up ? $rtt : null, 'relay_id' => $relay->id]);
             $taken++;
         }
 

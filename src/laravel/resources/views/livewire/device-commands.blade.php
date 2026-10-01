@@ -63,6 +63,14 @@
                         <i class="dropdown-ico fas fa-tags fa-fw"></i>{{ __('Edit tags') }}
                     </button>
                 </li>
+                @if ($selectedDevice->isPingOnly)
+                    <li>
+                        <button class="dropdown-item" type="button"
+                            x-on:click="Livewire.dispatch('openModal', {livewireComponents: 'ping-settings', title: @js(__('Ping settings of :device', ['device' => $selectedDevice->displayName])), parameters: {deviceId: {{ $selectedDevice->id }}}})">
+                            <i class="dropdown-ico fas fa-network-wired fa-fw"></i>{{ __('Ping settings') }}
+                        </button>
+                    </li>
+                @endif
                 @if ($hasData)
                     <li><hr class="dropdown-divider"></li>
                     <li>

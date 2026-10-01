@@ -83,11 +83,43 @@
             </div>
             @endif
         @elseif ($selectedDevice)
-            <nav aria-label="breadcrumb" class="small mb-2">
-                <a class="text-body-secondary text-decoration-none" href="{{ route('devices') }}" wire:click.prevent="showList"><i class="fas fa-arrow-left me-1"></i>{{ __('Devices') }}</a>
-                <span class="text-body-secondary mx-1">/</span>{{ $selectedDevice->displayName }}
-            </nav>
-            @livewire('device-detail', ['selectedDeviceId' => $selectedDevice->id], key($selectedDevice->id))
+            <div class="row g-4">
+                {{-- Quick switching between devices on wide screens; phones go back to the overview. --}}
+                <aside class="col-lg-3 d-none d-lg-block">
+                    <div class="device-switcher" wire:poll.30s>
+                        <div class="d-flex align-items-center mb-2">
+                            <a class="small text-body-secondary text-decoration-none me-auto" href="{{ route('devices') }}" wire:click.prevent="showList"><i class="fas fa-th-list me-1"></i>{{ __('All devices') }}</a>
+                            @if ($filtered)
+                                <span class="small text-muted">{{ __('Filtered') }}</span>
+                            @endif
+                        </div>
+                        <div class="list-group">
+                            @foreach ($rows as $row)
+                                @php($item = $row['device'])
+                                <a class="list-group-item list-group-item-action d-flex align-items-start gap-2 py-2 {{ $item->id === $selectedDevice->id ? 'active' : '' }}"
+                                    href="{{ route('devices', ['selectedDeviceId' => $item->id]) }}" wire:click.prevent="selectDevice({{ $item->id }})" wire:key="switch-device-{{ $item->id }}"
+                                    @if ($item->id === $selectedDevice->id) aria-current="true" @endif>
+                                    <span class="device-dot mt-2 {{ $item->offline ? 'is-offline' : 'is-online' }}" title="{{ $item->offline ? __('Offline') : __('Online') }}"></span>
+                                    <span class="min-w-0 flex-grow-1">
+                                        <span class="d-block text-truncate fw-medium"><i class="{{ $item->typeIcon }} fa-fw me-1 opacity-75"></i>{{ $item->displayName }}</span>
+                                        <x-tags class="mt-1" :tags="$item->tagList" />
+                                    </span>
+                                    @if ($row['attention'] && ! $item->offline)
+                                        <i class="fas fa-exclamation-circle text-warning mt-1" title="{{ collect($row['flags'])->pluck('label')->implode(', ') }}"></i>
+                                    @endif
+                                </a>
+                            @endforeach
+                        </div>
+                    </div>
+                </aside>
+                <div class="col-12 col-lg-9">
+                    <nav aria-label="breadcrumb" class="small mb-2">
+                        <a class="text-body-secondary text-decoration-none" href="{{ route('devices') }}" wire:click.prevent="showList"><i class="fas fa-arrow-left me-1"></i>{{ __('Devices') }}</a>
+                        <span class="text-body-secondary mx-1">/</span>{{ $selectedDevice->displayName }}
+                    </nav>
+                    @livewire('device-detail', ['selectedDeviceId' => $selectedDevice->id], key($selectedDevice->id))
+                </div>
+            </div>
         @else
             {{-- The fleet overview. --}}
             <div wire:poll.30s>
@@ -228,7 +260,17 @@
                                             @endif
                                         </td>
                                         <td class="d-none d-xl-table-cell">
-                                            @if ($row['drive'])
+                                            @if ($row['beats'] !== null)
+                                                <div class="ping-beats ping-beats-sm" role="img" aria-label="{{ __('Last pings') }}">
+                                                    @for ($i = $row['beats']->count(); $i < 20; $i++)
+                                                        <span class="ping-beat"></span>
+                                                    @endfor
+                                                    @foreach ($row['beats'] as $beat)
+                                                        <span class="ping-beat {{ $beat->up ? 'is-up' : 'is-down' }}" title="{{ $beat->created_at->format('H:i:s') }} · {{ $beat->up ? $beat->rtt.' ms' : __('No answer') }}"></span>
+                                                    @endforeach
+                                                </div>
+                                                <div class="small text-muted mt-1">{{ $row['uptime'] === null ? __('No pings yet') : __(':uptime % uptime (24 h)', ['uptime' => $row['uptime']]) }}</div>
+                                            @elseif ($row['drive'])
                                                 <div class="d-flex align-items-center gap-2">
                                                     <div class="progress flex-grow-1" style="height: 6px" role="progressbar" aria-label="{{ __('Fullest drive') }}" aria-valuenow="{{ $row['drive']['percent'] }}" aria-valuemin="0" aria-valuemax="100">
                                                         <div class="progress-bar {{ $row['drive']['percent'] >= 95 ? 'bg-danger' : ($row['drive']['percent'] >= 90 ? 'bg-warning' : '') }}" style="width: {{ $row['drive']['percent'] }}%"></div>

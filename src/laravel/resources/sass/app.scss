@@ -113,3 +113,58 @@ label.mdm-tag {
         padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
     }
 }
+
+// The device list beside the detail: stays in view while the detail scrolls.
+.device-switcher {
+    position: sticky;
+    top: 1rem;
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+}
+
+.device-dot {
+    flex-shrink: 0;
+    width: .5rem;
+    height: .5rem;
+    border-radius: 50%;
+
+    &.is-online {
+        background-color: var(--bs-success);
+    }
+
+    &.is-offline {
+        background-color: var(--bs-secondary-color);
+    }
+}
+
+.list-group-item.active .device-dot {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, .6);
+}
+
+// Uptime Kuma style bar of the last pings (ping-only devices): one rounded bar per check.
+.ping-beats {
+    display: flex;
+    gap: 3px;
+    height: 1.75rem;
+}
+
+.ping-beat {
+    flex: 1 1 0;
+    min-width: 3px;
+    border-radius: 50rem;
+    background-color: var(--bs-secondary-bg);
+
+    &.is-up {
+        background-color: var(--bs-success);
+    }
+
+    &.is-down {
+        background-color: var(--bs-danger);
+    }
+}
+
+.ping-beats-sm {
+    height: .9rem;
+    gap: 2px;
+    max-width: 10rem;
+}

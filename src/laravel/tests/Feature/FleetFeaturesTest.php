@@ -509,6 +509,10 @@ class FleetFeaturesTest extends TestCase
             ->assertJson(['taken' => 1]);
         $this->assertFalse($printer->fresh()->offline);
         $this->assertSame([2.4, $nas->id], [$printer->fresh()->ping_rtt, $printer->fresh()->ping_relay_id]);
+        $this->assertSame([true], \App\Models\PingResult::where('device_id', $printer->id)->pluck('up')->all());
+        $this->assertSame(100.0, \App\Models\PingResult::uptime($printer->id, now()->subDay()));
+        \App\Models\PingResult::create(['device_id' => $printer->id, 'up' => false]);
+        $this->assertSame(50.0, \App\Models\PingResult::uptime($printer->id, now()->subDay()));
         // Another agent cannot report it.
         $this->signedJson('POST', '/api/device/pings', ['results' => [['id' => $printer->id, 'up' => true]]], 'laptop')->assertJson(['taken' => 0]);
 
@@ -521,6 +525,15 @@ class FleetFeaturesTest extends TestCase
         // Only the status alert makes sense for it.
         $this->app['auth']->forgetGuards();
         $this->actingAs($user);
+        Livewire::test(\App\Livewire\PingMonitor::class, ['deviceId' => $printer->id])
+            ->assertSee('50 %')
+            ->assertSee('192.168.1.50')
+            ->call('setRange', '7d')->assertSet('range', '7d');
+        Livewire::test(\App\Livewire\PingSettings::class, ['deviceId' => $printer->id])
+            ->set('address', 'nope')->call('save')->assertHasErrors('address')
+            ->set('address', '192.168.1.51')->set('mac', '')->call('save')->assertHasNoErrors()->assertDispatched('ping-settings-saved');
+        $this->assertSame(['192.168.1.51', null, null], [$printer->fresh()->ping_address, $printer->fresh()->ping_mac, $printer->fresh()->last_seen_at]);
+        $printer->forceFill(['ping_mac' => 'AA:BB:CC:DD:EE:50'])->save();
         Livewire::test(DeviceRules::class, ['deviceId' => $printer->id])->assertViewHas('types', fn ($types) => array_keys($types) === ['status']);
     }
 

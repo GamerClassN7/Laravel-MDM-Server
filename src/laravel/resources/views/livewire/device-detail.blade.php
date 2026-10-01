@@ -130,7 +130,7 @@
     </div>
 
     @if ($selectedDevice->isPingOnly)
-        @include('partials.device.ping')
+        @livewire('ping-monitor', ['deviceId' => $selectedDevice->id], key('ping-monitor' . $selectedDevice->id))
     @endif
 
     @if (!empty($selectedDevice->data))

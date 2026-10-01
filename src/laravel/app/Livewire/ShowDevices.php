@@ -236,6 +236,9 @@ class ShowDevices extends Component
             'updates' => $updates,
             'drive' => $drive ? ['percent' => (int) $drive['PercentUsed'], 'free' => Bytes::format($drive['SizeRemaining'] ?? 0)] : null,
             'ip' => $addresses,
+            // Ping-only devices: the last pings (oldest first) and the uptime of the last day.
+            'beats' => $device->isPingOnly ? \App\Models\PingResult::query()->where('device_id', $device->id)->latest('id')->limit(20)->get(['up', 'rtt', 'created_at'])->reverse()->values() : null,
+            'uptime' => $device->isPingOnly ? \App\Models\PingResult::uptime($device->id, now()->subDay()) : null,
             'searchText' => mb_strtolower(implode(' ', [$device->displayName, $device->name, $device->os, $addresses, implode(' ', $device->tagList)])),
         ];
     }
@@ -250,10 +253,6 @@ class ShowDevices extends Component
                 'installCommands' => $this->enrollmentCode ? InstallCommands::for($this->enrollmentCode) : [],
             ]);
         }
-        if ($selectedDevice) {
-            return view('livewire.show-devices', $view);
-        }
-
         // The user's open alerts per device ("Alert: Status" in the Attention column).
         $firing = AlertEvent::query()->with('rule')->whereNull('resolved_at')
             ->whereIn('alert_rule_id', AlertRule::query()->where('user_id', auth()->id())->select('id'))
@@ -268,6 +267,11 @@ class ShowDevices extends Component
                 'offline' => $row['device']->offline,
                 default => true,
             })->values();
+
+        // The detail with the list beside it (wide screens), filtered like the overview.
+        if ($selectedDevice) {
+            return view('livewire.show-devices', $view + ['rows' => $visible, 'filtered' => $visible->count() !== $rows->count()]);
+        }
 
         $latestRuns = ScriptRun::query()->whereIn('id', ScriptRun::query()->selectRaw('max(id)')->groupBy('script_id', 'device_id'))->pluck('status');
         $pendingDevices = $rows->where('updates', '>', 0);

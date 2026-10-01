@@ -5,7 +5,7 @@ use App\Models\DeviceMetric;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
 
-Schedule::command('model:prune', ['--model' => [DeviceMetric::class, DeviceCommand::class]])->daily();
+Schedule::command('model:prune', ['--model' => [DeviceMetric::class, DeviceCommand::class, App\Models\PingResult::class]])->daily();
 
 // Commands the device never finished (it went offline, the agent was stopped) are given up.
 Schedule::call(fn () => DeviceCommand::expireStale())->everyFiveMinutes()->name('mdm:expire-commands');
