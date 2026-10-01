@@ -279,7 +279,11 @@ charging indicator while the device is on mains power.
 
 **Install updates** runs in the background: on Linux `apt-get upgrade --with-new-pkgs` (waits for a
 running apt, installs new dependencies, removes nothing), on Windows winget, Windows Update, and on
-both PowerShell module updates. Every step with its result is written to `agent.log`, the full
+both PowerShell module updates. On Windows winget updates one package at a time (`winget upgrade --id <id>
+--exact --silent`), each with a 15 minute limit: an installer that waits for a window (`SYSTEM` has
+no desktop) or for an application to close is ended with its process tree, reported as failed and
+the next package goes on (agents 1.10.1+; before, one such installer stopped `winget upgrade --all`
+for good). App Installer, which is winget itself, is left out. Every step with its result is written to `agent.log`, the full
 output of apt / winget to `updates.log`, and the update list is collected again right after.
 On Linux the update list tells what apt would install now (a simulated `apt-get upgrade`, no
 network): updates deferred by phasing and held back ones (pinned, held, or needing other packages
