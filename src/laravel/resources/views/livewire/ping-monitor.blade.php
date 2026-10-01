@@ -22,40 +22,8 @@
         'range' => $range,
     ])
 
-    <div class="card">
-        <div class="card-body">
-            {{-- The last checks, oldest left; empty slots until there are enough. --}}
-            <div class="ping-beats mb-1" role="img" aria-label="{{ __('Last :count pings', ['count' => $beats->count()]) }}">
-                @for ($i = $beats->count(); $i < \App\Livewire\PingMonitor::BEATS; $i++)
-                    <span class="ping-beat"></span>
-                @endfor
-                @foreach ($beats as $beat)
-                    <span class="ping-beat {{ $beat->up ? 'is-up' : 'is-down' }}" title="{{ $beat->created_at->format('j. n. H:i:s') }} · {{ $beat->up ? $format($beat->rtt, 'ms') : __('No answer') }}"></span>
-                @endforeach
-            </div>
-            <div class="d-flex justify-content-between small text-muted mb-3">
-                <span>{{ $beats->first()?->created_at->diffForHumans() ?? '' }}</span>
-                <span>{{ __('now') }}</span>
-            </div>
-
-            <div class="row g-3 text-center">
-                @foreach ([
-                    [__('Response'), __('now'), $format($stats['current'], 'ms'), ''],
-                    [__('Average'), $range, $format($stats['average'], 'ms'), ''],
-                    [__('Uptime'), '24 h', $format($stats['uptime24'], '%'), $uptimeColor($stats['uptime24'])],
-                    [__('Uptime'), '30 d', $format($stats['uptime30'], '%'), $uptimeColor($stats['uptime30'])],
-                ] as [$label, $period, $value, $class])
-                    <div class="col-6 col-md-3">
-                        <div class="small text-muted">{{ $label }} <span class="opacity-75">({{ $period }})</span></div>
-                        <div class="fs-5 fw-semibold {{ $class }}">{{ $value }}</div>
-                    </div>
-                @endforeach
-            </div>
-        </div>
-    </div>
-
     {{-- One chart over both columns of the performance section. --}}
-    <div class="row g-3 mt-0">
+    <div class="row g-3">
         <div class="col-12">
             <x-metric-chart
                 :current="$format($stats['current'], 'ms')"
@@ -63,7 +31,7 @@
                 :labels="$labels"
                 :marks="$downs"
                 :max="$top"
-                :subtitle="__('Average :value', ['value' => $format($stats['average'], 'ms')]).' ('.$range.')'"
+                :subtitle="__('Average :value', ['value' => $format($stats['average'], 'ms')]).' · '.__('Uptime :value', ['value' => $format($stats['uptime'], '%')]).' ('.$range.')'"
                 :title="__('Response time')"
                 :to="now()->format($range === '1h' || $range === '24h' ? 'H:i' : 'j. n.')"
                 :values="$points"
