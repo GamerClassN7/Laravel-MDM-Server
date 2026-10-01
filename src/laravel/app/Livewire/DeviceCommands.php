@@ -26,6 +26,15 @@ class DeviceCommands extends Component
         }
     }
 
+    /** Wake-on-LAN: another agent in the same network sends the magic packet. */
+    public function wake()
+    {
+        $device = Device::find($this->selectedDeviceId);
+        if ($device && ! $device->wake(auth()->user())) {
+            $this->addError('command', $device->wakeRefusal() ?? __('Already on its way.'));
+        }
+    }
+
     /** A command the agent has not taken yet can be cancelled. */
     public function cancel(int $commandId)
     {
@@ -52,6 +61,9 @@ class DeviceCommands extends Component
         return view('livewire.device-commands', [
             'selectedDevice' => $device,
             'active' => $active,
+            'wakeRefusal' => $device->offline ? $device->wakeRefusal() : null,
+            'wakeRelay' => $device->offline ? $device->wakeRelay()[0] ?? null : null,
+            'recentWake' => $device->offline ? $device->recentWake() : null,
             'pendingUpdates' => count($device->installableUpdates) + count($device->apps_packages_updates) + count($device->moduleUpdates),
         ]);
     }

@@ -22,6 +22,9 @@
                         <a class="nav-link" href="{{ route($item->route) }}">
                             <i class="nav-link-ico {{ $item->icon }}"></i>
                             <div class="nav-link-title">{{ __($item->title) }}</div>
+                            @if ($item->route === 'notifications' && ($firing = \App\Models\AlertEvent::firingCountFor(auth()->user())) > 0)
+                                <span class="badge rounded-pill text-bg-danger ms-auto nav-collapsed-hide" title="{{ trans_choice(':count alert firing|:count alerts firing', $firing, ['count' => $firing]) }}">{{ $firing }}</span>
+                            @endif
                         </a>
                     </li>
                 @endforeach

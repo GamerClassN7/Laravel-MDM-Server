@@ -2,14 +2,22 @@
 
 namespace App\Livewire;
 
+use App\Models\AlertEvent;
+use App\Models\AlertRule;
 use App\Models\Device;
 use App\Models\Enrolment;
 use App\Support\InstallCommands;
+use App\Support\SmartAlerts;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Collection;
 use Livewire\Attributes\On;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 
+/**
+ * The devices page: the list of devices (search, tags) beside the detail of the selected one (the
+ * first one when none is selected), or the enrolment of a new device.
+ */
 class ShowDevices extends Component
 {
     public $devices;
@@ -17,18 +25,46 @@ class ShowDevices extends Component
     #[Url]
     public $selectedDeviceId;
 
+    /** Shows only the devices with this tag. */
+    #[Url(except: '')]
+    public string $tag = '';
+
+    #[Url(except: '')]
+    public string $search = '';
+
     /* Device Enrolment*/
     public $addDevice = false;
+
+    /** agent (enrolment code, install commands) or ping (a ping-only device). */
+    public string $addMode = 'agent';
+
+    public string $pingName = '';
+
+    public string $pingAddress = '';
+
+    public $pingPrefix = 24;
+
+    public string $pingMac = '';
     public $enrollmentCode;
     public $enrollmentCodeExpiration;
 
+    /** Short labels of the smart alerts in the "Attention" column (updates have their own column). */
+    private const FLAGS = [
+        'restart' => 'Restart',
+        'agent' => 'Agent update',
+        'disk_space' => 'Disk',
+        'disk_health' => 'S.M.A.R.T.',
+        'services' => 'Services',
+        'scripts' => 'Remediation',
+    ];
+
     public function selectDevice($id)
     {
-        $this->selectedDeviceId = $id;
+        $this->selectedDeviceId = $id ?: null;
         $this->addDevice = false;
     }
 
-    public  function updatedAddDevice($value)
+    public function updatedAddDevice($value)
     {
         if ($value) {
             Enrolment::Where('expire_at', '<', CarbonImmutable::now())->delete();
@@ -43,32 +79,116 @@ class ShowDevices extends Component
         }
     }
 
+    /** A device without an agent: pinged by an agent in its network, woken through it. */
+    public function createPingDevice(): void
+    {
+        $this->resetErrorBag();
+        $this->validate(['pingName' => 'required|string|max:255']);
+        $settings = Device::sanitizePingSettings($this->pingAddress, $this->pingPrefix, $this->pingMac);
+        if ($settings === null) {
+            $this->addError('pingAddress', __('Enter an IPv4 address, a prefix of 8–30 and a valid MAC address (or none).'));
+
+            return;
+        }
+
+        $device = new Device();
+        $device->forceFill($settings + ['kind' => 'ping', 'name' => $this->pingName, 'os' => '', 'token' => hash('sha256', \Illuminate\Support\Str::random(60))]);
+        $device->save();
+
+        $this->reset(['pingName', 'pingAddress', 'pingMac', 'addMode']);
+        $this->pingPrefix = 24;
+        $this->loadDevices();
+        $this->selectDevice($device->id);
+    }
+
     #[On('device-deleted')]
     public function deviceDeleted()
     {
-        $this->devices = Device::all();
+        $this->loadDevices();
         $this->selectFirstDevice();
+    }
+
+    #[On('device-tags-changed')]
+    public function loadDevices(): void
+    {
+        $this->devices = Device::all();
+    }
+
+    public function filterTag(string $tag): void
+    {
+        $this->tag = $this->tag === $tag ? '' : $tag;
     }
 
     public function mount()
     {
-        $this->devices = Device::all();
+        $this->loadDevices();
         $this->selectFirstDevice();
     }
 
-    /** Opens the first device when none (or a deleted one) is selected, saving a click. */
+    /** Opens the first device of the list when none (or a deleted one) is selected. */
     private function selectFirstDevice(): void
     {
         if (! $this->devices->contains('id', (int) $this->selectedDeviceId)) {
-            $this->selectedDeviceId = $this->devices->first()?->id;
+            $this->selectedDeviceId = $this->devices->sortBy(fn (Device $device) => mb_strtolower($device->displayName))->first()?->id;
         }
+    }
+
+    /**
+     * One item of the device list: the device, what needs attention and what the search finds.
+     */
+    private function row(Device $device, Collection $firing): array
+    {
+        $alerts = empty($device->data) ? [] : SmartAlerts::for($device);
+        $flags = [];
+        foreach ($alerts as $alert) {
+            $key = str_starts_with($alert['key'], 'failed:') ? 'failed' : $alert['key'];
+            if ($key === 'failed') {
+                $flags[] = ['label' => __('Failed command'), 'severity' => 'danger', 'title' => $alert['title']];
+            } elseif (isset(self::FLAGS[$key])) {
+                $label = $key === 'disk_space' ? __('Disk :percent %', ['percent' => collect($device->drives)->max('PercentUsed')]) : __(self::FLAGS[$key]);
+                $flags[] = ['label' => $label, 'severity' => $alert['severity'] === 'secondary' ? 'info' : $alert['severity'], 'title' => $alert['title'].($alert['message'] ? ': '.$alert['message'] : '')];
+            }
+        }
+        foreach ($firing->get($device->id, collect()) as $event) {
+            $flags[] = ['label' => __('Alert: :rule', ['rule' => $event->rule->label]), 'severity' => 'danger', 'title' => $event->message];
+        }
+        $flags = collect($flags)->unique('label')->sortBy(fn ($flag) => SmartAlerts::SEVERITIES[$flag['severity']] ?? 9)->values()->all();
+
+        $addresses = $device->isPingOnly ? $device->ping_address : collect($device->networks)->where('Connected', true)->whereIn('Type', ['lan', 'wifi', 'bridge'])->pluck('IPAddresses')->flatten()
+            ->first(fn ($ip) => filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4));
+
+        return [
+            'device' => $device,
+            'flags' => $flags,
+            'attention' => $device->offline || collect($flags)->contains(fn ($flag) => in_array($flag['severity'], ['danger', 'warning'], true)),
+            'ip' => $addresses,
+            'searchText' => mb_strtolower(implode(' ', [$device->displayName, $device->name, $device->os, $addresses, implode(' ', $device->tagList)])),
+        ];
     }
 
     public function render()
     {
-        return view('livewire.show-devices', [
-            'selectedDevice' => Device::find($this->selectedDeviceId),
-            'installCommands' => $this->addDevice && $this->enrollmentCode ? InstallCommands::for($this->enrollmentCode) : [],
+        $selectedDevice = $this->selectedDeviceId ? Device::find($this->selectedDeviceId) : null;
+        $view = ['selectedDevice' => $selectedDevice, 'tags' => Device::allTags()];
+
+        if ($this->addDevice) {
+            return view('livewire.show-devices', $view + [
+                'installCommands' => $this->enrollmentCode ? InstallCommands::for($this->enrollmentCode) : [],
+            ]);
+        }
+
+        // The user's open alerts per device (the attention mark in the list).
+        $firing = AlertEvent::query()->with('rule')->whereNull('resolved_at')
+            ->whereIn('alert_rule_id', AlertRule::query()->where('user_id', auth()->id())->select('id'))
+            ->get()->groupBy('device_id');
+
+        $rows = $this->devices->sortBy(fn (Device $device) => mb_strtolower($device->displayName))->map(fn (Device $device) => $this->row($device, $firing))->values();
+        $search = mb_strtolower(trim($this->search));
+
+        return view('livewire.show-devices', $view + [
+            'rows' => $rows->filter(fn (array $row) => ($this->tag === '' || $row['device']->hasTag($this->tag))
+                && ($search === '' || str_contains($row['searchText'], $search)))->values(),
+            'total' => $rows->count(),
         ]);
     }
 }

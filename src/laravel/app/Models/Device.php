@@ -26,10 +26,26 @@ class Device extends Model
     /** Agents from this version collect and report everything on request (sync). */
     public const SYNC_VERSION = '1.8.2';
 
+    /** Agents from this version report prefix lengths and send Wake-on-LAN magic packets. */
+    public const WAKE_VERSION = '1.9.0';
+
+    /** Agents from this version ping the ping-only devices of their network. */
+    public const PING_VERSION = '1.10.0';
+
+    /** At most this many ping-only devices per agent. */
+    public const MAX_PING_TARGETS = 32;
+
+    /** Interfaces that can wake a machine (a magic packet goes to the network card). */
+    public const WAKE_INTERFACE_TYPES = ['lan', 'wifi'];
+
+    /** Interfaces a relay may share a network through (not tunnels, containers or virtual switches). */
+    public const RELAY_INTERFACE_TYPES = ['lan', 'wifi', 'bridge'];
+
     public const TYPE_ICONS = [
         'server' => 'fas fa-server',
         'laptop' => 'fas fa-laptop',
         'desktop' => 'fas fa-desktop',
+        'ping' => 'fas fa-network-wired',
     ];
 
     /** Hypervisor and container names as reported by the agent (systemd-detect-virt naming). */
@@ -54,7 +70,12 @@ class Device extends Model
         'live_state_at' => 'datetime',
         'public_key' => 'array',
         'key_registered_at' => 'datetime',
+        'tags' => 'array',
     ];
+
+    public const MAX_TAGS = 20;
+
+    public const MAX_TAG_LENGTH = 32;
 
     /** The only command agents that do not sign (before 1.7.0) get: updating to a signing agent. */
     public const LEGACY_COMMANDS = ['updateAgent'];
@@ -121,6 +142,100 @@ class Device extends Model
         }
 
         return $clean === [] ? null : $clean;
+    }
+
+    /**
+     * Tags from a list or a comma-separated text: trimmed, letters, digits, spaces and ._- only,
+     * each once (ignoring case), at most MAX_TAGS.
+     *
+     * @return array<int, string>
+     */
+    public static function normalizeTags(array|string|null $tags): array
+    {
+        $tags = is_array($tags) ? $tags : explode(',', (string) $tags);
+        $clean = [];
+        foreach ($tags as $tag) {
+            $tag = preg_replace('/\s+/u', ' ', trim((string) $tag));
+            if ($tag === '' || mb_strlen($tag) > self::MAX_TAG_LENGTH || ! preg_match('/^[\pL\pN _.\-]+$/u', $tag)) {
+                continue;
+            }
+            $clean[mb_strtolower($tag)] ??= $tag;
+        }
+
+        return array_slice(array_values($clean), 0, self::MAX_TAGS);
+    }
+
+    /** @return array<int, string> */
+    public function getTagListAttribute(): array
+    {
+        return self::normalizeTags($this->tags ?? []);
+    }
+
+    public function hasTag(string $tag): bool
+    {
+        return in_array(mb_strtolower($tag), array_map('mb_strtolower', $this->tagList), true);
+    }
+
+    /**
+     * Every tag in use, sorted (for filters and the tag pickers).
+     *
+     * @return array<int, string>
+     */
+    public static function allTags(): array
+    {
+        $tags = self::normalizeTags(static::query()->whereNotNull('tags')->pluck('tags')->flatten()->all());
+        natcasesort($tags);
+
+        return array_values($tags);
+    }
+
+    /**
+     * A target of scripts and alerts: every device ("all"), the devices with any of the tags or
+     * the listed devices. ['all' => bool, 'tags' => [..], 'devices' => [ids]].
+     */
+    public static function normalizeTarget(mixed $target): array
+    {
+        $target = is_array($target) ? $target : [];
+
+        return [
+            'all' => filter_var($target['all'] ?? false, FILTER_VALIDATE_BOOLEAN),
+            'tags' => self::normalizeTags($target['tags'] ?? []),
+            'devices' => array_values(array_unique(array_filter(array_map('intval', (array) ($target['devices'] ?? []))))),
+        ];
+    }
+
+    public function matchesTarget(array $target): bool
+    {
+        $target = self::normalizeTarget($target);
+
+        return $target['all']
+            || in_array($this->id, $target['devices'], true)
+            || collect($target['tags'])->contains(fn (string $tag) => $this->hasTag($tag));
+    }
+
+    /** @return Collection<int, Device> */
+    public static function targeted(array $target): Collection
+    {
+        return static::query()->orderBy('id')->get()->filter->matchesTarget($target)->values();
+    }
+
+    /** "All devices", "Tags: servers, family · 2 devices" */
+    public static function describeTarget(array $target): string
+    {
+        $target = self::normalizeTarget($target);
+        if ($target['all']) {
+            return __('All devices');
+        }
+        $parts = [];
+        if ($target['tags'] !== []) {
+            $parts[] = __('Tags: :tags', ['tags' => implode(', ', $target['tags'])]);
+        }
+        if ($target['devices'] !== []) {
+            $names = static::query()->whereIn('id', $target['devices'])->get()->map->displayName->all();
+            $parts[] = implode(', ', $names);
+        }
+
+        return $parts === [] ? __('No devices') : implode(' · ', $parts);
     }
 
     /** The live state when it is newer than the last report, otherwise null (the report wins). */
@@ -281,6 +396,7 @@ class Device extends Model
             ! $this->signsRequests && ! in_array($command, self::LEGACY_COMMANDS, true) => __('The agent does not sign its communication'),
             DeviceCommand::sanitizeParams($command, $params) === null => __('Invalid parameters'),
             $command === 'installUpdate' && ! $this->commandTracking => __('The agent is too old for this command'),
+            $command === 'wake' && version_compare((string) $this->agent_version, self::WAKE_VERSION, '<') => __('The agent is too old for this command'),
             $command === 'sync' && version_compare((string) $this->agent_version, self::SYNC_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::SYNC_VERSION]),
             $command === 'installUpdate' && ($params['kind'] ?? null) === 'pwsh' && version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') => __('The agent is too old for this command'),
             default => null,
@@ -317,6 +433,9 @@ class Device extends Model
     /** server, laptop or desktop, as detected by the agent. */
     public function getTypeAttribute(): string
     {
+        if ($this->isPingOnly) {
+            return 'ping';
+        }
         $type = $this->data->machine->Type ?? null;
 
         return array_key_exists($type, self::TYPE_ICONS) ? $type : 'desktop';
@@ -437,6 +556,9 @@ class Device extends Model
 
     public function getOfflineAttribute()
     {
+        if ($this->isPingOnly) {
+            return $this->last_seen_at === null || $this->last_seen_at->diffInSeconds() > self::HEARTBEAT_TIMEOUT;
+        }
         if ($this->last_seen_at !== null) {
             return $this->last_seen_at->diffInSeconds() > self::HEARTBEAT_TIMEOUT;
         }
@@ -627,6 +749,14 @@ class Device extends Model
      */
     public function getNetworksAttribute(): array
     {
+        // A ping-only device has the one interface it was added with.
+        if ($this->isPingOnly) {
+            return [[
+                'Name' => 'ping', 'Description' => '', 'Type' => 'lan', 'Connected' => ! $this->offline, 'Status' => '',
+                'Mac' => $this->ping_mac, 'IPAddresses' => array_filter([$this->ping_address]),
+                'Addresses' => $this->ping_address ? [['Address' => $this->ping_address, 'PrefixLength' => (int) ($this->ping_prefix ?? 24)]] : [],
+            ]];
+        }
         $networks = [];
         foreach (self::listOf(json_decode(json_encode($this->data->machine->Networks ?? []), true)) as $network) {
             $name = (string) ($network['Name'] ?? '');
@@ -642,11 +772,250 @@ class Device extends Model
                 'Status' => $status,
                 'Mac' => $network['Mac'] ?? null,
                 'IPAddresses' => $addresses,
+                // Agents 1.9.0+ send the prefix length of each address (Wake-on-LAN relays).
+                'Addresses' => array_values(array_filter(array_map(
+                    fn ($address) => is_array($address) && is_string($address['Address'] ?? null) && is_numeric($address['PrefixLength'] ?? null)
+                        ? ['Address' => $address['Address'], 'PrefixLength' => (int) $address['PrefixLength']] : null,
+                    self::listOf($network['Addresses'] ?? []),
+                ))),
             ];
         }
         usort($networks, fn ($a, $b) => [! $a['Connected'], strtolower($a['Name'])] <=> [! $b['Connected'], strtolower($b['Name'])]);
 
         return $networks;
+    }
+
+    /**
+     * The IPv4 networks of the device's interfaces of these types: [network => [prefix, broadcast]],
+     * e.g. ['192.168.1.0/24' => ['broadcast' => '192.168.1.255']]. Loopback and link-local are left out.
+     *
+     * @param  array<int, string>  $types
+     * @return array<string, array{broadcast: string}>
+     */
+    public function ipv4Networks(array $types, bool $connectedOnly = false): array
+    {
+        $networks = [];
+        foreach ($this->networks as $network) {
+            if ($connectedOnly && ! $network['Connected']) {
+                continue;
+            }
+            if (! in_array($network['Type'], $types, true)) {
+                continue;
+            }
+            foreach ($network['Addresses'] as $address) {
+                $ip = ip2long($address['Address']);
+                $prefix = $address['PrefixLength'];
+                if ($ip === false || $prefix < 8 || $prefix > 30 || str_starts_with($address['Address'], '127.') || str_starts_with($address['Address'], '169.254.')) {
+                    continue;
+                }
+                $mask = (-1 << (32 - $prefix)) & 0xFFFFFFFF;
+                $base = $ip & $mask;
+                $networks[long2ip($base).'/'.$prefix] = ['broadcast' => long2ip($base | (~$mask & 0xFFFFFFFF))];
+            }
+        }
+
+        return $networks;
+    }
+
+    /**
+     * MAC addresses a magic packet can wake: wired interfaces first, then Wi-Fi.
+     *
+     * @return array<int, string>
+     */
+    public function getWakeMacsAttribute(): array
+    {
+        $macs = [];
+        foreach (['lan', 'wifi'] as $type) {
+            foreach ($this->networks as $network) {
+                $mac = strtoupper(str_replace('-', ':', (string) $network['Mac']));
+                if ($network['Type'] === $type && preg_match(DeviceCommand::MAC_PATTERN, $mac) && $mac !== '00:00:00:00:00:00' && ! in_array($mac, $macs, true)) {
+                    $macs[] = $mac;
+                }
+            }
+        }
+
+        return array_slice($macs, 0, 8);
+    }
+
+    /**
+     * An online agent in the same network that can send the magic packet: it shares an IPv4
+     * network with a wake interface of this device and (when both are known) the public address.
+     * Returns [relay, broadcasts] or null.
+     *
+     * @return array{0: Device, 1: array<int, string>}|null
+     */
+    public function wakeRelay(): ?array
+    {
+        if ($this->wakeMacs === []) {
+            return null;
+        }
+        $best = $this->bestRelay(self::WAKE_INTERFACE_TYPES, fn (Device $relay) => $relay->commandRefusal('wake', ['macs' => ['00:00:00:00:00:01'], 'broadcasts' => ['255.255.255.255'], 'device' => $this->id]) === null, true);
+        if ($best === null) {
+            return null;
+        }
+        $broadcasts = array_values(array_unique(array_merge(array_column($best[1], 'broadcast'), ['255.255.255.255'])));
+
+        return [$best[0], array_slice($broadcasts, 0, 4)];
+    }
+
+    /**
+     * The best online, signing agent sharing an IPv4 network with this device's interfaces of the
+     * types (and, when both are known, the public address): [relay, shared networks] or null.
+     *
+     * Devices on a battery move between networks: their last report may show a network they have
+     * left, and the same private address can be another machine elsewhere. They are only taken
+     * when $allowMobile, nothing stationary qualifies and they reported the same public address as
+     * this device. Every relay needs a recent report, so its networks are current.
+     */
+    private function bestRelay(array $types, callable $qualifies, bool $allowMobile = false): ?array
+    {
+        $networks = $this->ipv4Networks($types);
+        if ($networks === []) {
+            return null;
+        }
+
+        $best = null;
+        foreach (static::query()->whereKeyNot($this->id)->where('kind', 'agent')->orderBy('id')->get() as $relay) {
+            if ($relay->offline || ! $relay->signsRequests || ! $relay->connectedViaApi || ! $qualifies($relay)) {
+                continue;
+            }
+            if ($relay->isMobile && (! $allowMobile || $this->public_ip === null || $relay->public_ip !== $this->public_ip)) {
+                continue;
+            }
+            if ($this->public_ip !== null && $relay->public_ip !== null && $this->public_ip !== $relay->public_ip) {
+                continue;
+            }
+            $shared = array_intersect_key($networks, $relay->ipv4Networks(self::RELAY_INTERFACE_TYPES, true));
+            if ($shared === []) {
+                continue;
+            }
+            // A relay behind the same public address is the safer match, then wired ones.
+            $score = ($relay->isMobile ? 0 : 4)
+                + ($this->public_ip !== null && $relay->public_ip === $this->public_ip ? 2 : 0)
+                + ($relay->ipv4Networks(['lan'], true) !== [] ? 1 : 0);
+            if ($best === null || $score > $best[2]) {
+                $best = [$relay, $shared, $score];
+            }
+        }
+
+        return $best === null ? null : [$best[0], $best[1]];
+    }
+
+    /** Runs on a battery (laptops, tablets): it may be in another network than last time. */
+    public function getIsMobileAttribute(): bool
+    {
+        return ! $this->isPingOnly && ($this->type === 'laptop' || $this->batteryLevel !== null);
+    }
+
+    public function getIsPingOnlyAttribute(): bool
+    {
+        return ($this->attributes['kind'] ?? 'agent') === 'ping';
+    }
+
+    /** The agent that pings this ping-only device now (online, 1.10.0+, in its network). */
+    public function pingRelay(): ?Device
+    {
+        if (! $this->isPingOnly) {
+            return null;
+        }
+
+        return $this->bestRelay(['lan'], fn (Device $relay) => version_compare((string) $relay->agent_version, self::PING_VERSION, '>='))[0] ?? null;
+    }
+
+    /**
+     * What the agent pings: the ping-only devices it is the relay of, [{id, address}].
+     *
+     * @return array<int, array{id: int, address: string}>
+     */
+    public static function pingTargetsFor(Device $relay): array
+    {
+        if ($relay->isPingOnly || version_compare((string) $relay->agent_version, self::PING_VERSION, '<')) {
+            return [];
+        }
+
+        return static::query()->where('kind', 'ping')->whereNotNull('ping_address')->orderBy('id')->get()
+            ->filter(fn (Device $device) => $device->pingRelay()?->id === $relay->id)
+            ->take(self::MAX_PING_TARGETS)
+            ->map(fn (Device $device) => ['id' => $device->id, 'address' => $device->ping_address])
+            ->values()->all();
+    }
+
+    /**
+     * Results of the agent's pings ([{id, up, rtt}]): only for the ping-only devices it may ping
+     * (it shares their network). An answer is the device's heartbeat. Returns how many were taken.
+     */
+    public static function recordPings(Device $relay, mixed $results): int
+    {
+        if (! is_array($results)) {
+            return 0;
+        }
+        $allowed = collect(self::pingTargetsFor($relay))->pluck('id')->all();
+        $taken = 0;
+        foreach (array_slice($results, 0, self::MAX_PING_TARGETS) as $result) {
+            $id = is_array($result) && is_int($result['id'] ?? null) ? $result['id'] : null;
+            if ($id === null || ! in_array($id, $allowed, true)) {
+                continue;
+            }
+            $up = filter_var($result['up'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            $rtt = is_numeric($result['rtt'] ?? null) ? max(0, min(60000, round((float) $result['rtt'], 1))) : null;
+            $values = ['ping_relay_id' => $relay->id, 'ping_rtt' => $up ? $rtt : null];
+            if ($up) {
+                $values['last_seen_at'] = now();
+            }
+            static::query()->whereKey($id)->toBase()->update($values);
+            PingResult::query()->create(['device_id' => $id, 'up' => $up, 'rtt' => $up ? $rtt : null, 'relay_id' => $relay->id]);
+            $taken++;
+        }
+
+        return $taken;
+    }
+
+    /** Checks and cleans the settings of a ping-only device; null when they are not valid. */
+    public static function sanitizePingSettings(string $address, int|string|null $prefix, ?string $mac): ?array
+    {
+        $address = trim($address);
+        $prefix = $prefix === null || $prefix === '' ? 24 : (int) $prefix;
+        $mac = $mac === null || trim($mac) === '' ? null : strtoupper(str_replace('-', ':', trim($mac)));
+        if (! filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) || $prefix < 8 || $prefix > 30 || ($mac !== null && ! preg_match(DeviceCommand::MAC_PATTERN, $mac))) {
+            return null;
+        }
+
+        return ['ping_address' => $address, 'ping_prefix' => $prefix, 'ping_mac' => $mac];
+    }
+
+    /** Why the device cannot be woken now, or null when a relay can do it. */
+    public function wakeRefusal(): ?string
+    {
+        return match (true) {
+            ! $this->offline => __('The device is online'),
+            $this->wakeMacs === [] => $this->isPingOnly ? __('Add its MAC address to wake it') : __('No wired or Wi-Fi network card is known'),
+            $this->ipv4Networks(self::WAKE_INTERFACE_TYPES) === [] => __('Its network is not known yet (agent 1.9.0+ reports it)'),
+            $this->wakeRelay() === null => __('No online agent 1.9.0+ in the same network'),
+            default => null,
+        };
+    }
+
+    /** Asks a relay in the same network to send the magic packet; the command is the relay's. */
+    public function wake(?User $user = null): ?DeviceCommand
+    {
+        if (! $this->offline || ($relay = $this->wakeRelay()) === null) {
+            return null;
+        }
+        [$device, $broadcasts] = $relay;
+
+        return $device->issueCommand('wake', [
+            'macs' => $this->wakeMacs,
+            'broadcasts' => $broadcasts,
+            'device' => $this->id,
+            'title' => $this->displayName,
+        ], $user);
+    }
+
+    /** The latest wake of this device in the last 10 minutes (sent through another agent). */
+    public function recentWake(): ?DeviceCommand
+    {
+        return DeviceCommand::query()->with('device')->where('command', 'wake')->where('target', 'device:'.$this->id)
+            ->where('created_at', '>=', now()->subMinutes(10))->latest('id')->first();
     }
 
     /** The interface type from its name and description (agents before 1.8.0 do not report it). */

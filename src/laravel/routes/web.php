@@ -87,9 +87,16 @@ Route::get('/agent/signing-key', function () {
     return response()->json(Signing::publicKey() + ['fingerprint' => Signing::fingerprint()]);
 })->name('agent.signing-key');
 
+// First start: the first user is created here while there is no user yet.
+Route::middleware('guest')->group(function () {
+    Route::get('/setup', [App\Http\Controllers\SetupController::class, 'index'])->name('setup');
+    Route::post('/setup', [App\Http\Controllers\SetupController::class, 'store'])->middleware('throttle:10,1')->name('setup.store');
+});
+
 Route::middleware('auth')->group(function () {
     Route::redirect('/', '/devices');
     Route::get('/devices', ShowDevices::class)->name('devices');
+    Route::get('/notifications', App\Livewire\Notifications\Page::class)->name('notifications');
 });
 
 // Remediation scripts: system admins only (they run as SYSTEM / root on the devices).

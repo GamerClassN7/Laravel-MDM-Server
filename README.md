@@ -11,11 +11,42 @@ The answer is simple: over the years, the number of computers I take care of (my
 laptop, my work PC, …) kept growing, and it was not always easy to keep track of free disk space
 or whether OS updates were installed.
 
+## Quick start
+
+```yaml
+# docker-compose.yml
+services:
+  mdm:
+    image: ghcr.io/gamerclassn7/laravel-mdm-server:latest
+    container_name: mdm
+    ports:
+      - "8000:8000" # web and agent WebSocket (/app)
+    volumes:
+      - storage:/var/www/storage
+    restart: unless-stopped
+
+volumes:
+  storage:
+```
+
+```bash
+docker compose up -d
+```
+
+Open `http://<server>:8000`, create the first account (it is the system admin) and click
+**Add device**. No `.env` and no database server are needed: SQLite, the keys and the logs are
+kept in the `storage` volume. For access from outside your network put it behind a TLS proxy
+(see [Docker](#docker)).
+
 ## Screenshots
 
-Device detail with status, commands and CPU/memory history:
+Devices: the list (search, tags, online state, what needs attention) beside the detail with actions, summary, CPU/memory history and tabs:
 
 ![Device detail](docs/screenshots/device.png)
+
+Notifications: firing alerts, rules and channels (ntfy, Discord, Telegram, e-mail, …):
+
+![Notifications](docs/screenshots/notifications.png)
 
 | Pending updates | Enrolling a new device |
 |---|---|
@@ -44,7 +75,18 @@ php artisan migrate
 npm install && npm run build
 ```
 
-Set `APP_SYSTEM_ADMINS` in `.env` to the IDs of the users who can access the system pages.
+Open the portal and create the first account on the setup page. Without `APP_SYSTEM_ADMINS` the
+first user (ID 1) is the system admin; set `APP_SYSTEM_ADMINS` in `.env` to a comma-separated list of
+user IDs to choose others. Users and new passwords can also be set from the command line:
+
+```bash
+php artisan mdm:user admin@example.com            # asks for the password
+docker exec -it mdm php artisan mdm:user admin@example.com
+```
+
+Installations from before the setup page got a default account (`the-email@example.com` /
+`the-password-of-choice`). Change its e-mail and password in the profile; the portal warns after
+logging in with that password.
 
 Run the scheduler every minute (it removes CPU/RAM history older than 7 days and runs backups;
 the Docker image runs it for you):
@@ -64,10 +106,16 @@ A small Alpine-based image (running as a non-root user) is built by GitHub Actio
 | Reverb | WebSocket server, served by nginx on the same port under `/app` | `REVERB_ENABLED=false` |
 | Scheduler | `php artisan schedule:work` | `SCHEDULER_ENABLED=false` |
 
+`docker-compose.yml` runs the image with SQLite and no settings (see [Quick start](#quick-start)).
+Settings are passed as `environment:` of the service, e.g. `APP_SYSTEM_ADMINS: 1,2`. For MySQL:
+
 ```bash
-cp src/laravel/.env.example src/laravel/.env   # set DB_* and REVERB_HOST/PORT/SCHEME
-docker compose --env-file src/laravel/.env up -d
+cp src/laravel/.env.example src/laravel/.env   # set DB_*
+docker compose -f docker-compose.mysql.yml --env-file src/laravel/.env up -d
 ```
+
+Links are `https` behind a TLS proxy (any domain name). Opened directly by an IP address or
+`localhost` over plain `http` (e.g. `http://192.168.1.10:8000`), they stay `http`.
 
 Only port 8000 is exposed: nginx serves the web and proxies `/app` (agent WebSockets) to Reverb
 inside the container. No Reverb settings are needed: the app publishes to Reverb directly inside the
@@ -81,8 +129,8 @@ and `REVERB_APP_SECRET` are generated on the first start when they are not set, 
 Values set in the environment always take precedence. Uploaded files and logs are stored in the
 `storage` volume.
 
-With `DB_CONNECTION=sqlite` and no `DB_DATABASE`, the database is kept in the `storage` volume
-(`storage/database.sqlite`). A volume mounted over `/var/www/database` keeps working: its
+Without `DB_CONNECTION` (or with `DB_CONNECTION=sqlite`) and no `DB_DATABASE`, the database is SQLite
+in the `storage` volume (`storage/database.sqlite`). A volume mounted over `/var/www/database` keeps working: its
 `database.sqlite` is used, and on every start the migrations in it are replaced with the ones
 from the image, so new migrations are applied after an update.
 
@@ -197,6 +245,8 @@ The agent is designed to stay out of the way:
 | Install a single update (agent 1.8.0+, PowerShell 7 from GitHub 1.8.2+) | ✅ Windows Update, winget, modules, PowerShell 7 | ✅ apt, flatpak, snap, modules, PowerShell 7 |
 | Progress and result of commands (agent 1.8.0+) | ✅ | ✅ |
 | Restart / Turn off | ✅ | ✅ |
+| Wake-on-LAN through another agent in the network (agent 1.9.0+) | ✅ sends and is woken | ✅ sends and is woken |
+| Pings ping-only devices of its network (agent 1.10.0+, not on a battery) | ✅ | ✅ |
 
 Notes:
 
@@ -290,6 +340,14 @@ again, the list has the devices of the last run selected. Offline devices run th
 come back within 24 hours. The results are shown under the script and in the **Scripts** tab of
 the device: status, exit codes and up to 16 kB of output.
 
+**Schedule** on the script page runs it again and again, like an Intune remediation: a cron expression
+(`minute hour day month weekday`, e.g. `0 3 * * *` every day at 3:00, presets in the picker, the next
+runs are shown) in the time zone of the server (`APP_TIMEZONE`, UTC by default), and the devices:
+all of them (also the ones enrolled later), the ones with any of the chosen [tags](#tags), and picked
+ones. Tags are resolved at every run. The scheduler (`schedule:run`, in the Docker image
+`schedule:work`) starts each due minute once; a waiting run of the same script on an offline
+device is replaced by the new one. Changing the schedule is not a new version of the script.
+
 Security:
 
 - **Only a trigger:** `runScripts` carries no data. The agent takes its runs over the signed API.
@@ -315,6 +373,105 @@ Security:
   in `config.json`) turns scripts off on the device. The server cannot change it.
 - **Audit:** creating, changing, removing and running a script (with its fingerprint and devices)
   is written to the audit log.
+
+### Tags
+
+Devices get tags (**Edit tags** in the device menu, comma-separated, e.g. `servers, family`). The
+device list shows them and filters by a tag with one click. Scheduled scripts and alerts target
+tags, so a newly tagged device is included without changing them.
+
+### Notifications and alerts
+
+**Notifications** in the main menu, per user and in the style of
+[Beszel](https://beszel.dev/guide/notifications/):
+
+- **Where to send:** e-mail addresses (the server's `MAIL_*` settings) and push / webhook URLs in
+  the [Shoutrrr](https://containrrr.dev/shoutrrr/) format, each with a **Test** button:
+
+  | Service | URL |
+  |---|---|
+  | ntfy | `ntfy://ntfy.sh/topic`, `ntfy://user:password@ntfy.example.com/topic`, `ntfy://:token@host/topic` (`?priority=high&tags=warning`) |
+  | Discord | `discord://token@webhookid` (from `https://discord.com/api/webhooks/webhookid/token`) |
+  | Telegram | `telegram://bottoken@telegram?chats=@channel,123456789` |
+  | Gotify | `gotify://gotify.example.com/AppToken` |
+  | Slack | `slack://hook:T000-B000-XXXX@webhook` |
+  | Pushover | `pushover://shoutrrr:apiToken@userKey` |
+  | Webhook | `generic://example.com/hook` (JSON POST `{"title", "message"}`), `generic+http://` without TLS |
+
+  `?disabletls=yes` sends over plain http (self-hosted ntfy, Gotify or webhooks in your network).
+
+- **Alerts:** a rule is a condition on devices (all, [tags](#tags) or picked ones):
+
+  | Alert | When |
+  |---|---|
+  | Status | the device is offline for at least *n* minutes |
+  | CPU usage | the average over the last *n* minutes is above the threshold (%) |
+  | Memory usage | the average over the last *n* minutes is above the threshold (%), or the free memory is below a size (GB) |
+  | Disk usage | a drive is fuller than the threshold (%), or has less free space than a size (GB) |
+  | Disk health | a disk reports a S.M.A.R.T. warning or failure |
+  | Services | a service failed, or a container is unhealthy, dead or restarting |
+  | Remediations | the latest run of a remediation script failed |
+
+  Disk and memory switch between **%** and **GB**: a percentage suits drives of the same size, a
+  size suits the big ones (10 % of 4 TB are still 400 GB) and memory of different machines. GB are
+  1024 based, as shown in the portal.
+
+  The bell on a device switches the alerts for just that device, with a slider for the threshold
+  and the minutes (like the bell of a system in Beszel).
+
+The scheduler checks the rules every minute. When a rule starts to hold on a device, the user gets
+one notification (🔴) and the alert is shown under **Recent alerts**; when it stops holding, a second
+one (✅, with how long it lasted). Nothing is sent again in between. An offline device keeps its CPU
+and memory alerts as they are until it reports again.
+
+### Wake-on-LAN
+
+A magic packet is a broadcast in the local network, so the server (usually somewhere else) cannot
+send it. **Wake** on an offline device asks another agent in the same network to send it, e.g. the
+NAS or Raspberry Pi that is always on:
+
+1. The agents (1.9.0+) report the prefix length of their addresses, so the server knows their
+   networks. The sleeping device's MAC addresses (wired first, then Wi-Fi) are kept from its last
+   report.
+2. The relay is an online, signing agent 1.9.0+ with an interface in the same IPv4 network. When
+   both reported through the same public address, it has to be the same one (the address the
+   server sees, the first `X-Forwarded-For` hop behind a proxy).
+3. The relay gets a `wake` command with the MAC addresses and the broadcast addresses (the network's
+   own one and `255.255.255.255`) in its signed command response. It checks them again and sends the
+   packet to UDP ports 9 and 7. The command is the relay's (its history shows it); the woken device
+   shows the progress until it is back.
+
+Devices on a battery (laptops) move between networks: their last report may show a network they
+have left, and the same private address (`192.168.1.0/24`) can be another network elsewhere. They
+only send a magic packet when no stationary agent can and they reach the server through the same
+public address as the sleeping device. Every relay needs a report from the last 11 minutes, so its
+networks are current.
+
+The button says why it cannot wake a device (no known network card, no relay in the network). The
+device has to allow it: Wake-on-LAN enabled in the BIOS / UEFI and for the network card (on Windows
+in the adapter's *Power Management* and *Advanced* settings), usually only over a cable. On
+Windows, *Fast Startup* often prevents waking after **Turn off**. It does not cross VLANs or
+routers.
+
+### Ping-only devices
+
+A printer, a NAS or a PC without the agent: **Add device** › **Ping only** with a name, the IPv4
+address, the prefix of its network (`/24`) and optionally the MAC address for Wake-on-LAN.
+
+- An online agent 1.10.0+ in the same network (an interface in that IPv4 network, a report from
+  the last 11 minutes) pings it with every heartbeat (30 s, 1 s timeout). Agents on a battery never
+  ping: in another network the same address may answer for another machine.
+- The agent gets the addresses with its report response and sends the results to
+  `/api/device/pings` (signed like every request). The server takes results only for the devices
+  it gave that agent. An answer is the heartbeat of the ping-only device: online, the round trip
+  time and the agent are shown; no answer for 90 seconds means offline.
+- **Wake** works as for agents: an agent of its network sends the magic packet to its MAC.
+- The detail has a monitor in the style of [Uptime Kuma](https://github.com/louislam/uptime-kuma):
+  the last 50 pings as a bar (green answered, red not), the response now and on average, the
+  uptime of the last 24 hours and 30 days, and the response time over 1 h, 24 h, 7 d or 30 d with
+  the unanswered periods marked. Every ping is kept for 30 days (`ping_results`, pruned daily).
+- In the device list it has a network icon; alerts offer the status only (offline for *n* minutes). Its address, prefix and MAC are changed in
+  **Ping settings** in the device menu.
 
 ### Dashboard
 
@@ -390,7 +547,7 @@ Agents older than 1.1.0 cannot update themselves and have to be reinstalled via 
 
 The token is stored next to the script (`Token.xml` on Windows, `token` readable by root only on
 Linux) and logs are written to `agent.log`. The agent only executes the commands `turnOff`, `restart`,
-`doUpdates` and `updateAgent`.
+`doUpdates`, `installUpdate`, `updateAgent`, `runScripts` and `wake`.
 
 ### Checking the agent
 

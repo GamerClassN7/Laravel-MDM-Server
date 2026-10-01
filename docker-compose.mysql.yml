@@ -1,0 +1,38 @@
+# MySQL instead of SQLite: docker compose -f docker-compose.mysql.yml --env-file src/laravel/.env up -d
+services:
+  app:
+    image: ghcr.io/gamerclassn7/laravel-mdm-server:latest
+    build: .
+    env_file: src/laravel/.env
+    environment:
+      DB_HOST: database
+    ports:
+      - "8000:8000"  # web and Reverb WebSocket (/app)
+    volumes:
+      - storage:/var/www/storage
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+
+  database:
+    image: mysql:8.0
+    ports:
+      - "${DB_PORT}:3306"
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - db-data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  storage:
+  db-data:

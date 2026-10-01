@@ -20,13 +20,24 @@ for dir in migrations seeders factories; do
     fi
 done
 
-# SQLite without an explicit path would live in the image (database/database.sqlite): not writable
-# by the app user and lost with every image update. Keep it in the storage volume instead, unless
-# a database file was mounted there.
-if [ "${DB_CONNECTION:-}" = "sqlite" ] && [ -z "${DB_DATABASE:-}" ] && [ ! -e database/database.sqlite ]; then
+# Without DB_CONNECTION the database is SQLite (the Laravel default), so the image runs with no
+# settings at all. SQLite without an explicit path would live in the image
+# (database/database.sqlite): not writable by the app user and lost with every image update. Keep it
+# in the storage volume instead, unless a database file was mounted there.
+# A mounted .env keeps its DB_CONNECTION (the environment would otherwise hide it).
+if [ -z "${DB_CONNECTION:-}" ] && [ -f .env ]; then
+    DB_CONNECTION=$(sed -n 's/^DB_CONNECTION=["'"'"']\{0,1\}\([A-Za-z0-9_-]*\).*/\1/p' .env | tail -n 1)
+fi
+: "${DB_CONNECTION:=sqlite}"
+export DB_CONNECTION
+if [ -d database/database.sqlite ]; then
+    # Docker creates a directory for a bind mount of a file that does not exist on the host.
+    echo "Warning: database/database.sqlite is a directory (a mounted file missing on the host?), using storage/database.sqlite" >&2
+fi
+if [ "$DB_CONNECTION" = "sqlite" ] && [ -z "${DB_DATABASE:-}" ] && [ ! -f database/database.sqlite ]; then
     export DB_DATABASE=/var/www/storage/database.sqlite
 fi
-if [ "${DB_CONNECTION:-}" = "sqlite" ] && [ -n "${DB_DATABASE:-}" ] && [ ! -e "$DB_DATABASE" ]; then
+if [ "$DB_CONNECTION" = "sqlite" ] && [ -n "${DB_DATABASE:-}" ] && [ ! -e "$DB_DATABASE" ]; then
     touch "$DB_DATABASE"
     echo "Created SQLite database $DB_DATABASE"
 fi

@@ -8,7 +8,7 @@ use Illuminate\Validation\Rule;
 use Livewire\Component;
 use SteelAnts\Modal\Livewire\Attributes\AllowInModal;
 
-#[AllowInModal('is-system-admin')]
+#[AllowInModal(ability: 'is-system-admin')]
 class Form extends Component
 {
     public ?int $scriptId = null;

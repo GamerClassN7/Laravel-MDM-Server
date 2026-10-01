@@ -20,8 +20,29 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        if (config('app.env') != 'local') {
+        // Without APP_SYSTEM_ADMINS the first user (created on the setup page) is the system admin.
+        if (array_filter(config('boilerplate.system_admins', [])) === []) {
+            config(['boilerplate.system_admins' => ['1']]);
+        }
+
+        if (config('app.env') != 'local' && !$this->openedDirectly()) {
             URL::forceScheme('https');
         }
+    }
+
+    /**
+     * Behind a TLS proxy (a domain name) the links are https. Opened directly over plain http by an
+     * IP address or localhost (e.g. http://192.168.1.10:8000 right after docker compose up), the
+     * links have to stay http, or the styles and forms would point to an https that is not there.
+     */
+    private function openedDirectly(): bool
+    {
+        if ($this->app->runningInConsole() || request()->isSecure() || request()->header('X-Forwarded-Proto') === 'https') {
+            return false;
+        }
+
+        $host = request()->getHost();
+
+        return $host === 'localhost' || filter_var($host, FILTER_VALIDATE_IP) !== false;
     }
 }

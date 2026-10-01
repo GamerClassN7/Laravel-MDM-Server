@@ -91,8 +91,8 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.8.2'
-$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync')
+$AgentVersion = '1.10.0'
+$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
     windows = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
@@ -160,6 +160,8 @@ function Get-MachineInfo {
                                              else { 'lan' }
                     "Mac"                  = $_.MacAddress
                     "IPAddresses"          = @($address.IPAddress)
+                    # With the prefix length, so the server knows which devices share a network (Wake-on-LAN).
+                    "Addresses"            = @($address | ForEach-Object { @{ Address = "$($_.IPAddress)"; PrefixLength = [int]$_.PrefixLength } })
                 }
             })
     }
@@ -982,6 +984,7 @@ function Get-LinuxNetworks {
             continue
         }
         $addresses = @($interface.addr_info | ForEach-Object { $_.local })
+        $prefixed = @($interface.addr_info | Where-Object { $_.local } | ForEach-Object { @{ Address = "$($_.local)"; PrefixLength = [int]$_.prefixlen } })
         $type = if ((Test-Path -Path "/sys/class/net/$name/wireless") -or $name -match "^wl") { 'wifi' }
             elseif ($name -match '^(docker|br-)') { 'docker' }
             elseif ($name -match '^(tun|tap|wg|tailscale|zt|ppp|vpn|ipsec|nordlynx)') { 'vpn' }
@@ -997,6 +1000,7 @@ function Get-LinuxNetworks {
             Type        = $type
             Mac         = $interface.address
             IPAddresses = $addresses
+            Addresses   = $prefixed
         }
     }
 }
@@ -2232,6 +2236,56 @@ function Send-Report {
     if ($response.scripts_pending) {
         $script:ScriptsRequested = $true
     }
+    if ($response.PSObject.Properties['ping_targets']) {
+        Set-PingTargets -Targets $response.ping_targets
+    }
+}
+
+function Set-PingTargets {
+    # Ping-only devices of this network the server asks this agent to ping: an id and an IPv4
+    # address each, checked again here (at most 32).
+    param ($Targets)
+
+    $script:PingTargets = @(@($Targets) | Where-Object { $_ } | ForEach-Object {
+            $address = $null
+            if ("$($_.id)" -match '^[0-9]{1,10}$' -and [System.Net.IPAddress]::TryParse("$($_.address)", [ref]$address) -and $address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                @{ Id = [long]$_.id; Address = $address }
+            }
+        } | Select-Object -First 32)
+}
+
+function Send-PingResults {
+    # Pings the ping-only devices (all at once, 1 s timeout) and reports which answered: the
+    # answer is their online status in the portal.
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Token
+    )
+
+    if (-not $script:PingTargets -or $script:PingTargets.Count -eq 0) {
+        return
+    }
+    $pings = @($script:PingTargets | ForEach-Object {
+            $ping = New-Object System.Net.NetworkInformation.Ping
+            @{ Id = $_.Id; Ping = $ping; Task = $ping.SendPingAsync($_.Address, 1000) }
+        })
+    try { [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($pings | ForEach-Object { $_.Task }), 3000) } catch { }
+    $results = @($pings | ForEach-Object {
+            $reply = if ($_.Task.Status -eq 'RanToCompletion') { $_.Task.Result } else { $null }
+            $up = $reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
+            $_.Ping.Dispose()
+            @{ id = $_.Id; up = [bool]$up; rtt = $(if ($up) { [double]$reply.RoundtripTime } else { $null }) }
+        })
+    try {
+        $response = Invoke-MdmApi -Method Post -Path 'device/pings' -Token $Token -Body @{ results = $results }
+        if ($response.PSObject.Properties['ping_targets']) {
+            Set-PingTargets -Targets $response.ping_targets
+        }
+    }
+    catch {
+        Write-AgentLog "Ping results not sent: $($_.Exception.Message)"
+    }
 }
 
 function Update-Agent {
@@ -2387,6 +2441,50 @@ function Test-UpdateParams {
     }
 
     return @{ kind = $kind; id = "$($Params.id)"; user = "$($Params.user)"; edition = "$($Params.edition)"; version = "$($Params.version)" }
+}
+
+function Test-WakeParams {
+    # wake parameters, checked again on the device: MAC addresses and IPv4 broadcast addresses only.
+    param ($Params)
+
+    $macs = @($Params.macs | ForEach-Object { "$_" } | Where-Object { $_ -match '^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$' })
+    $broadcasts = @($Params.broadcasts | ForEach-Object {
+            $address = $null
+            if ([System.Net.IPAddress]::TryParse("$_", [ref]$address) -and $address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $address }
+        })
+    if ($macs.Count -eq 0 -or $macs.Count -gt 8 -or $broadcasts.Count -eq 0 -or $broadcasts.Count -gt 4) {
+        throw 'invalid MAC or broadcast addresses'
+    }
+
+    return @{ Macs = $macs; Broadcasts = $broadcasts }
+}
+
+function Send-MagicPacket {
+    # Wake-on-LAN for a device in this network: 6 x 0xFF and 16 x its MAC, as UDP broadcast to
+    # ports 9 and 7 of each broadcast address (the network's own one leaves on the right interface).
+    param (
+        [string[]]
+        $Macs,
+        [System.Net.IPAddress[]]
+        $Broadcasts
+    )
+
+    $client = New-Object System.Net.Sockets.UdpClient
+    try {
+        $client.EnableBroadcast = $true
+        foreach ($mac in $Macs) {
+            $bytes = [byte[]]($mac -split '[:-]' | ForEach-Object { [Convert]::ToByte($_, 16) })
+            $packet = [byte[]](@(0xFF) * 6 + ($bytes * 16))
+            foreach ($broadcast in $Broadcasts) {
+                foreach ($port in 9, 7) {
+                    [void]$client.Send($packet, $packet.Length, (New-Object System.Net.IPEndPoint($broadcast, $port)))
+                }
+            }
+        }
+    }
+    finally {
+        $client.Close()
+    }
 }
 
 function Save-CommandState {
@@ -2851,6 +2949,18 @@ function Invoke-DeviceCommand {
                 return
             }
             Start-UpdateJob -CommandId $Id -Params $updateParams
+        }
+        'wake' {
+            try {
+                $wake = Test-WakeParams -Params $Params
+                Send-MagicPacket -Macs $wake.Macs -Broadcasts $wake.Broadcasts
+                Write-AgentLog "Magic packet sent to $($wake.Macs -join ', ') via $($wake.Broadcasts -join ', ')"
+                [void](Send-CommandStatus -Id $Id -Status succeeded -Message "Magic packet sent to $($wake.Macs -join ', ')")
+            }
+            catch {
+                Write-AgentLog "Wake-on-LAN failed: $($_.Exception.Message)"
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "Wake-on-LAN failed: $($_.Exception.Message)")
+            }
         }
         'turnOff' {
             [void](Send-CommandStatus -Id $Id -Status succeeded -Message 'Shutting down')
@@ -3324,6 +3434,7 @@ function Start-Agent {
             if (-not $Once -and ((Get-Date) - $lastHeartbeat).TotalSeconds -ge $HeartbeatInterval) {
                 $lastHeartbeat = Get-Date
                 Send-Heartbeat -Realtime $realtime -Token $Token
+                Send-PingResults -Token $Token
                 $lastActivity = Get-Date
             }
 

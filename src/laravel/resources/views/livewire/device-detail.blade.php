@@ -27,7 +27,7 @@
             'health' => $diskHealth !== null,
             'scripts' => $scriptRuns->isNotEmpty(),
             'history' => $history->isNotEmpty(),
-            'agent' => true,
+            'agent' => ! $selectedDevice->isPingOnly,
         ]));
         $updatesRunning = \App\Models\Device::findActive($activeCommands, 'doUpdates');
         $activeTab = in_array($tab, $tabs, true) ? $tab : ($tabs[0] ?? null);
@@ -78,6 +78,26 @@
                             </span>
                         @endif
                     </div>
+
+                    @if ($editTags)
+                        <div class="d-flex gap-2 mt-2">
+                            <input class="form-control form-control-sm" list="device-tag-options" placeholder="{{ __('servers, family, …') }}" type="text" wire:model="tagsText" wire:keydown.enter="saveTags" wire:keydown.escape="$set('editTags', false)" autofocus>
+                            <datalist id="device-tag-options">
+                                @foreach (\App\Models\Device::allTags() as $tagOption)
+                                    <option value="{{ $tagOption }}"></option>
+                                @endforeach
+                            </datalist>
+                            <button class="btn btn-sm btn-primary" type="button" wire:click="saveTags">{{ __('Save') }}</button>
+                            <button class="btn btn-sm btn-light" type="button" wire:click="$set('editTags', false)">{{ __('Cancel') }}</button>
+                        </div>
+                        <div class="form-text">{{ __('Separate tags with commas.') }}</div>
+                    @elseif ($selectedDevice->tagList !== [])
+                        <x-tags class="align-items-center mt-2" :tags="$selectedDevice->tagList" links>
+                            <button class="btn btn-sm btn-link text-body-secondary p-0 ms-1" type="button" title="{{ __('Edit tags') }}" wire:click="startEditTags">
+                                <i class="fas fa-pen small"></i>
+                            </button>
+                        </x-tags>
+                    @endif
                 </div>
 
                 @if (!$selectedDevice->offline)
@@ -107,14 +127,25 @@
         </div>
     </div>
 
+    @if ($selectedDevice->isPingOnly)
+        @livewire('ping-monitor', ['deviceId' => $selectedDevice->id], key('ping-monitor' . $selectedDevice->id))
+    @endif
+
     @if (!empty($selectedDevice->data))
         @livewire('device-alerts', ['selectedDeviceId' => $selectedDevice->id], key('device-alerts' . $selectedDevice->id))
     @endif
 
+    @if (!empty($selectedDevice->data))
+        @include('partials.device.summary', ['pendingUpdates' => $pendingUpdates])
+    @endif
+
+    @unless ($selectedDevice->isPingOnly)
     <div class="mt-3">
         @livewire('device-metrics', ['selectedDeviceId' => $selectedDevice->id], key('device-metrics' . $selectedDevice->id))
     </div>
+    @endunless
 
+    @unless ($selectedDevice->isPingOnly)
     <div class="mt-4">
         {{-- Scrolls sideways when the tabs do not fit; the active one is kept in view. The wrapper
              scrolls, not the list: it would clip the underline of the active tab. --}}
@@ -663,4 +694,5 @@
             </div>
         </div>
     </div>
+    @endunless
 </div>

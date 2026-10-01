@@ -58,6 +58,7 @@ trait SignsDeviceRequests
         if ($token !== null) {
             $server['HTTP_AUTHORIZATION'] = 'Bearer '.$token;
         }
+        $server += $options['server'] ?? [];
 
         // The api guard caches the device of the previous request.
         $this->app['auth']->forgetGuards();

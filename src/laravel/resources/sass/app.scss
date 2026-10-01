@@ -52,3 +52,121 @@
         align-items: center;
     }
 }
+
+// Device tags (x-tag, x-tags): small and quiet, the same everywhere. Clickable ones (filters,
+// pickers) are highlighted when selected.
+.mdm-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3em;
+    padding: 0 0.5em;
+    font-size: 0.6875rem;
+    font-weight: 400;
+    line-height: 1.6;
+    white-space: nowrap;
+    color: var(--bs-secondary-color);
+    background-color: var(--bs-tertiary-bg);
+    border: var(--bs-border-width) solid var(--bs-border-color-translucent);
+    border-radius: 50rem;
+    text-decoration: none;
+
+    i {
+        font-size: 0.75em;
+        opacity: 0.6;
+    }
+}
+
+a.mdm-tag,
+button.mdm-tag,
+label.mdm-tag {
+    cursor: pointer;
+
+    &:hover {
+        color: var(--bs-body-color);
+        border-color: var(--bs-border-color);
+    }
+}
+
+.mdm-tag.is-active {
+    color: var(--bs-primary-text-emphasis);
+    background-color: var(--bs-primary-bg-subtle);
+    border-color: var(--bs-primary-border-subtle);
+}
+
+// On the selected row of the device list.
+.list-group-item.active .mdm-tag {
+    color: rgba(255, 255, 255, 0.85);
+    background-color: rgba(255, 255, 255, 0.15);
+    border-color: transparent;
+}
+
+.mdm-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+}
+
+// Phones and tablets: the bottom navigation (layout-nav-mobile) is fixed over the page; keep the
+// end of the content above it (its height plus the home indicator of the phone).
+@include mobile() {
+    .layout-content {
+        padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
+    }
+}
+
+// The device list beside the detail: stays in view while the detail scrolls (wide screens).
+@include media-breakpoint-up(lg) {
+    .device-switcher {
+        position: sticky;
+        top: 1rem;
+        max-height: calc(100vh - 2rem);
+        overflow-y: auto;
+    }
+}
+
+.device-dot {
+    flex-shrink: 0;
+    width: .5rem;
+    height: .5rem;
+    border-radius: 50%;
+
+    &.is-online {
+        background-color: var(--bs-success);
+    }
+
+    &.is-offline {
+        background-color: var(--bs-secondary-color);
+    }
+}
+
+.list-group-item.active .device-dot {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, .6);
+}
+
+// Uptime Kuma style bar of the last pings (ping-only devices): one rounded bar per check.
+.ping-beats {
+    display: flex;
+    gap: 3px;
+    height: 1.75rem;
+}
+
+.ping-beat {
+    flex: 1 1 0;
+    min-width: 3px;
+    border-radius: 50rem;
+    background-color: var(--bs-secondary-bg);
+
+    &.is-up {
+        background-color: var(--bs-success);
+    }
+
+    &.is-down {
+        background-color: var(--bs-danger);
+    }
+}
+
+.ping-beats-sm {
+    height: .9rem;
+    gap: 2px;
+    max-width: 10rem;
+}

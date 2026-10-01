@@ -2,7 +2,11 @@
 
 namespace App\Models;
 
+use Cron\CronExpression;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use SteelAnts\LaravelBoilerplate\Models\Activity;
 use SteelAnts\LaravelBoilerplate\Traits\Auditable;
@@ -22,7 +26,76 @@ class Script extends Model
     /** Runs not taken by the agent within this time expire (the signed manifest does too). */
     public const RUN_TTL = 86400;
 
-    protected $fillable = ['name', 'description', 'platform', 'detection', 'remediation', 'timeout'];
+    protected $fillable = ['name', 'description', 'platform', 'detection', 'remediation', 'timeout', 'schedule', 'schedule_target'];
+
+    protected $casts = [
+        'schedule_target' => 'array',
+        'last_scheduled_at' => 'datetime',
+    ];
+
+    /** Schedules offered in the picker (any other cron expression can be entered). */
+    public const SCHEDULE_PRESETS = [
+        '0 * * * *' => 'Every hour',
+        '0 */6 * * *' => 'Every 6 hours',
+        '0 3 * * *' => 'Every day at 3:00',
+        '0 3 * * 0' => 'Every Sunday at 3:00',
+        '0 3 1 * *' => 'On the 1st of the month at 3:00',
+    ];
+
+    /** Whether the text is a cron expression with five fields (no seconds, no @macros beyond the standard ones). */
+    public static function validSchedule(?string $expression): bool
+    {
+        $expression = trim((string) $expression);
+        if ($expression === '' || strlen($expression) > 100) {
+            return false;
+        }
+
+        return CronExpression::isValidExpression($expression);
+    }
+
+    public function getScheduledAttribute(): bool
+    {
+        return self::validSchedule($this->schedule);
+    }
+
+    /** The next scheduled run (app time zone), null without a schedule. */
+    public function nextScheduledRun(?Carbon $after = null): ?Carbon
+    {
+        if (! $this->scheduled) {
+            return null;
+        }
+
+        return Carbon::instance((new CronExpression($this->schedule))->getNextRunDate(($after ?? now())->toDateTime(), 0, false, config('mdm.timezone')))->setTimezone(config('mdm.timezone'));
+    }
+
+    /**
+     * Runs the scripts whose schedule is due this minute on their target devices. A minute is only
+     * run once, also when the scheduler starts it twice. Returns the number of scripts started.
+     */
+    public static function runScheduled(?Carbon $now = null): int
+    {
+        $minute = ($now ?? now())->copy()->startOfMinute();
+        $started = 0;
+        foreach (static::query()->whereNotNull('schedule')->get() as $script) {
+            try {
+                if (! $script->scheduled || ! (new CronExpression($script->schedule))->isDue($minute->toDateTime(), config('mdm.timezone'))) {
+                    continue;
+                }
+                $claimed = static::query()->whereKey($script->id)
+                    ->where(fn ($query) => $query->whereNull('last_scheduled_at')->orWhere('last_scheduled_at', '<', $minute))
+                    ->toBase()->update(['last_scheduled_at' => $minute]);
+                if ($claimed !== 1) {
+                    continue;
+                }
+                $script->runOn(Device::targeted($script->schedule_target ?? [])->pluck('id')->all(), null, true);
+                $started++;
+            } catch (Throwable $e) {
+                Log::warning("Scheduled run of script {$script->id} failed: {$e->getMessage()}");
+            }
+        }
+
+        return $started;
+    }
 
     protected static function booted(): void
     {
@@ -81,7 +154,7 @@ class Script extends Model
      * @param  array<int>  $deviceIds
      * @return \Illuminate\Support\Collection<int, ScriptRun>
      */
-    public function runOn(array $deviceIds, ?User $user = null)
+    public function runOn(array $deviceIds, ?User $user = null, bool $scheduled = false)
     {
         $runs = Device::query()->whereIn('id', $deviceIds)->get()
             ->filter(fn (Device $device) => $this->unavailableReason($device) === null)
@@ -105,7 +178,7 @@ class Script extends Model
             ->values();
 
         $activity = new Activity;
-        $activity->lang_text = __('Ran Script :name', ['name' => $this->name]);
+        $activity->lang_text = $scheduled ? __('Scheduled run of Script :name', ['name' => $this->name]) : __('Ran Script :name', ['name' => $this->name]);
         $activity->data = ['version' => $this->version, 'fingerprint' => $this->fingerprint, 'devices' => $runs->pluck('device_id')->all()];
         $activity->affected()->associate($this);
         $activity->save();
