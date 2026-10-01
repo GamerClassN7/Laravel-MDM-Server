@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.12.3'
+$AgentVersion = '1.12.4'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -3031,7 +3031,9 @@ function Start-UpdateJob {
                 # hangs or fails does not stop the others. winget also updates PowerShell 7
                 # (Microsoft.PowerShell). App Installer is winget itself: replacing it ends winget.
                 $listed = try { @(Get-WingetSoftware -Updatable) } catch { [void]$state.Failures.Add("winget: $($_.Exception.Message)"); @() }
-                $packages = @($listed | Where-Object { $_.Id -and $_.Id -ne 'Microsoft.AppInstaller' -and "$($_.Avaliable)" -ne '' })
+                # Frameworks of Store apps (VCLibs, UI.Xaml, Windows App Runtime) are updated by the Store,
+                # winget fails on them as SYSTEM (0x8A15005C).
+                $packages = @($listed | Where-Object { $_.Id -and $_.Id -notmatch '^Microsoft\.(AppInstaller|VCLibs|UI\.Xaml|WindowsAppRuntime)' -and "$($_.Avaliable)" -ne '' })
                 $done = 0
                 foreach ($package in $packages) {
                     Set-Progress ([int](40 * $done / [Math]::Max(1, $packages.Count))) "winget upgrade $($package.Id) ($($done + 1)/$($packages.Count))"

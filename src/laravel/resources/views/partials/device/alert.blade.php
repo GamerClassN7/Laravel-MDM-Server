@@ -50,7 +50,7 @@
                 wire:loading.attr="disabled" wire:target="{{ $call }}"
                 @if ($action['confirm']) wire:confirm="{{ $action['confirm'] }}" @endif
                 {{-- On its way: only the spinner in the button, the state in its tooltip. --}}
-                @if ($active) title="{{ $active->message ?: $active->statusLabel }}{{ $active->progress !== null && $active->status === 'running' ? ' · ' . $active->progress . ' %' : '' }}" @elseif ($alert['refusal']) title="{{ $alert['refusal'] }}" @endif
+                @if ($active) title="{{ $active->displayMessage ?: $active->statusLabel }}{{ $active->progress !== null && $active->status === 'running' ? ' · ' . $active->progress . ' %' : '' }}" @elseif ($alert['refusal']) title="{{ $alert['refusal'] }}" @endif
                 @disabled($active || $alert['refusal'])>
                 @if ($active)
                     <span aria-hidden="true" class="spinner-border spinner-border-sm me-1 text-body-secondary"></span>
