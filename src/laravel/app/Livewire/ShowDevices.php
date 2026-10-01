@@ -46,6 +46,17 @@ class ShowDevices extends Component
 
     /* Device Enrolment*/
     public $addDevice = false;
+
+    /** agent (enrolment code, install commands) or ping (a ping-only device). */
+    public string $addMode = 'agent';
+
+    public string $pingName = '';
+
+    public string $pingAddress = '';
+
+    public $pingPrefix = 24;
+
+    public string $pingMac = '';
     public $enrollmentCode;
     public $enrollmentCodeExpiration;
 
@@ -84,6 +95,28 @@ class ShowDevices extends Component
             $enrolment->expire_at = $this->enrollmentCodeExpiration;
             $enrolment->save();
         }
+    }
+
+    /** A device without an agent: pinged by an agent in its network, woken through it. */
+    public function createPingDevice(): void
+    {
+        $this->resetErrorBag();
+        $this->validate(['pingName' => 'required|string|max:255']);
+        $settings = Device::sanitizePingSettings($this->pingAddress, $this->pingPrefix, $this->pingMac);
+        if ($settings === null) {
+            $this->addError('pingAddress', __('Enter an IPv4 address, a prefix of 8–30 and a valid MAC address (or none).'));
+
+            return;
+        }
+
+        $device = new Device();
+        $device->forceFill($settings + ['kind' => 'ping', 'name' => $this->pingName, 'os' => '', 'token' => hash('sha256', \Illuminate\Support\Str::random(60))]);
+        $device->save();
+
+        $this->reset(['pingName', 'pingAddress', 'pingMac', 'addMode']);
+        $this->pingPrefix = 24;
+        $this->loadDevices();
+        $this->selectDevice($device->id);
     }
 
     #[On('device-deleted')]
@@ -193,7 +226,7 @@ class ShowDevices extends Component
 
         $drive = collect($device->drives)->filter(fn ($drive) => isset($drive['PercentUsed']))->sortByDesc('PercentUsed')->first();
         $updates = count($device->installableUpdates) + count($device->apps_packages_updates) + count($device->moduleUpdates);
-        $addresses = collect($device->networks)->where('Connected', true)->whereIn('Type', ['lan', 'wifi', 'bridge'])->pluck('IPAddresses')->flatten()
+        $addresses = $device->isPingOnly ? $device->ping_address : collect($device->networks)->where('Connected', true)->whereIn('Type', ['lan', 'wifi', 'bridge'])->pluck('IPAddresses')->flatten()
             ->first(fn ($ip) => filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4));
 
         return [

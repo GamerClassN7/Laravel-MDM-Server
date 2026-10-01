@@ -23,7 +23,7 @@ class DeviceRules extends Component
     public function mount(int $deviceId): void
     {
         $this->deviceId = Device::findOrFail($deviceId)->id;
-        foreach (AlertRule::TYPES as $type => $definition) {
+        foreach ($this->types() as $type => $definition) {
             $rule = $this->ruleFor($type);
             $this->settings[$type] = [
                 'enabled' => $rule?->enabled ?? false,
@@ -39,7 +39,7 @@ class DeviceRules extends Component
     public function updatedSettings($value, string $key): void
     {
         $type = explode('.', $key)[0];
-        if (! isset(AlertRule::TYPES[$type])) {
+        if (! isset($this->types()[$type])) {
             return;
         }
         $setting = $this->settings[$type];
@@ -70,6 +70,12 @@ class DeviceRules extends Component
         $this->dispatch('alertRuleSaved');
     }
 
+    /** A ping-only device only has a status (it reports nothing else). */
+    private function types(): array
+    {
+        return Device::find($this->deviceId)?->isPingOnly ? ['status' => AlertRule::TYPES['status']] : AlertRule::TYPES;
+    }
+
     /** The user's rule of this type for exactly this device. */
     private function ruleFor(string $type): ?AlertRule
     {
@@ -90,6 +96,7 @@ class DeviceRules extends Component
 
         return view('livewire.notifications.device-rules', [
             'device' => $device,
+            'types' => $this->types(),
             'broader' => $broader,
         ]);
     }

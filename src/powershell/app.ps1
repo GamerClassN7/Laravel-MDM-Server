@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.9.0'
+$AgentVersion = '1.10.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'wake')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -2229,6 +2229,56 @@ function Send-Report {
     if ($response.scripts_pending) {
         $script:ScriptsRequested = $true
     }
+    if ($response.PSObject.Properties['ping_targets']) {
+        Set-PingTargets -Targets $response.ping_targets
+    }
+}
+
+function Set-PingTargets {
+    # Ping-only devices of this network the server asks this agent to ping: an id and an IPv4
+    # address each, checked again here (at most 32).
+    param ($Targets)
+
+    $script:PingTargets = @(@($Targets) | Where-Object { $_ } | ForEach-Object {
+            $address = $null
+            if ("$($_.id)" -match '^[0-9]{1,10}$' -and [System.Net.IPAddress]::TryParse("$($_.address)", [ref]$address) -and $address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                @{ Id = [long]$_.id; Address = $address }
+            }
+        } | Select-Object -First 32)
+}
+
+function Send-PingResults {
+    # Pings the ping-only devices (all at once, 1 s timeout) and reports which answered: the
+    # answer is their online status in the portal.
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Token
+    )
+
+    if (-not $script:PingTargets -or $script:PingTargets.Count -eq 0) {
+        return
+    }
+    $pings = @($script:PingTargets | ForEach-Object {
+            $ping = New-Object System.Net.NetworkInformation.Ping
+            @{ Id = $_.Id; Ping = $ping; Task = $ping.SendPingAsync($_.Address, 1000) }
+        })
+    try { [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($pings | ForEach-Object { $_.Task }), 3000) } catch { }
+    $results = @($pings | ForEach-Object {
+            $reply = if ($_.Task.Status -eq 'RanToCompletion') { $_.Task.Result } else { $null }
+            $up = $reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
+            $_.Ping.Dispose()
+            @{ id = $_.Id; up = [bool]$up; rtt = $(if ($up) { [double]$reply.RoundtripTime } else { $null }) }
+        })
+    try {
+        $response = Invoke-MdmApi -Method Post -Path 'device/pings' -Token $Token -Body @{ results = $results }
+        if ($response.PSObject.Properties['ping_targets']) {
+            Set-PingTargets -Targets $response.ping_targets
+        }
+    }
+    catch {
+        Write-AgentLog "Ping results not sent: $($_.Exception.Message)"
+    }
 }
 
 function Update-Agent {
@@ -3371,6 +3421,7 @@ function Start-Agent {
             if (-not $Once -and ((Get-Date) - $lastHeartbeat).TotalSeconds -ge $HeartbeatInterval) {
                 $lastHeartbeat = Get-Date
                 Send-Heartbeat -Realtime $realtime -Token $Token
+                Send-PingResults -Token $Token
                 $lastActivity = Get-Date
             }
 

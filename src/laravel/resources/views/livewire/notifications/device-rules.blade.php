@@ -1,6 +1,6 @@
 <div>
     <div class="list-group list-group-flush">
-        @foreach (\App\Models\AlertRule::TYPES as $type => $definition)
+        @foreach ($types as $type => $definition)
             @php
                 $setting = $settings[$type];
                 $hasUnit = \App\Models\AlertRule::usesUnit($type);

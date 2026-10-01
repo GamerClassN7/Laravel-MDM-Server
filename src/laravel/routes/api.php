@@ -43,6 +43,8 @@ Route::middleware(['device.signature', 'auth:api'])->post('/device', function (R
         ...Device::commandResponse($device->id),
         // Script runs queued while the device was offline.
         'scripts_pending' => $device->signsRequests && ScriptRun::query()->where('device_id', $device->id)->where('status', 'pending')->exists(),
+        // Ping-only devices in its network this agent pings with every heartbeat (agents 1.10.0+).
+        'ping_targets' => $device->signsRequests ? Device::pingTargetsFor($device) : [],
     ]);
 });
 
@@ -116,6 +118,19 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         Device::recordHeartbeat($request->user()->id, $request->input('metrics'), 'http', $request->input('state'));
 
         return response()->noContent();
+    });
+
+    // Results of the pings of the ping-only devices (agents 1.10.0+): only the ones it was given.
+    Route::post('/device/pings', function (Request $request) {
+        /** @var Device $device */
+        $device = $request->user();
+        abort_unless($device->signsRequests, 403);
+
+        return response()->json([
+            'taken' => Device::recordPings($device, $request->json('results')),
+            // The current list, so the agent follows changes between its reports.
+            'ping_targets' => Device::pingTargetsFor($device),
+        ]);
     });
 
     // A device updated to a signing agent registers its key once (trust on first use, with the

@@ -27,7 +27,7 @@
             'health' => $diskHealth !== null,
             'scripts' => $scriptRuns->isNotEmpty(),
             'history' => $history->isNotEmpty(),
-            'agent' => true,
+            'agent' => ! $selectedDevice->isPingOnly,
         ]));
         $updatesRunning = \App\Models\Device::findActive($activeCommands, 'doUpdates');
         $activeTab = in_array($tab, $tabs, true) ? $tab : ($tabs[0] ?? null);
@@ -129,6 +129,10 @@
         </div>
     </div>
 
+    @if ($selectedDevice->isPingOnly)
+        @include('partials.device.ping')
+    @endif
+
     @if (!empty($selectedDevice->data))
         @livewire('device-alerts', ['selectedDeviceId' => $selectedDevice->id], key('device-alerts' . $selectedDevice->id))
     @endif
@@ -137,10 +141,13 @@
         @include('partials.device.summary', ['pendingUpdates' => $pendingUpdates])
     @endif
 
+    @unless ($selectedDevice->isPingOnly)
     <div class="mt-3">
         @livewire('device-metrics', ['selectedDeviceId' => $selectedDevice->id], key('device-metrics' . $selectedDevice->id))
     </div>
+    @endunless
 
+    @unless ($selectedDevice->isPingOnly)
     <div class="mt-4">
         {{-- Scrolls sideways when the tabs do not fit; the active one is kept in view. The wrapper
              scrolls, not the list: it would clip the underline of the active tab. --}}
@@ -689,4 +696,5 @@
             </div>
         </div>
     </div>
+    @endunless
 </div>

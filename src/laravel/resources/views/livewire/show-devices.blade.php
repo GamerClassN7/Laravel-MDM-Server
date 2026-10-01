@@ -5,6 +5,44 @@
                 <a class="text-body-secondary text-decoration-none" href="#" wire:click.prevent="showList">{{ __('Devices') }}</a>
                 <span class="text-body-secondary mx-1">/</span>{{ __('Add device') }}
             </nav>
+            <div class="btn-group mb-3" role="group" aria-label="{{ __('Kind of device') }}">
+                <input autocomplete="off" class="btn-check" id="add-mode-agent" type="radio" value="agent" wire:model.live="addMode">
+                <label class="btn btn-outline-secondary" for="add-mode-agent"><i class="fas fa-robot me-1"></i>{{ __('With the agent') }}</label>
+                <input autocomplete="off" class="btn-check" id="add-mode-ping" type="radio" value="ping" wire:model.live="addMode">
+                <label class="btn btn-outline-secondary" for="add-mode-ping"><i class="fas fa-network-wired me-1"></i>{{ __('Ping only') }}</label>
+            </div>
+            @if ($addMode === 'ping')
+                <div class="card">
+                    <form class="card-body" wire:submit="createPingDevice">
+                        <h5 class="card-title">{{ __('Add a ping-only device') }}</h5>
+                        <p class="text-muted">{{ __('For a printer, a NAS or a PC without the agent: an agent (1.10.0+, not on a battery) in the same network pings it every 30 seconds for its online status and wakes it with Wake-on-LAN.') }}</p>
+                        <div class="row g-3" style="max-width: 44rem">
+                            <div class="col-12">
+                                <label class="form-label" for="ping-name">{{ __('Name') }}</label>
+                                <input class="form-control @error('pingName') is-invalid @enderror" id="ping-name" placeholder="{{ __('e.g. Printer') }}" type="text" wire:model="pingName">
+                                @error('pingName') <div class="invalid-feedback">{{ $message }}</div> @enderror
+                            </div>
+                            <div class="col-8 col-md-6">
+                                <label class="form-label" for="ping-address">{{ __('IPv4 address') }}</label>
+                                <input class="form-control font-monospace @error('pingAddress') is-invalid @enderror" id="ping-address" placeholder="192.168.1.50" type="text" wire:model="pingAddress">
+                            </div>
+                            <div class="col-4 col-md-2">
+                                <label class="form-label" for="ping-prefix">{{ __('Prefix') }}</label>
+                                <div class="input-group">
+                                    <span class="input-group-text">/</span>
+                                    <input class="form-control" id="ping-prefix" max="30" min="8" type="number" wire:model="pingPrefix">
+                                </div>
+                            </div>
+                            <div class="col-12 col-md-4">
+                                <label class="form-label" for="ping-mac">{{ __('MAC address') }} <span class="text-muted">({{ __('for Wake-on-LAN') }})</span></label>
+                                <input class="form-control font-monospace" id="ping-mac" placeholder="AA:BB:CC:DD:EE:FF" type="text" wire:model="pingMac">
+                            </div>
+                            @error('pingAddress') <div class="col-12 small text-danger">{{ $message }}</div> @enderror
+                        </div>
+                        <button class="btn btn-primary mt-3" type="submit"><i class="fas fa-plus me-2"></i>{{ __('Add device') }}</button>
+                    </form>
+                </div>
+            @else
             <div class="card">
                 <div class="card-body">
                     <h5 class="card-title">{{ __('Enrol new device') }}</h5>
@@ -43,6 +81,7 @@
                     </p>
                 </div>
             </div>
+            @endif
         @elseif ($selectedDevice)
             <nav aria-label="breadcrumb" class="small mb-2">
                 <a class="text-body-secondary text-decoration-none" href="{{ route('devices') }}" wire:click.prevent="showList"><i class="fas fa-arrow-left me-1"></i>{{ __('Devices') }}</a>
@@ -176,7 +215,7 @@
                                             @endif
                                         </td>
                                         <td class="d-none d-lg-table-cell">
-                                            <div class="text-truncate" style="max-width: 14rem">{{ $device->os ?: '–' }}</div>
+                                            <div class="text-truncate" style="max-width: 14rem">{{ $device->isPingOnly ? __('Ping only') : ($device->os ?: '–') }}</div>
                                             @if ($row['ip'])
                                                 <div class="small text-muted">{{ $row['ip'] }}</div>
                                             @endif

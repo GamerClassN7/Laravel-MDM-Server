@@ -22,6 +22,13 @@ class DeviceDetail extends Component
 
     public bool $editTags = false;
 
+    /** Settings of a ping-only device. */
+    public string $pingAddress = '';
+
+    public $pingPrefix = 24;
+
+    public string $pingMac = '';
+
     public string $tagsText = '';
 
     public function saveFriendlyName()
@@ -34,7 +41,32 @@ class DeviceDetail extends Component
 
     public function mount()
     {
-        $this->friendlyName = Device::find($this->selectedDeviceId)->DisplayName;
+        $device = Device::find($this->selectedDeviceId);
+        $this->friendlyName = $device->DisplayName;
+        $this->pingAddress = (string) $device->ping_address;
+        $this->pingPrefix = $device->ping_prefix ?? 24;
+        $this->pingMac = (string) $device->ping_mac;
+    }
+
+    public function savePing(): void
+    {
+        $device = Device::find($this->selectedDeviceId);
+        if ($device === null || ! $device->isPingOnly) {
+            return;
+        }
+        $settings = Device::sanitizePingSettings($this->pingAddress, $this->pingPrefix, $this->pingMac);
+        if ($settings === null) {
+            $this->addError('ping', __('Enter an IPv4 address, a prefix of 8–30 and a valid MAC address (or none).'));
+
+            return;
+        }
+        $this->resetErrorBag('ping');
+        // Another address: the old answers say nothing about it.
+        if ($settings['ping_address'] !== $device->ping_address) {
+            $settings += ['last_seen_at' => null, 'ping_rtt' => null];
+        }
+        $device->forceFill($settings)->save();
+        $this->pingMac = (string) $settings['ping_mac'];
     }
 
     /** Rename from the device menu. */

@@ -250,6 +250,7 @@ The agent is designed to stay out of the way:
 | Progress and result of commands (agent 1.8.0+) | ✅ | ✅ |
 | Restart / Turn off | ✅ | ✅ |
 | Wake-on-LAN through another agent in the network (agent 1.9.0+) | ✅ sends and is woken | ✅ sends and is woken |
+| Pings ping-only devices of its network (agent 1.10.0+, not on a battery) | ✅ | ✅ |
 
 Notes:
 
@@ -444,11 +445,33 @@ NAS or Raspberry Pi that is always on:
    packet to UDP ports 9 and 7. The command is the relay's (its history shows it); the woken device
    shows the progress until it is back.
 
+Devices on a battery (laptops) move between networks: their last report may show a network they
+have left, and the same private address (`192.168.1.0/24`) can be another network elsewhere. They
+only send a magic packet when no stationary agent can and they reach the server through the same
+public address as the sleeping device. Every relay needs a report from the last 11 minutes, so its
+networks are current.
+
 The button says why it cannot wake a device (no known network card, no relay in the network). The
 device has to allow it: Wake-on-LAN enabled in the BIOS / UEFI and for the network card (on Windows
 in the adapter's *Power Management* and *Advanced* settings), usually only over a cable. On
 Windows, *Fast Startup* often prevents waking after **Turn off**. It does not cross VLANs or
 routers.
+
+### Ping-only devices
+
+A printer, a NAS or a PC without the agent: **Add device** › **Ping only** with a name, the IPv4
+address, the prefix of its network (`/24`) and optionally the MAC address for Wake-on-LAN.
+
+- An online agent 1.10.0+ in the same network (an interface in that IPv4 network, a report from
+  the last 11 minutes) pings it with every heartbeat (30 s, 1 s timeout). Agents on a battery never
+  ping: in another network the same address may answer for another machine.
+- The agent gets the addresses with its report response and sends the results to
+  `/api/device/pings` (signed like every request). The server takes results only for the devices
+  it gave that agent. An answer is the heartbeat of the ping-only device: online, the round trip
+  time and the agent are shown; no answer for 90 seconds means offline.
+- **Wake** works as for agents: an agent of its network sends the magic packet to its MAC.
+- In the overview it shows as *Ping only*; alerts offer the status only (offline for *n* minutes).
+  Its address and MAC can be changed in the detail.
 
 ### Dashboard
 

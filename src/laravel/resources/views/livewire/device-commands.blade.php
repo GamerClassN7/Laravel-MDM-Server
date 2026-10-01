@@ -11,7 +11,7 @@
 {{-- Polls faster while a command is on its way, so its progress stays current. --}}
 <div class="mt-3" @if ($active->isNotEmpty() || $recentWake?->active) wire:poll.2s @elseif ($hasData) wire:poll.15s @endif>
     <div class="d-flex flex-wrap align-items-center gap-2">
-        @if ($selectedDevice->offline && $hasData)
+        @if ($selectedDevice->offline && ($hasData || $selectedDevice->isPingOnly))
             <button class="btn {{ $wakeRefusal ? 'btn-light' : 'btn-primary' }}" type="button" wire:click="wake" wire:loading.attr="disabled" wire:target="wake"
                 title="{{ $wakeRefusal ?? __('Magic packet sent by :relay', ['relay' => $wakeRelay?->displayName]) }}" @disabled($wakeRefusal || $recentWake?->active)>
                 @if ($recentWake?->active)
@@ -91,7 +91,7 @@
                 · {{ __('waiting for the device to come online…') }}
             @endif
         </div>
-    @elseif ($selectedDevice->offline && $hasData && $wakeRefusal)
+    @elseif ($selectedDevice->offline && ($hasData || $selectedDevice->isPingOnly) && $wakeRefusal)
         <div class="small text-muted mt-2"><i class="fas fa-sun me-1"></i>{{ __('Wake-on-LAN') }}: {{ $wakeRefusal }}</div>
     @endif
 

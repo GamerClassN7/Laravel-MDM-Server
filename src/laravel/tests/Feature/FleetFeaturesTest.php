@@ -31,7 +31,7 @@ class FleetFeaturesTest extends TestCase
 {
     use RefreshDatabase, SignsDeviceRequests;
 
-    private function device(string $token, array $machine = [], bool $online = true, string $version = '1.9.0'): Device
+    private function device(string $token, array $machine = [], bool $online = true, string $version = '1.10.0'): Device
     {
         $device = new Device;
         $device->token = hash('sha256', $token);
@@ -471,6 +471,73 @@ class FleetFeaturesTest extends TestCase
         $this->signedJson('POST', "/api/device/commands/{$command->id}", ['status' => 'succeeded', 'message' => 'Magic packet sent to AA:BB:CC:DD:EE:01'], 'relay')->assertOk();
         $this->assertSame('succeeded', $sleeping->fresh()->recentWake()->status);
         $this->assertSame(0, $elsewhere->commands()->count() + $old->commands()->count());
+    }
+
+    public function test_ping_only_device_is_pinged_by_a_stationary_agent_in_its_network(): void
+    {
+        $user = User::factory()->create();
+        $this->actingAs($user);
+        Livewire::test(ShowDevices::class)
+            ->set('addDevice', true)
+            ->set('addMode', 'ping')
+            ->set('pingName', 'Printer')
+            ->set('pingAddress', '192.168.1.300')
+            ->call('createPingDevice')
+            ->assertHasErrors('pingAddress')
+            ->set('pingAddress', '192.168.1.50')
+            ->set('pingMac', 'aa-bb-cc-dd-ee-50')
+            ->call('createPingDevice')
+            ->assertHasNoErrors();
+        $printer = Device::where('kind', 'ping')->sole();
+        $this->assertSame(['192.168.1.50', 24, 'AA:BB:CC:DD:EE:50'], [$printer->ping_address, $printer->ping_prefix, $printer->ping_mac]);
+        $this->assertTrue($printer->offline, 'Not answered yet');
+        $this->assertSame('ping', $printer->type);
+
+        $laptop = $this->device('laptop', ['Type' => 'laptop', 'Battery' => 80, 'Networks' => [$this->network('192.168.1.7')]]);
+        $old = $this->device('old', ['Networks' => [$this->network('192.168.1.8')]], version: '1.9.0');
+        $this->assertNull($printer->pingRelay(), 'Laptops move between networks, 1.9.0 does not ping');
+
+        $nas = $this->device('nas', ['Networks' => [$this->network('192.168.1.5')]], version: '1.10.0');
+        $this->assertSame($nas->id, $printer->pingRelay()->id);
+        $this->assertSame([['id' => $printer->id, 'address' => '192.168.1.50']], Device::pingTargetsFor($nas));
+        $this->assertSame([], Device::pingTargetsFor($laptop));
+
+        // The report hands the list over, the results make it online.
+        $this->signedJson('POST', '/api/device', ['machine' => ['Hostname' => 'pc-nas', 'Drives' => [], 'AgentVersion' => '1.10.0', 'Networks' => [$this->network('192.168.1.5')]]], 'nas')
+            ->assertJsonPath('ping_targets.0.address', '192.168.1.50');
+        $this->signedJson('POST', '/api/device/pings', ['results' => [['id' => $printer->id, 'up' => true, 'rtt' => 2.4], ['id' => $nas->id, 'up' => true]]], 'nas')
+            ->assertJson(['taken' => 1]);
+        $this->assertFalse($printer->fresh()->offline);
+        $this->assertSame([2.4, $nas->id], [$printer->fresh()->ping_rtt, $printer->fresh()->ping_relay_id]);
+        // Another agent cannot report it.
+        $this->signedJson('POST', '/api/device/pings', ['results' => [['id' => $printer->id, 'up' => true]]], 'laptop')->assertJson(['taken' => 0]);
+
+        // Wake-on-LAN through the same agent, with the MAC that was entered.
+        $printer->forceFill(['last_seen_at' => now()->subHour()])->save();
+        // Any stationary agent 1.9.0+ can wake (not the laptop).
+        $this->assertContains($printer->fresh()->wakeRelay()[0]->id, [$old->id, $nas->id]);
+        $this->assertSame(['AA:BB:CC:DD:EE:50'], $printer->fresh()->wake()->params['macs']);
+        $this->assertSame(0, $laptop->commands()->count());
+        // Only the status alert makes sense for it.
+        $this->app['auth']->forgetGuards();
+        $this->actingAs($user);
+        Livewire::test(DeviceRules::class, ['deviceId' => $printer->id])->assertViewHas('types', fn ($types) => array_keys($types) === ['status']);
+    }
+
+    public function test_a_device_on_a_battery_only_wakes_behind_the_same_public_address(): void
+    {
+        $sleeping = $this->device('pc', ['Networks' => [$this->network('192.168.1.20')]], online: false);
+        $laptop = $this->device('laptop', ['Battery' => 60, 'Networks' => [$this->network('192.168.1.7', 24, 'AA-BB-CC-DD-EE-07', 'wifi')]]);
+        $this->assertNull($sleeping->wakeRelay(), 'The laptop may be in another 192.168.1.0/24');
+
+        Device::query()->whereKey([$sleeping->id, $laptop->id])->update(['public_ip' => '203.0.113.7']);
+        $this->assertSame($laptop->id, $sleeping->fresh()->wakeRelay()[0]->id);
+
+        // A stationary agent wins over the laptop, one with an old report does not count.
+        $desk = $this->device('desk', ['Networks' => [$this->network('192.168.1.9')]]);
+        $this->assertSame($desk->id, $sleeping->fresh()->wakeRelay()[0]->id);
+        $desk->forceFill(['updated_at' => now()->subHour(), 'last_http_at' => now()->subHour()])->saveQuietly();
+        $this->assertSame($laptop->id, $sleeping->fresh()->wakeRelay()[0]->id);
     }
 
     public function test_wake_parameters_are_checked(): void
