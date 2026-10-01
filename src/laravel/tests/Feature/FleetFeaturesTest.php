@@ -735,4 +735,17 @@ class FleetFeaturesTest extends TestCase
         $this->assertFalse($printer->fresh()->offline);
         Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $printer->id])->assertSee('192.168.1.50 answered in 1 ms');
     }
+
+    public function test_a_realtek_card_is_not_a_mobile_network(): void
+    {
+        // Agents before 1.12.1 on Windows matched "LTE" inside "Realtek".
+        $device = $this->device('pc', ['Networks' => [
+            ['Name' => 'Ethernet', 'InterfaceDescription' => 'Realtek Gaming 2.5GbE Family Controller', 'Type' => 'cellular', 'Connected' => true, 'Status' => 'Up', 'Mac' => '58-11-22-A1-59-F0', 'IPAddresses' => ['192.168.1.180']],
+            ['Name' => 'Mobilní připojení', 'InterfaceDescription' => 'Generic Mobile Broadband Adapter', 'Type' => 'cellular', 'Connected' => false, 'Status' => 'Disconnected', 'Mac' => '', 'IPAddresses' => []],
+        ]]);
+        $types = collect($device->networks)->pluck('Type', 'Name')->all();
+        $this->assertSame(['Ethernet' => 'lan', 'Mobilní připojení' => 'cellular'], $types);
+        $this->assertSame('lan', Device::guessNetworkType('Ethernet', 'Realtek PCIe GbE Family Controller'));
+        $this->assertSame(['58:11:22:A1:59:F0'], $device->wakeMacs);
+    }
 }

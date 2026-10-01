@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.12.0'
+$AgentVersion = '1.12.1'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -155,7 +155,7 @@ function Get-MachineInfo {
                     "Type"                 = if ($_.PhysicalMediaType -match '802\.11|Wireless' -or $text -match 'Wi-?Fi|Wireless|WLAN') { 'wifi' }
                                              elseif ($text -match 'VPN|WireGuard|TAP-|OpenVPN|Tailscale|ZeroTier|Fortinet|AnyConnect|GlobalProtect|WAN Miniport') { 'vpn' }
                                              elseif ($text -match 'Bluetooth') { 'bluetooth' }
-                                             elseif ($text -match 'Mobile Broadband|Cellular|WWAN|LTE') { 'cellular' }
+                                             elseif ($text -match 'Mobile Broadband|Cellular|WWAN|\bLTE\b') { 'cellular' }
                                              elseif ($text -match 'Hyper-V|vEthernet|VirtualBox|VMware|Loopback') { 'virtual' }
                                              else { 'lan' }
                     "Mac"                  = $_.MacAddress
