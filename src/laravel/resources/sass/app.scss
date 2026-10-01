@@ -25,13 +25,15 @@
     background-color: var(--bs-secondary-bg);
     color: var(--bs-secondary-color);
 
-    // Centred: a fixed width like fa-fw (wide glyphs such as the laptop overflow a 1em box to the
-    // right), line height 1 inside a heading. As specific as the boilerplate's
-    // .fas:not(.fa-2x):not(.fa-3x), which sets the width otherwise.
+    // Centred in a fixed box like fa-fw: wide glyphs (the laptop) overflow a 1em box to the right,
+    // and the boilerplate's .fas:not(.fa-2x):not(.fa-3x) sets a width and height of its own (this
+    // is as specific); the glyph is centred inside, also in a heading.
     > i:not(.fa-2x):not(.fa-3x) {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         width: 1.25em;
-        text-align: center;
-        line-height: 1;
+        height: 1.25em;
     }
 
     // The type of the device next to its name.
