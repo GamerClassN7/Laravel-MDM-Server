@@ -162,7 +162,7 @@ class ShowDevices extends Component
             'flags' => $flags,
             'attention' => $device->offline || collect($flags)->contains(fn ($flag) => in_array($flag['severity'], ['danger', 'warning'], true)),
             'ip' => $addresses,
-            'searchText' => mb_strtolower(implode(' ', [$device->displayName, $device->name, $device->os, $addresses, implode(' ', $device->tagList)])),
+            'searchText' => mb_strtolower(implode(' ', [$device->displayName, $device->name, $device->os, $addresses, implode(' ', $device->publicAddresses), implode(' ', $device->tagList)])),
         ];
     }
 

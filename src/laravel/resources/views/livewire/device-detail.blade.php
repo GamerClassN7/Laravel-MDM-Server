@@ -69,6 +69,9 @@
                                 <span title="{{ __('Uptime') }}"><i class="far fa-clock me-1"></i>{{ $selectedDevice->NiceUptime }}</span>
                             @endif
                         @endif
+                        @if ($publicAddresses = $selectedDevice->publicAddresses)
+                            <span title="{{ __('Public address') }}: {{ implode(', ', $publicAddresses) }}"><i class="fas fa-globe me-1"></i><span class="font-monospace">{{ $publicAddresses[0] }}</span>@if (count($publicAddresses) > 1) <span class="text-body-tertiary">+{{ count($publicAddresses) - 1 }}</span>@endif</span>
+                        @endif
                         @if (!empty($selectedDevice->data->machine->Processor))
                             <span><i class="fas fa-microchip me-1"></i>{{ $selectedDevice->data->machine->Processor }} ({{ __(':count cores', ['count' => $selectedDevice->data->machine->Cores ?? '?']) }})</span>
                         @endif
@@ -363,6 +366,16 @@
             @if (count($selectedDevice->networks) > 0)
                 <div aria-labelledby="networks-tab" class="tab-pane fade {{ $activeTab === 'networks' ? 'show active' : '' }}" id="networks-tab-pane" role="tabpanel" tabindex="0">
                     <ul class="list-group">
+                        @if (\App\Models\Device::isPublicIp($selectedDevice->public_ip))
+                            <li class="list-group-item d-flex align-items-start gap-3">
+                                <span class="icon-tile bg-primary-subtle text-primary-emphasis"><i class="fas fa-globe"></i></span>
+                                <div class="flex-grow-1 min-w-0">
+                                    <div class="fw-semibold">{{ __('Public address') }}</div>
+                                    <div class="small text-muted">{{ __('The address the device reaches the server from, behind NAT the one of its router.') }}</div>
+                                    <div class="small font-monospace">{{ $selectedDevice->public_ip }}</div>
+                                </div>
+                            </li>
+                        @endif
                         @foreach ($selectedDevice->networks as $network)
                             @php $type = \App\Models\Device::NETWORK_TYPES[$network['Type']]; @endphp
                             <li class="list-group-item d-flex align-items-start gap-3 {{ $network['Connected'] ? '' : 'text-body-secondary' }}" wire:key="network-{{ $loop->index }}">
@@ -381,7 +394,12 @@
                                         <div class="small text-muted text-break">{{ $network['Description'] }}</div>
                                     @endif
                                     @foreach ($network['IPAddresses'] as $ipAddress)
-                                        <div class="small text-muted font-monospace">{{ $ipAddress }}</div>
+                                        <div class="small text-muted">
+                                            <span class="font-monospace">{{ $ipAddress }}</span>
+                                            @if (\App\Models\Device::isPublicIp($ipAddress))
+                                                <x-badge class="ms-1" color="primary" size="sm" variant="subtle" title="{{ __('Reachable from the internet') }}">{{ __('Public') }}</x-badge>
+                                            @endif
+                                        </div>
                                     @endforeach
                                     @if ($network['Mac'])
                                         <div class="small text-body-tertiary font-monospace" title="{{ __('MAC address') }}">{{ $network['Mac'] }}</div>
