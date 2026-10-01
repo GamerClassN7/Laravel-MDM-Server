@@ -8,14 +8,14 @@
     $peak = max(1, (float) $max * 1.15);
     $step = 10 ** floor(log10($peak));
     $top = collect([1, 2, 5, 10])->map(fn ($m) => $m * $step)->first(fn ($v) => $v >= $peak);
-    $subtitle = ($relay ? e(__('Every 30 s by :relay', ['relay' => $relay->displayName])) : e(__('No agent pings it: it needs an online agent 1.10.0+ in the same network that does not run on a battery.')))
+    $subtitle = ($relay ? e(__('Every 30 s by :relay', ['relay' => $relay->displayName])) : '<span title="'.e(__('It needs an online agent 1.10.0+ in the same network that does not run on a battery.')).'">'.e(__('No agents available to send ping')).'</span>')
         .($device->ping_mac ? ' · MAC <span class="font-monospace">'.e($device->ping_mac).'</span>' : '');
 @endphp
 {{-- Uptime Kuma style monitor of a ping-only device, laid out like the performance of an agent. --}}
 <div class="mt-4">
     @include('partials.chart-section-header', [
         'icon' => 'fas fa-network-wired',
-        'tile' => $device->offline ? 'bg-secondary-subtle' : 'bg-success-subtle text-success-emphasis',
+        'tile' => 'bg-success-subtle text-success-emphasis',
         'title' => e(__('Ping')).' · <span class="font-monospace">'.e($device->ping_address).'</span>',
         'subtitle' => $subtitle,
         'ranges' => array_keys(\App\Livewire\PingMonitor::RANGES),
