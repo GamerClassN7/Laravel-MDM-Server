@@ -15,6 +15,7 @@ class DeviceMetrics extends Component
         '1h' => [3600, 60],
         '24h' => [86400, 96],
         '7d' => [604800, 84],
+        '30d' => [2592000, 90],
     ];
 
     public $selectedDeviceId;
@@ -50,17 +51,29 @@ class DeviceMetrics extends Component
         $start = $end->subSeconds($length);
 
         $sums = [];
-        DeviceMetric::query()
-            ->where('device_id', $this->selectedDeviceId)
-            ->where('created_at', '>=', $start)
-            ->orderBy('created_at')
-            ->toBase()
-            ->lazy()
-            ->each(function ($row) use (&$sums, $start, $bucket, $points) {
-                $index = min($points - 1, intdiv(CarbonImmutable::parse($row->created_at)->getTimestamp() - $start->getTimestamp(), $bucket));
-                $sums[$index]['cpu'][] = (float) $row->cpu;
-                $sums[$index]['memory'][] = $row->memory_total > 0 ? $row->memory_used / $row->memory_total * 100 : 0;
-            });
+        $query = DeviceMetric::query()->where('device_id', $this->selectedDeviceId);
+        if ($length > 86400) {
+            // Up to 30 days of samples every 30 s: averaged by the database, one interval at a time
+            // (portable, each one an index range).
+            for ($i = 0; $i < $points; $i++) {
+                $row = (clone $query)->where('created_at', '>=', $start->addSeconds($i * $bucket))->where('created_at', '<', $start->addSeconds(($i + 1) * $bucket))
+                    ->toBase()->selectRaw('avg(cpu) as cpu, avg(case when memory_total > 0 then 100.0 * memory_used / memory_total else 0 end) as memory, count(*) as samples')->first();
+                if ($row && $row->samples > 0) {
+                    $sums[$i] = ['cpu' => [(float) $row->cpu], 'memory' => [(float) $row->memory]];
+                }
+            }
+        } else {
+            (clone $query)
+                ->where('created_at', '>=', $start)
+                ->orderBy('created_at')
+                ->toBase()
+                ->lazy()
+                ->each(function ($row) use (&$sums, $start, $bucket, $points) {
+                    $index = min($points - 1, intdiv(CarbonImmutable::parse($row->created_at)->getTimestamp() - $start->getTimestamp(), $bucket));
+                    $sums[$index]['cpu'][] = (float) $row->cpu;
+                    $sums[$index]['memory'][] = $row->memory_total > 0 ? $row->memory_used / $row->memory_total * 100 : 0;
+                });
+        }
 
         $format = $length >= 86400 ? 'd.m. H:i' : 'H:i';
         $cpu = $memory = $labels = [];

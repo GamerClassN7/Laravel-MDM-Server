@@ -8,8 +8,8 @@ use Livewire\Attributes\On;
 use Livewire\Component;
 
 /**
- * The monitor of a ping-only device, in the style of Uptime Kuma: the last checks as a bar, the
- * uptime and the response time over the chosen range.
+ * The ping of a ping-only device on its detail: the response time and the uptime over the chosen
+ * range (the bar of the last checks is <x-ping-status>).
  */
 class PingMonitor extends Component
 {
@@ -19,7 +19,7 @@ class PingMonitor extends Component
 
     public const RANGES = ['1h' => 1, '24h' => 24, '7d' => 168, '30d' => 720];
 
-    /** Checks in the bar (every 30 s: the last 25 minutes). */
+    /** Checks in the bar of <x-ping-status> (every 30 s: the last 25 minutes). */
     public const BEATS = 50;
 
     /** Points of the response time chart. */
@@ -45,8 +45,6 @@ class PingMonitor extends Component
         $hours = self::RANGES[$this->range];
         $since = now()->subHours($hours);
 
-        $beats = PingResult::query()->where('device_id', $device->id)->latest('id')->limit(self::BEATS)->get()->reverse()->values();
-
         // Response time: the average of each bucket, and whether a ping went unanswered in it.
         $bucketSeconds = $hours * 3600 / self::BUCKETS;
         $buckets = array_fill(0, self::BUCKETS, ['sum' => 0.0, 'count' => 0, 'down' => false]);
@@ -67,10 +65,13 @@ class PingMonitor extends Component
         $points = array_map(fn ($bucket) => $bucket['count'] > 0 ? round($bucket['sum'] / $bucket['count'], 1) : null, $buckets);
         $answered = PingResult::query()->where('device_id', $device->id)->where('created_at', '>=', $since)->where('up', true);
 
+        $format = $hours <= 24 ? 'H:i' : 'j. n. H:i';
+        $labels = array_map(fn ($i) => $since->copy()->addSeconds((int) (($i + 1) * $bucketSeconds))->format($format), range(0, self::BUCKETS - 1));
+
         return view('livewire.ping-monitor', [
+            'labels' => $labels,
             'device' => $device,
             'relay' => $device->pingRelay(),
-            'beats' => $beats,
             'points' => $points,
             'downs' => array_map(fn ($bucket) => $bucket['down'], $buckets),
             'max' => max(1, (float) max(array_filter($points, fn ($point) => $point !== null) ?: [1])),
@@ -78,8 +79,7 @@ class PingMonitor extends Component
             'stats' => [
                 'current' => $device->offline ? null : $device->ping_rtt,
                 'average' => ($average = (clone $answered)->avg('rtt')) === null ? null : round((float) $average, 1),
-                'uptime24' => PingResult::uptime($device->id, now()->subDay()),
-                'uptime30' => PingResult::uptime($device->id, now()->subDays(30)),
+                'uptime' => PingResult::uptime($device->id, $since),
             ],
         ]);
     }

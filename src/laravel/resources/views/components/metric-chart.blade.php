@@ -8,13 +8,24 @@
     'subtitle' => null,
     'color' => 'var(--bs-primary)',
     'unit' => '%',
+    // The value at the top of the chart (100 for percentages).
+    'max' => 100,
+    // Per point: true marks it (e.g. a ping without an answer), shaded red.
+    'marks' => [],
 ])
 
 @php
-    // Values are percentages (0-100); null means no data for that point.
+    // Values from 0 to $max; null means no data for that point.
+    $max = max((float) $max, 0.001);
     $count = max(count($values), 2);
     $x = fn ($i) => round($i / ($count - 1) * 300, 2);
-    $y = fn ($v) => round(100 - max(0, min(100, $v)), 2);
+    $y = fn ($v) => round(100 - max(0, min(100, $v / $max * 100)), 2);
+    $gridLabel = function ($grid) use ($max, $unit) {
+        $value = number_format($max * $grid / 100, $max >= 20 ? 0 : 1, '.', '');
+        $value = str_contains($value, '.') ? rtrim(rtrim($value, '0'), '.') : $value;
+
+        return $value.($unit === '%' ? '%' : ' '.$unit);
+    };
 
     $segments = [];
     $run = [];
@@ -41,15 +52,20 @@
             @endif
         </div>
 
-        <div class="position-relative" style="padding-right: 2.25rem;">
+        <div class="position-relative" style="padding-right: 2.75rem;">
         @foreach ([75, 50, 25] as $grid)
-            <small class="position-absolute end-0 text-body-secondary lh-1" style="top: calc({{ 100 - $grid }}% - 0.35rem); font-size: 0.65rem;">{{ $grid }}{{ $unit }}</small>
+            <small class="position-absolute end-0 text-body-secondary lh-1" style="top: calc({{ 100 - $grid }}% - 0.35rem); font-size: 0.65rem;">{{ $gridLabel($grid) }}</small>
         @endforeach
         <svg class="w-100 d-block" height="110" preserveAspectRatio="none" role="img" viewBox="0 0 300 100" aria-label="{{ $title }}" style="overflow: visible;">
             @foreach ([25, 50, 75] as $grid)
                 <line stroke="var(--bs-border-color)" stroke-dasharray="2 3" stroke-width="1" vector-effect="non-scaling-stroke" x1="0" x2="300" y1="{{ 100 - $grid }}" y2="{{ 100 - $grid }}" />
             @endforeach
             <line stroke="var(--bs-border-color)" stroke-width="1" vector-effect="non-scaling-stroke" x1="0" x2="300" y1="100" y2="100" />
+            @foreach ($marks as $i => $mark)
+                @if ($mark)
+                    <rect fill="var(--bs-danger)" fill-opacity="0.15" height="100" width="{{ round(300 / $count, 2) }}" x="{{ max(0, $x($i) - 150 / $count) }}" y="0" />
+                @endif
+            @endforeach
 
             @foreach ($segments as $segment)
                 @php
@@ -72,7 +88,7 @@
         </svg>
         </div>
 
-        <div class="d-flex justify-content-between text-muted small mt-1" style="padding-right: 2.25rem;">
+        <div class="d-flex justify-content-between text-muted small mt-1" style="padding-right: 2.75rem;">
             <span>{{ $from ?? ($labels[0] ?? '') }}</span>
             <span>{{ $to ?? (end($labels) ?: '') }}</span>
         </div>

@@ -1,15 +1,11 @@
 <div class="mt-4">
-    <div class="d-flex justify-content-between align-items-center mb-2">
-        <h5 class="mb-0">{{ __('Performance') }}</h5>
-        {{-- Boilerplate segmented switch. --}}
-        <ul class="nav nav-switch" role="tablist">
-            @foreach (array_keys(\App\Livewire\DeviceMetrics::RANGES) as $option)
-                <li class="nav-item">
-                    <button class="nav-link {{ $range === $option ? 'active' : '' }}" type="button" wire:click="setRange('{{ $option }}')">{{ $option }}</button>
-                </li>
-            @endforeach
-        </ul>
-    </div>
+    @include('partials.chart-section-header', [
+        'icon' => 'fas fa-chart-line',
+        'title' => e(__('Performance')),
+        'subtitle' => e($latest ? __('Every 30 s by the agent, last :time', ['time' => $latest->created_at->diffForHumans()]) : __('No data yet: the agent sends it every 30 s')),
+        'ranges' => array_keys(\App\Livewire\DeviceMetrics::RANGES),
+        'range' => $range,
+    ])
 
     <div class="row g-3">
         <div class="col-12 col-md-6">

@@ -1,53 +1,20 @@
 @php
     $hasData = ! empty($selectedDevice->data);
-    // Installing the updates is the button (primary when there are some); the other commands are
-    // in the menu.
-    $buttons = [
-        'doUpdates' => ['icon' => 'fas fa-sync', 'label' => $pendingUpdates > 0 ? trans_choice('Install :count update|Install :count updates', $pendingUpdates, ['count' => $pendingUpdates]) : __('Install updates'), 'confirm' => null, 'primary' => $pendingUpdates > 0],
-    ];
+    // All commands are in the menu (the alerts above offer Install all and Restart when needed).
     $menuCommands = [
+        'doUpdates' => ['icon' => 'fas fa-sync', 'label' => $pendingUpdates > 0 ? trans_choice('Install :count update|Install :count updates', $pendingUpdates, ['count' => $pendingUpdates]) : __('Install updates'), 'confirm' => null],
         // Collects updates, packages and disk health again now instead of on the next schedule.
         'sync' => ['icon' => 'fas fa-cloud-download-alt', 'label' => __('Sync'), 'confirm' => null, 'title' => __('Collect all data on the device again now and report it')],
         'restart' => ['icon' => 'fas fa-redo', 'label' => __('Restart'), 'confirm' => __('Restart :device now? Unsaved work of its users is lost.', ['device' => $selectedDevice->displayName])],
         'turnOff' => ['icon' => 'fas fa-power-off', 'label' => __('Turn off'), 'confirm' => __('Turn off :device? It can only be started again on site (or with Wake-on-LAN).', ['device' => $selectedDevice->displayName])],
     ];
+    $canWake = $selectedDevice->offline && ($hasData || $selectedDevice->isPingOnly);
 @endphp
-{{-- Reloads when the device reports (live updates over Reverb), e.g. the progress of a command. --}}
-<div class="mt-3">
-    <div class="d-flex flex-wrap align-items-center gap-2">
-        @if ($selectedDevice->offline && ($hasData || $selectedDevice->isPingOnly))
-            <button class="btn {{ $wakeRefusal ? 'btn-light' : 'btn-primary' }}" type="button" wire:click="wake" wire:loading.attr="disabled" wire:target="wake"
-                title="{{ $wakeRefusal ?? __('Magic packet sent by :relay', ['relay' => $wakeRelay?->displayName]) }}" @disabled($wakeRefusal || $recentWake?->active)>
-                @if ($recentWake?->active)
-                    <span aria-hidden="true" class="spinner-border spinner-border-sm me-2" role="status"></span>
-                @else
-                    <i class="fas fa-sun me-2"></i>
-                @endif
-                {{ __('Wake') }}
-            </button>
-        @elseif ($hasData)
-            @foreach ($buttons as $command => $button)
-                @php
-                    $running = \App\Models\Device::findActive($active, $command);
-                    $refusal = $selectedDevice->commandRefusal($command);
-                @endphp
-                <button class="btn {{ $button['primary'] && ! $running ? 'btn-primary' : 'btn-light' }}" type="button"
-                    wire:click="sendCommandToDevice('{{ $command }}')"
-                    wire:loading.attr="disabled" wire:target="sendCommandToDevice('{{ $command }}')"
-                    @if ($button['confirm']) wire:confirm="{{ $button['confirm'] }}" @endif
-                    @if ($running) title="{{ $running->label }}: {{ $running->statusLabel }}" @elseif ($refusal) title="{{ $refusal }}" @elseif ($button['title'] ?? null) title="{{ $button['title'] }}" @endif
-                    @disabled($running || $refusal)>
-                    @if ($running && $running->command === $command)
-                        <span aria-hidden="true" class="spinner-border spinner-border-sm me-2" role="status"></span>
-                    @else
-                        <i class="{{ $button['icon'] }} me-2"></i>
-                    @endif
-                    {{ $button['label'] }}
-                </button>
-            @endforeach
-        @endif
-
-        <button class="btn btn-light btn-sq ms-auto" type="button" title="{{ __('Alerts') }}" aria-label="{{ __('Alerts') }}"
+{{-- Reloads when the device reports (live updates over Reverb), e.g. the progress of a command.
+     The bell and the menu sit in the top right corner of the device card (position-relative). --}}
+<div>
+    <div class="position-absolute top-0 end-0 p-3 d-flex align-items-center gap-2">
+        <button class="btn btn-light btn-sq" type="button" title="{{ __('Alerts') }}" aria-label="{{ __('Alerts') }}"
             x-on:click="Livewire.dispatch('openModal', {livewireComponents: 'notifications.device-rules', title: @js(__('Alerts for :device', ['device' => $selectedDevice->displayName])), parameters: {deviceId: {{ $selectedDevice->id }}}})">
             <i class="far fa-bell"></i>
         </button>
@@ -76,7 +43,21 @@
                         </button>
                     </li>
                 @endif
-                @if ($hasData)
+                @if ($canWake)
+                    <li><hr class="dropdown-divider"></li>
+                    <li>
+                        <button class="dropdown-item d-flex align-items-center" type="button" wire:click="wake"
+                            title="{{ $wakeRefusal ?? __('Magic packet sent by :relay', ['relay' => $wakeRelay?->displayName]) }}" @disabled($wakeRefusal || $recentWake?->active)>
+                            @if ($recentWake?->active)
+                                <span aria-hidden="true" class="dropdown-ico spinner-border spinner-border-sm"></span>
+                            @else
+                                <i class="dropdown-ico fas fa-sun fa-fw"></i>
+                            @endif
+                            {{ __('Wake') }}
+                        </button>
+                    </li>
+                @endif
+                @if ($hasData && ! $selectedDevice->offline)
                     <li><hr class="dropdown-divider"></li>
                     @foreach ($menuCommands as $command => $item)
                         @php
