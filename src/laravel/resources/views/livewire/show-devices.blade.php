@@ -111,7 +111,12 @@
                                     <span class="device-dot mt-2 {{ $item->offline ? 'is-offline' : 'is-online' }}" title="{{ $item->offline ? __('Offline') : __('Online') }}"></span>
                                     <span class="min-w-0 flex-grow-1">
                                         <span class="d-block text-truncate fw-medium"><i class="{{ $item->typeIcon }} fa-fw me-1 opacity-75"></i>{{ $item->displayName }}</span>
-                                        <x-tags class="mt-1" :tags="$item->tagList" />
+                                        @if ($item->tagList !== [])
+                                            <x-tags class="mt-1" :tags="$item->tagList" />
+                                        @else
+                                            {{-- Same height as a row with tags. --}}
+                                            <span aria-hidden="true" class="mdm-tags mt-1 invisible"><x-tag tag="-" /></span>
+                                        @endif
                                     </span>
                                     @if ($row['attention'] && ! $item->offline)
                                         <i class="fas fa-exclamation-circle text-warning mt-1" title="{{ collect($row['flags'])->pluck('label')->implode(', ') }}"></i>
