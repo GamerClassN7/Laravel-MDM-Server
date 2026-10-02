@@ -474,6 +474,7 @@ open the portal with (remembered in `storage/app/portal-url`; not localhost, and
   | Disk health | a disk reports a S.M.A.R.T. warning or failure |
   | Services | a service failed, or a container is unhealthy, dead or restarting |
   | Remediations | the latest run of a remediation script failed |
+  | New device | a device is enrolled with the agent or added as ping-only (once each, nothing to resolve; sent with its name, system and agent version after its first report, at the latest 10 minutes after enrolment) |
 
   Disk and memory switch between **%** and **GB**: a percentage suits drives of the same size, a
   size suits the big ones (10 % of 4 TB are still 400 GB) and memory of different machines. GB are

@@ -143,26 +143,12 @@
         </div>
     </div>
 
-    @if ($recentWake?->active)
-        {{-- Like the other commands: a progress bar until the device comes online (agents 1.13.2+). --}}
-        <div class="mt-3">
-            @include('partials.device.command-progress', [
-                'command' => $recentWake,
-                'note' => in_array($recentWake->status, ['queued', 'sent'], true)
-                    ? __('waiting for :relay to send the magic packet', ['relay' => $recentWake->device?->displayName])
-                    : ($recentWake->displayMessage ?: __('Magic packet sent by :relay, waiting for the device to come online', ['relay' => $recentWake->device?->displayName])),
-            ])
-        </div>
-    @elseif ($recentWake?->status === 'succeeded')
-        {{-- Agents before 1.13.2 are done once the packet is out. --}}
-        <div class="small text-muted mt-2">
-            <i class="fas fa-sun me-1"></i>{{ __('Magic packet sent by :relay', ['relay' => $recentWake->device?->displayName]) }} · {{ __('waiting for the device to come online…') }}
-        </div>
-    @elseif (! $recentWake && $selectedDevice->offline && ($hasData || $selectedDevice->isPingOnly) && $wakeRefusal)
+    @if (! $recentWake && $selectedDevice->offline && ($hasData || $selectedDevice->isPingOnly) && $wakeRefusal)
         <div class="small text-muted mt-2"><i class="fas fa-sun me-1"></i>{{ __('Wake-on-LAN') }}: {{ $wakeRefusal }}</div>
     @endif
 
-    @if ($recentPing)
+    {{-- The result of the last Sync (ping now); while it runs it is with the commands below. --}}
+    @if ($recentPing && ! $recentPing->active)
         <div class="small mt-2 {{ in_array($recentPing->status, ['failed', 'expired'], true) ? 'text-danger' : 'text-muted' }}">
             <i class="fas fa-network-wired me-1"></i>{{ __('Ping through :relay', ['relay' => $recentPing->device?->displayName]) }}:
             {{ in_array($recentPing->status, ['queued', 'sent'], true) ? __('waiting for :relay', ['relay' => $recentPing->device?->displayName]) : ($recentPing->displayMessage ?: $recentPing->statusLabel) }}
@@ -173,12 +159,28 @@
         <div class="small text-danger mt-2">{{ $message }}</div>
     @enderror
 
-    @if ($active->isNotEmpty())
+    @if ($onItsWay->isNotEmpty())
+        {{-- The device's commands on their way, and the wakes / pings other agents do for it (like a restart, with a progress bar). --}}
         <div class="vstack gap-2 mt-3">
-            @foreach ($active as $command)
+            @foreach ($onItsWay as $command)
+                @php
+                    $relay = $command->device_id !== $selectedDevice->id ? $command->device?->displayName : null;
+                    $note = match (true) {
+                        $relay === null => null,
+                        in_array($command->status, ['queued', 'sent'], true) => $command->command === 'wake'
+                            ? __('waiting for :relay to send the magic packet', ['relay' => $relay])
+                            : __('waiting for :relay', ['relay' => $relay]),
+                        // Sent (agents before 1.13.2 are done then): the device is waited for; the
+                        // interface and addresses are in the history.
+                        $command->command === 'wake' => __('Magic packet sent by :relay, waiting for the device to come online', ['relay' => $relay]),
+                        default => __('through :relay', ['relay' => $relay]),
+                    };
+                @endphp
                 <div class="d-flex align-items-center gap-2" wire:key="active-command-{{ $command->id }}">
-                    <div class="flex-grow-1 min-w-0">@include('partials.device.command-progress', ['command' => $command])</div>
-                    @if ($command->status === 'queued')
+                    <div class="flex-grow-1 min-w-0">@include('partials.device.command-progress', ['command' => $command, 'note' => $note])</div>
+                    @if (! $command->active)
+                        {{-- A wake of an agent before 1.13.2: done on its side, the device is waited for. --}}
+                    @elseif ($command->status === 'queued')
                         <button class="btn btn-sm btn-link text-body-secondary p-0" title="{{ __('Cancel') }}" type="button" wire:click="cancel({{ $command->id }})">
                             <i class="fas fa-times"></i>
                         </button>

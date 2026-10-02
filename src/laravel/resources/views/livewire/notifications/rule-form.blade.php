@@ -83,11 +83,18 @@
             @endif
         </div>
 
-        <div>
-            <div class="small fw-medium text-muted mb-2">{{ __('On') }}</div>
-            @include('partials.target-picker')
-            @error('target') <div class="small text-danger mt-1">{{ $message }}</div> @enderror
-        </div>
+        @if (\App\Models\AlertRule::isEvent($type))
+            <div>
+                <div class="small fw-medium text-muted mb-2">{{ __('On') }}</div>
+                <div class="small text-body-secondary"><i class="fas fa-globe me-1"></i>{{ __('Every device enrolled with the agent or added as ping-only from now on, once each.') }}</div>
+            </div>
+        @else
+            <div>
+                <div class="small fw-medium text-muted mb-2">{{ __('On') }}</div>
+                @include('partials.target-picker')
+                @error('target') <div class="small text-danger mt-1">{{ $message }}</div> @enderror
+            </div>
+        @endif
 
         <div>
             <div class="small fw-medium text-muted mb-2">{{ __('Send to') }}</div>

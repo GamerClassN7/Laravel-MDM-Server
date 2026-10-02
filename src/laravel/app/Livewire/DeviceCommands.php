@@ -52,7 +52,11 @@ class DeviceCommands extends Component
      */
     public function cancel(int $commandId)
     {
-        $command = DeviceCommand::query()->whereKey($commandId)->where('device_id', $this->selectedDeviceId)->active()->first();
+        // Its own commands, and the wakes / pings another agent does for it.
+        $command = DeviceCommand::query()->whereKey($commandId)->active()
+            ->where(fn ($query) => $query->where('device_id', $this->selectedDeviceId)
+                ->orWhereIn('target', ['device:'.$this->selectedDeviceId, 'ping:'.$this->selectedDeviceId]))
+            ->first();
         if ($command === null) {
             return;
         }
@@ -85,15 +89,24 @@ class DeviceCommands extends Component
             return '<div></div>';
         }
         $active = $device->activeCommands();
+        $recentWake = $device->offline ? $device->recentWake() : null;
+        $recentPing = $device->isPingOnly ? $device->recentPingNow() : null;
+        // With the device's own commands: a wake or ping another agent does for it, and a wake an
+        // agent before 1.13.2 finished on its side while the device is still waited for.
+        $onItsWay = $active->concat(array_filter([
+            $recentWake && ($recentWake->active || $recentWake->status === 'succeeded') ? $recentWake : null,
+            $recentPing?->active ? $recentPing : null,
+        ]));
 
         return view('livewire.device-commands', [
             'selectedDevice' => $device,
             'active' => $active,
+            'onItsWay' => $onItsWay,
             'wakeRefusal' => $device->wakeRefusal(),
             'wakeRelay' => $device->offline ? $device->wakeRelay()[0] ?? null : null,
-            'recentWake' => $device->offline ? $device->recentWake() : null,
+            'recentWake' => $recentWake,
             'pingNowRefusal' => $device->isPingOnly ? $device->pingNowRefusal() : null,
-            'recentPing' => $device->isPingOnly ? $device->recentPingNow() : null,
+            'recentPing' => $recentPing,
             'pendingUpdates' => count($device->installableUpdates) + count($device->apps_packages_updates) + count($device->moduleUpdates),
         ]);
     }

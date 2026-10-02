@@ -76,7 +76,9 @@ class RuleForm extends Component
             'limitGb' => [$gb ? 'required' : 'nullable', 'numeric', 'min:0.1', 'max:'.AlertRule::MAX_LIMIT_GB],
             'minutes' => [AlertRule::usesMinutes($this->type) ? 'required' : 'nullable', 'integer', 'min:1', 'max:'.AlertRule::MAX_MINUTES],
         ]);
-        if ($this->targetIsEmpty()) {
+        // New device: about the whole fleet, there is nothing to target.
+        $event = AlertRule::isEvent($this->type);
+        if (! $event && $this->targetIsEmpty()) {
             $this->addError('target', __('Choose the devices.'));
 
             return;
@@ -96,7 +98,7 @@ class RuleForm extends Component
             'unit' => $gb ? 'gb' : 'percent',
             'limit_gb' => $gb ? round((float) $this->limitGb, 1) : null,
             'minutes' => AlertRule::usesMinutes($this->type) ? $this->minutes : null,
-            'target' => $this->target(),
+            'target' => $event ? ['all' => true] : $this->target(),
             // All channels (also ones added later) unless some are left out.
             'channels' => count($channels) === count($options) ? null : $channels,
         ]);
@@ -130,7 +132,7 @@ class RuleForm extends Component
      */
     private function preview(): ?array
     {
-        if ($this->targetIsEmpty() || ! isset(AlertRule::TYPES[$this->type])) {
+        if ($this->targetIsEmpty() || ! isset(AlertRule::TYPES[$this->type]) || AlertRule::isEvent($this->type)) {
             return null;
         }
         $gb = AlertRule::usesUnit($this->type) && $this->unit === 'gb';

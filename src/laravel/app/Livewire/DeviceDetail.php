@@ -121,7 +121,10 @@ class DeviceDetail extends Component
         return view('livewire.device-detail', [
             'selectedDevice' => $device,
             'activeCommands' => $device->activeCommands(),
-            'history' => $device->commands()->with('issuer')->latest('id')->limit(25)->get(),
+            // Its own commands and the wakes / pings other agents did for it.
+            'history' => \App\Models\DeviceCommand::query()->with(['issuer', 'device'])
+                ->where(fn ($query) => $query->where('device_id', $device->id)->orWhereIn('target', ['device:'.$device->id, 'ping:'.$device->id]))
+                ->latest('id')->limit(25)->get(),
         ]);
     }
 }
