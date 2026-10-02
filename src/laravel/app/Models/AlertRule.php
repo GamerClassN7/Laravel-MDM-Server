@@ -12,7 +12,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * tags, picked devices). Status: offline for minutes; CPU / memory: the average over minutes
  * above the threshold (memory also: free GB below limit_gb); disk: a drive fuller than the
  * threshold, or with less than limit_gb free; disk health, services and
- * scripts: a problem reported by the device. New device: one is enrolled or added (an event).
+ * scripts: a problem reported by the device. New device: one is enrolled or added;
+ * unknown device: an agent sees one the portal does not know in its network (events).
  */
 class AlertRule extends Model
 {
@@ -26,6 +27,7 @@ class AlertRule extends Model
         'scripts' => ['label' => 'Remediations', 'icon' => 'fas fa-scroll', 'threshold' => null, 'minutes' => null, 'description' => 'The latest run of a remediation script failed'],
         // An event, not a state: sent once per device, nothing is resolved.
         'new_device' => ['label' => 'New device', 'icon' => 'fas fa-plus-circle', 'threshold' => null, 'minutes' => null, 'description' => 'A device is enrolled or added', 'event' => true],
+        'unknown_device' => ['label' => 'Unknown device', 'icon' => 'fas fa-question-circle', 'threshold' => null, 'minutes' => null, 'description' => 'An agent sees a device the portal does not know in its network', 'event' => true],
     ];
 
     /** Types about the fleet, not about one device's state (no per-device switch, no target). */

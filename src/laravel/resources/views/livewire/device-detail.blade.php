@@ -650,6 +650,22 @@
                                 <span class="small text-body-secondary">{{ __('Remediation scripts') }}</span>
                                 <x-badge :color="$selectedDevice->scriptsEnabled ? 'success' : 'secondary'" size="sm" variant="subtle">{{ $selectedDevice->scriptsEnabled ? __('Allowed') : __('Disabled on the device') }}</x-badge>
                             </div>
+                            <div class="{{ $row }}" title="{{ __('network_discovery in config.json on the device: off, neighbours (its ARP table) or scan (also scans of its networks on request)') }}">
+                                <span class="small text-body-secondary">{{ __('Network discovery') }}</span>
+                                @switch ($selectedDevice->networkDiscovery)
+                                    @case('scan')
+                                        <x-badge color="success" size="sm" variant="subtle">{{ __('ARP table and scans') }}</x-badge>
+                                        @break
+                                    @case('neighbours')
+                                        <x-badge color="success" size="sm" variant="subtle">{{ __('ARP table') }}</x-badge>
+                                        @break
+                                    @case('off')
+                                        <x-badge color="secondary" size="sm" variant="subtle">{{ __('Disabled on the device') }}</x-badge>
+                                        @break
+                                    @default
+                                        <x-badge color="secondary" size="sm" variant="subtle">{{ __('Needs :version', ['version' => \App\Models\Device::NETWORK_DISCOVERY_VERSION]) }}</x-badge>
+                                @endswitch
+                            </div>
                         </div>
                     </div>
 

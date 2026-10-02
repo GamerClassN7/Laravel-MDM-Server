@@ -48,9 +48,13 @@ A ping-only device (a printer, a NAS without the agent): an agent in its network
 
 ![Ping-only device](docs/screenshots/ping.png)
 
-Networks: a map of the fleet from what the agents report, top down the internet, the public addresses, their gateways, the networks (LAN, Wi-Fi, VPN) and the devices, with this server where it is:
+Networks: a map of the fleet from what the agents report, top down the internet, the public addresses, their gateways, the networks (LAN, Wi-Fi, VPN) and the devices, with this server where it is. Devices the agents see that the portal does not know are dashed:
 
 ![Networks](docs/screenshots/networks.png)
+
+Every network lists its unknown devices (add one as ping-only or ignore it) and scans through an agent that allows it:
+
+![Network discovery](docs/screenshots/network-discovery.png)
 
 Notifications: firing alerts, rules and channels (ntfy, Discord, Telegram, e-mail, …):
 
@@ -433,7 +437,8 @@ Security:
     Windows go through the DNS Client service. The signature is what keeps foreign code out.
     The isolation keeps scripts from downloading or sending anything.
 - **Local switch:** `-DisableScripts` (`-EnableScripts` to allow them again, or `scripts_enabled`
-  in `config.json`) turns scripts off on the device. The server cannot change it.
+  in `config.json`) turns scripts off on the device. The server cannot change it. Likewise
+  `-NetworkDiscovery off|neighbours|scan` ([Network discovery](#network-discovery)).
 - **Audit:** creating, changing, removing and running a script (with its fingerprint and devices)
   is written to the audit log.
 
@@ -480,6 +485,7 @@ open the portal with (remembered in `storage/app/portal-url`; not localhost, and
   | Services | a service failed, or a container is unhealthy, dead or restarting |
   | Remediations | the latest run of a remediation script failed |
   | New device | a device is enrolled with the agent or added as ping-only (once each, nothing to resolve; sent with its name, system and agent version after its first report, at the latest 10 minutes after enrolment) |
+  | Unknown device | an agent sees a device the portal does not know in its network (once each, see [Network discovery](#network-discovery)) |
 
   Disk and memory switch between **%** and **GB**: a percentage suits drives of the same size, a
   size suits the big ones (10 % of 4 TB are still 400 GB) and memory of different machines. GB are
@@ -564,8 +570,7 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
 
 ### Networks
 
-**Networks** in the main menu draws the fleet as a map, built from what the agents report (no
-scanning). Top down:
+**Networks** in the main menu draws the fleet as a map, built from what the agents report. Top down:
 
 1. **Internet**.
 2. **Public addresses** (sites): the address each agent reaches the server from. An agent that
@@ -590,6 +595,42 @@ without anything online is drawn faint. A device that is the only agent in its n
 dragged and zoomed (wheel, two fingers, the buttons; **fit** shows all of it), a click on a device
 opens it, and it follows the agents live over Reverb. Under it every network is listed with its
 devices, gateway and the agents that can ping and wake in it.
+
+#### Network discovery
+
+Agents 1.16.0+ also report the devices they see in their networks, so the ones the portal does not
+know show up. What an agent may do is set on the device, in `network_discovery` in its
+`config.json` (`-NetworkDiscovery` at install); the server cannot change it:
+
+| `network_discovery` | The agent |
+|---|---|
+| `off` | reports nothing and refuses scans |
+| `neighbours` (default) | sends its ARP table with every report (passive, nothing is sent into the network) |
+| `scan` | also scans a network of its interfaces when asked in the portal |
+
+- **Unknown devices:** a neighbour in the network of one of the agent's interfaces (Docker, VMs and
+  VPNs left out) whose MAC address no device of the portal has (their interfaces, gateways,
+  ping-only and Wake-on-LAN settings). It is kept per MAC address and public address, so a device
+  with a dynamic address is still one entry. It is drawn dashed under its network (at most 8,
+  the rest as **+n unknown**) and listed in the network's card with its address, name and MAC
+  (**random MAC**: a private address a phone or laptop made up for that Wi-Fi). Neighbours seen in
+  the last 24 hours are shown; ones not seen for 30 days are forgotten (ignored ones after 180).
+- **Add** makes it a ping-only device with its address, prefix and MAC. **Ignore** hides it (and
+  its alerts); ignored ones are listed under the networks and can be shown again.
+- **Dynamic addresses:** a ping-only device with a MAC address follows it: when an agent sees that
+  MAC at another address of the same network (DHCP), the device moves there.
+- **Scan** (in the network's card, networks up to a /22): an online agent in the network with
+  `network_discovery` `scan` pings every address of it (128 at once, a few seconds for a /24),
+  which also fills its ARP table with every device that answers ARP, looks up the names of the
+  ones that answered (reverse DNS) and reports at once. Progress and result are shown in the card
+  and in the agent's commands. The agent scans only networks of its own interfaces, one at a time.
+- **Alert:** the **Unknown device** rule notifies once about every unknown device that appears.
+- **Portal switch:** system admins turn **Network discovery** off on the Networks page; the server
+  then takes no neighbours and sends no scans, whatever the agents allow.
+
+The level of each agent is shown in its **Agent** tab. To change it on many devices, a remediation
+script can set `network_discovery` in `config.json` (`%ProgramData%\Laravel-MDM` or
+`/opt/laravel-mdm`); the agent reads it with its next report.
 
 ### Dashboard
 

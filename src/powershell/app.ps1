@@ -37,6 +37,11 @@
     With -Install: never run remediation scripts on this device (stored in config.json, the server
     cannot change it). -EnableScripts allows them again.
 
+.PARAMETER NetworkDiscovery
+    With -Install: what the agent does to find devices in its networks (stored in config.json as
+    network_discovery, the server cannot change it): off; neighbours (default) reports its ARP
+    table; scan also pings every address of a network of its interfaces when asked in the portal.
+
 .EXAMPLE
     # Enrol the device and register the agent as a scheduled task running as SYSTEM
     .\app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -Install
@@ -86,13 +91,16 @@ param (
     [switch]
     $DisableScripts,
     [switch]
-    $EnableScripts
+    $EnableScripts,
+    [ValidateSet('off', 'neighbours', 'scan')]
+    [string]
+    $NetworkDiscovery
 )
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.15.0'
-$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
+$AgentVersion = '1.16.0'
+$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow', 'scanNetwork')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
     windows = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
@@ -2664,6 +2672,11 @@ function Get-Report {
     $config = Get-AgentConfig
     $data.machine | Add-Member -NotePropertyName ScriptsEnabled -NotePropertyValue ([bool]$config['scripts_enabled']) -Force
     $data.machine | Add-Member -NotePropertyName ServerKeyFingerprint -NotePropertyValue $config['server_key'].fingerprint -Force
+    $discovery = Get-NetworkDiscovery -Config $config
+    $data.machine | Add-Member -NotePropertyName NetworkDiscovery -NotePropertyValue $discovery -Force
+    if ($discovery -ne 'off') {
+        try { $data['neighbours'] = @(Get-Neighbours) } catch { Write-AgentLog "Neighbours failed: $($_.Exception.Message)" -ErrorRecord $_ }
+    }
     if ($Inventory) {
         $data['os_updates'] = $Inventory.os_updates
         $data['packages_updates'] = $Inventory.packages_updates
@@ -3054,6 +3067,228 @@ function Find-LocalNetwork {
         if ($bits -gt $bestBits) { $best = $network; $bestBits = $bits }
     }
     return $best
+}
+
+function Get-NetworkDiscovery {
+    # network_discovery in config.json: off, neighbours (the default: the ARP table goes with the
+    # report) or scan (also scans on request). Anything else is off.
+    param ($Config = (Get-AgentConfig))
+
+    $level = $Config['network_discovery']
+    if ($null -eq $level) { return 'neighbours' }
+    if (@('off', 'neighbours', 'scan') -contains "$level") { return "$level" }
+    return 'off'
+}
+
+function Test-UnicastMac {
+    param ([string]$Mac)
+
+    if ($Mac -notmatch '^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$' -or $Mac -match '^(00[:-]){5}00$') { return $false }
+    # The lowest bit of the first byte marks broadcast and multicast addresses.
+    return ([Convert]::ToInt32($Mac.Substring(0, 2), 16) -band 1) -eq 0
+}
+
+function Get-Neighbours {
+    # The IPv4 neighbours of the interfaces (the ARP table): @{ Ip; Mac; Hostname }, the names from
+    # the last scan (reverse DNS). Entries that did not answer (failed, incomplete) are left out.
+    $entries = @()
+    if ($OnLinux) {
+        $raw = try { (& ip -j -4 neigh show 2>$null) -join "`n" } catch { '' }
+        if ($raw.Trim()) {
+            foreach ($entry in @($raw | ConvertFrom-Json | ForEach-Object { $_ })) {
+                $state = @($entry.state)
+                if (-not $entry.lladdr -or $state -contains 'FAILED' -or $state -contains 'INCOMPLETE') { continue }
+                $entries += @{ Ip = "$($entry.dst)"; Mac = "$($entry.lladdr)" }
+            }
+        } elseif (Test-Path -Path /proc/net/arp) {
+            # Without iproute2's JSON (BusyBox): IP, type, flags (0x2 complete), MAC, mask, device.
+            foreach ($line in @(Get-Content -Path /proc/net/arp | Select-Object -Skip 1)) {
+                $fields = @($line -split '\s+')
+                if ($fields.Count -ge 4 -and $fields[2] -eq '0x2') { $entries += @{ Ip = $fields[0]; Mac = $fields[3] } }
+            }
+        }
+    } else {
+        foreach ($entry in @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue)) {
+            if ($entry.LinkLayerAddress -and @('Reachable', 'Stale', 'Delay', 'Probe') -contains "$($entry.State)") {
+                $entries += @{ Ip = "$($entry.IPAddress)"; Mac = "$($entry.LinkLayerAddress)" }
+            }
+        }
+    }
+    $names = Get-ScanNames
+    $seen = @{}
+    $neighbours = @()
+    foreach ($entry in $entries) {
+        if ($seen.ContainsKey($entry.Ip) -or -not (Test-UnicastMac -Mac $entry.Mac)) { continue }
+        $seen[$entry.Ip] = $true
+        $entry['Hostname'] = $names[$entry.Ip]
+        $neighbours += $entry
+        if ($neighbours.Count -ge 512) { break }
+    }
+    return $neighbours
+}
+
+function Get-ScanNames {
+    # ip => name of the devices the last scans found (reverse DNS), kept for a week.
+    $names = @{}
+    $path = Join-Path $AgentDir 'scan-names.json'
+    if (-not (Test-Path -Path $path)) { return $names }
+    try {
+        $saved = Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($property in $saved.PSObject.Properties) {
+            if ([DateTime]::Parse($property.Value.at) -gt (Get-Date).AddDays(-7)) { $names[$property.Name] = "$($property.Value.name)" }
+        }
+    }
+    catch {
+        Write-AgentLog "Scan names not read: $($_.Exception.Message)"
+    }
+    return $names
+}
+
+function Save-ScanNames {
+    param ([hashtable]$Names)
+
+    $path = Join-Path $AgentDir 'scan-names.json'
+    $all = @{}
+    foreach ($entry in (Get-ScanNames).GetEnumerator()) { $all[$entry.Key] = @{ name = $entry.Value; at = (Get-Date).ToString('o') } }
+    foreach ($entry in $Names.GetEnumerator()) { $all[$entry.Key] = @{ name = "$($entry.Value)"; at = (Get-Date).ToString('o') } }
+    $all | ConvertTo-Json -Depth 3 -Compress | Set-Content -Path $path -Encoding UTF8
+}
+
+function Test-ScanParams {
+    # scanNetwork: the network (a.b.c.d/prefix, /22 to /30) must be the network of one of the
+    # interfaces that are up. Returns @{ Cidr; Interface; Hosts }.
+    param ($Params)
+
+    $cidr = "$($Params.cidr)"
+    if ($cidr -notmatch '^(\d{1,3}(\.\d{1,3}){3})/(\d{1,2})$') { throw "not a network: '$cidr'" }
+    $prefix = [int]$Matches[3]
+    if ($prefix -lt 22 -or $prefix -gt 30) { throw "only networks from /22 to /30 are scanned, not /$prefix" }
+    foreach ($network in Get-LocalNetworks) {
+        $bits = 0
+        foreach ($b in $network.Mask) { $bits += [Convert]::ToString($b, 2).Replace('0', '').Length }
+        if ("$([System.Net.IPAddress]::new([byte[]]$network.Network))/$bits" -eq $cidr) {
+            return @{ Cidr = $cidr; Interface = $network.Name; Hosts = [Math]::Pow(2, 32 - $prefix) - 2 }
+        }
+    }
+    throw "$cidr is not a network of this device's interfaces"
+}
+
+function Test-InNetwork {
+    param ([string]$Cidr, [string]$Address)
+
+    $parts = $Cidr -split '/'
+    $ip = [System.Net.IPAddress]::None
+    if (-not [System.Net.IPAddress]::TryParse($Address, [ref]$ip) -or $ip.AddressFamily -ne 'InterNetwork') { return $false }
+    $bytes = $ip.GetAddressBytes()
+    $network = [System.Net.IPAddress]::Parse($parts[0]).GetAddressBytes()
+    $bits = [int]$parts[1]
+    foreach ($i in 0..3) {
+        $take = [Math]::Max(0, [Math]::Min(8, $bits - 8 * $i))
+        $mask = (0xFF -shl (8 - $take)) -band 0xFF
+        if (($bytes[$i] -band $mask) -ne ($network[$i] -band $mask)) { return $false }
+    }
+    return $true
+}
+
+function Invoke-NetworkSweep {
+    # In the scan job: pings every address of the network (128 at once, 700 ms each), which also
+    # fills the ARP table with every device that answers ARP (firewalls drop the ping, not ARP).
+    # Writes @{ Progress; Found } after each batch, then @{ Done; Up; Names } (reverse DNS, 3 s).
+    param ([string]$Cidr, [int]$TimeoutMs = 700, [int]$Batch = 128)
+
+    $parts = $Cidr -split '/'
+    $base = [System.Net.IPAddress]::Parse($parts[0]).GetAddressBytes()
+    [Array]::Reverse($base)
+    $start = [BitConverter]::ToUInt32($base, 0)
+    $count = [int][Math]::Pow(2, 32 - [int]$parts[1])
+    $hosts = @(for ($i = 1; $i -lt $count - 1; $i++) {
+            $bytes = [BitConverter]::GetBytes([uint32]($start + $i))
+            [Array]::Reverse($bytes)
+            [System.Net.IPAddress]::new($bytes)
+        })
+    $up = New-Object System.Collections.ArrayList
+    for ($offset = 0; $offset -lt $hosts.Count; $offset += $Batch) {
+        $runs = @($hosts[$offset..([Math]::Min($hosts.Count, $offset + $Batch) - 1)] | ForEach-Object {
+                $ping = New-Object System.Net.NetworkInformation.Ping
+                @{ Ip = "$_"; Ping = $ping; Task = $ping.SendPingAsync($_, $TimeoutMs) }
+            })
+        foreach ($run in $runs) {
+            try { [void]$run.Task.Wait($TimeoutMs + 1000) } catch { }
+            if ($run.Task.Status -eq 'RanToCompletion' -and "$($run.Task.Result.Status)" -eq 'Success') { [void]$up.Add($run.Ip) }
+            $run.Ping.Dispose()
+        }
+        [PSCustomObject]@{ Progress = [int](($offset + $runs.Count) * 90 / $hosts.Count); Found = $up.Count }
+    }
+    $lookups = @($up | ForEach-Object { @{ Ip = $_; Task = [System.Net.Dns]::GetHostEntryAsync($_) } })
+    $deadline = (Get-Date).AddSeconds(3)
+    $names = @{}
+    foreach ($lookup in $lookups) {
+        $left = [Math]::Max(0, [int]($deadline - (Get-Date)).TotalMilliseconds)
+        try {
+            if ($lookup.Task.Wait($left) -and $lookup.Task.Result.HostName -and $lookup.Task.Result.HostName -ne $lookup.Ip) { $names[$lookup.Ip] = $lookup.Task.Result.HostName }
+        }
+        catch { }
+    }
+    [PSCustomObject]@{ Done = $true; Up = @($up); Names = $names }
+}
+
+function Start-NetworkScan {
+    param ($CommandId, $Scan)
+
+    $script:ScanJob = Start-AgentJob -Name 'scan' -Functions 'Invoke-NetworkSweep' -ArgumentList $Scan.Cidr -ScriptBlock {
+        param ($Cidr)
+        Invoke-NetworkSweep -Cidr $Cidr
+    }
+    $script:ScanCommand = @{ Id = $CommandId; Cidr = $Scan.Cidr; Interface = $Scan.Interface; Hosts = $Scan.Hosts; Result = $null; ProgressSent = Get-Date }
+}
+
+function Sync-NetworkScan {
+    # The scan job's progress goes to the server; when it is done the names are kept and the
+    # result waits for the next report (sent right away), which carries the ARP table. Returns
+    # $true when the report should go now.
+    if (-not $script:ScanJob) { return $false }
+    $scan = $script:ScanCommand
+    foreach ($item in @(Receive-Job -Job $script:ScanJob -ErrorAction SilentlyContinue)) {
+        if ($item.Done) { $scan.Result = $item } elseif ($null -ne $item.Progress) { $scan.Last = $item }
+    }
+    if ($scan.Last -and ((Get-Date) - $scan.ProgressSent).TotalSeconds -ge 3) {
+        $scan.ProgressSent = Get-Date
+        [void](Send-CommandStatus -Id $scan.Id -Status running -Progress $scan.Last.Progress -Message "Pinging the $($scan.Hosts) addresses of $($scan.Cidr) from $($scan.Interface): $($scan.Last.Found) answered")
+    }
+    if ($script:ScanJob.State -eq 'Running') { return $false }
+
+    $reason = $script:ScanJob.ChildJobs[0].JobStateInfo.Reason
+    Remove-Job -Job $script:ScanJob -Force
+    $script:ScanJob = $null
+    if (-not $scan.Result) {
+        Write-AgentLog "Network scan of $($scan.Cidr) failed: $reason" -IsError
+        [void](Send-CommandStatus -Id $scan.Id -Status failed -Message "Scan failed: $reason")
+        $script:ScanCommand = $null
+        return $false
+    }
+    $names = @{}
+    if ($scan.Result.Names) { foreach ($entry in $scan.Result.Names.GetEnumerator()) { $names["$($entry.Key)"] = "$($entry.Value)" } }
+    Save-ScanNames -Names $names
+    $inTable = @(Get-Neighbours | Where-Object { Test-InNetwork -Cidr $scan.Cidr -Address $_.Ip }).Count
+    $answered = @($scan.Result.Up).Count
+    Write-AgentLog "Network scan of $($scan.Cidr): $answered answered the ping, $inTable in the ARP table"
+    $scan.Message = "$answered answered the ping, $inTable in the ARP table ($($scan.Hosts) addresses from $($scan.Interface))"
+    [void](Send-CommandStatus -Id $scan.Id -Status running -Progress 95 -Message 'Sending what was found')
+    return $true
+}
+
+function Complete-NetworkScan {
+    # After the report with the ARP table: the scan is done (or failed with the report).
+    param ([string]$Failure)
+
+    $scan = $script:ScanCommand
+    if (-not $scan -or -not $scan.Message) { return }
+    if ($Failure) {
+        [void](Send-CommandStatus -Id $scan.Id -Status failed -Message "Scanned, but the report failed: $Failure")
+    } else {
+        [void](Send-CommandStatus -Id $scan.Id -Status succeeded -Message $scan.Message)
+    }
+    $script:ScanCommand = $null
 }
 
 function Get-WakeInterfaces {
@@ -3789,6 +4024,28 @@ function Invoke-DeviceCommand {
                 [void](Send-CommandStatus -Id $Id -Status failed -Message "$($target.Address) did not answer within 2 s$via")
             }
         }
+        'scanNetwork' {
+            # Only when config.json allows it (network_discovery "scan"), one at a time, only a
+            # network of an interface of this device.
+            $level = Get-NetworkDiscovery
+            if ($level -ne 'scan') {
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "Scans are not allowed on this device (network_discovery is '$level' in config.json)")
+                return
+            }
+            if ($script:ScanCommand) {
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "Already scanning $($script:ScanCommand.Cidr)")
+                return
+            }
+            try {
+                $scan = Test-ScanParams -Params $Params
+            }
+            catch {
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "Refused by the agent: $($_.Exception.Message)")
+                return
+            }
+            Start-NetworkScan -CommandId $Id -Scan $scan
+            [void](Send-CommandStatus -Id $Id -Status running -Progress 0 -Message "Pinging the $($scan.Hosts) addresses of $($scan.Cidr) from $($scan.Interface)")
+        }
         'turnOff' {
             [void](Send-CommandStatus -Id $Id -Status running -Message 'Shutting down')
             $failure = Invoke-PowerAction -Restart:$false
@@ -4394,6 +4651,9 @@ function Start-Agent {
                 Remove-Job -Job $inventoryJob -Force
                 $inventoryJob = $null
             }
+            if (Sync-NetworkScan) {
+                $lastReport = [DateTime]::MinValue
+            }
             Sync-UpdateProgress
             if (Complete-UpdateJob) {
                 # Show what is left right away instead of the pre-update list for 6 hours.
@@ -4461,6 +4721,7 @@ function Start-Agent {
                 $lastReport = Get-Date
                 try {
                     Send-Report -Data (Get-Report -Inventory $inventory.Data -Health $health.Data) -Token $Token
+                    Complete-NetworkScan
                     if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'report') {
                         [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status succeeded -Progress 100 -Message 'Synced')
                         $script:SyncRequest = $null
@@ -4469,6 +4730,7 @@ function Start-Agent {
                 catch {
                     # HTTP problems must not tear down the WebSocket connection.
                     Write-AgentLog "Report failed: $($_.Exception.Message)" -ErrorRecord $_
+                    Complete-NetworkScan -Failure $_.Exception.Message
                     if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'report') {
                         [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status failed -Message "Report failed: $($_.Exception.Message)")
                         $script:SyncRequest = $null
@@ -4556,8 +4818,13 @@ if ($Install) {
         $config['scripts_enabled'] = [bool]$EnableScripts
         Save-AgentConfig -Config $config
     }
+    if ($NetworkDiscovery) {
+        $config['network_discovery'] = $NetworkDiscovery
+        Save-AgentConfig -Config $config
+    }
     Write-Host "Server key: $($config['server_key'].fingerprint)" -ForegroundColor Yellow
     Write-Host "Remediation scripts: $(if ($config['scripts_enabled']) { 'enabled' } else { 'disabled' }) (config.json)" -ForegroundColor Yellow
+    Write-Host "Network discovery: $(Get-NetworkDiscovery -Config $config) (config.json)" -ForegroundColor Yellow
 
     if ($OnLinux) {
         # The service runs as root like this installer: enrol right away.

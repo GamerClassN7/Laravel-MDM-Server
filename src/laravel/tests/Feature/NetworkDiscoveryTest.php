@@ -1,0 +1,208 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Livewire\Networks\Page;
+use App\Models\AlertRule;
+use App\Models\Device;
+use App\Models\NetworkNeighbour;
+use App\Models\User;
+use App\Support\AlertEvaluator;
+use App\Support\NetworkMap;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Livewire\Livewire;
+use Tests\Concerns\SignsDeviceRequests;
+use Tests\TestCase;
+
+/** Network discovery: the agents' ARP tables and scans, unknown devices on the Networks page. */
+class NetworkDiscoveryTest extends TestCase
+{
+    use RefreshDatabase;
+    use SignsDeviceRequests;
+
+    private function machine(string $level = 'neighbours', string $version = '1.16.0'): array
+    {
+        return ['Hostname' => 'nas', 'AgentVersion' => $version, 'Platform' => 'linux', 'Drives' => [], 'NetworkDiscovery' => $level, 'Networks' => [
+            ['Name' => 'eth0', 'Type' => 'lan', 'Connected' => true, 'Status' => 'Up', 'Mac' => 'AA-00-00-00-00-01', 'IPAddresses' => ['192.168.1.5'],
+                'Addresses' => [['Address' => '192.168.1.5', 'PrefixLength' => 24]], 'Gateway' => '192.168.1.1', 'GatewayMac' => '50-C7-BF-AA-BB-CC'],
+            ['Name' => 'docker0', 'Type' => 'docker', 'Connected' => true, 'Status' => 'Up', 'Mac' => '02-42-00-00-00-01', 'IPAddresses' => ['172.17.0.1'],
+                'Addresses' => [['Address' => '172.17.0.1', 'PrefixLength' => 16]]],
+        ]];
+    }
+
+    private function agent(string $level = 'neighbours', string $token = 'secret-token', string $version = '1.16.0'): Device
+    {
+        $device = new Device;
+        $device->token = hash('sha256', $token);
+        $device->name = 'nas';
+        $device->public_ip = '31.30.4.122';
+        $device->data = json_encode(['machine' => $this->machine($level, $version)]);
+        $device->save();
+        $this->registerDeviceKey($device);
+        Device::recordHeartbeat($device->id);
+
+        return $device->fresh();
+    }
+
+    private function report(string $level, array $neighbours): void
+    {
+        $this->signedJson('POST', '/api/device', ['machine' => $this->machine($level), 'neighbours' => $neighbours], 'secret-token', ['server' => ['REMOTE_ADDR' => '31.30.4.122']])->assertOk();
+    }
+
+    public function test_the_report_records_the_neighbours_of_its_networks(): void
+    {
+        $this->agent();
+        $this->report('neighbours', [
+            ['Ip' => '192.168.1.50', 'Mac' => 'b8-27-eb-12-34-56', 'Hostname' => null],
+            ['Ip' => '192.168.1.1', 'Mac' => '50-C7-BF-AA-BB-CC'],
+            // Not its networks (Docker, another subnet), its own address, multicast, broadcast.
+            ['Ip' => '172.17.0.2', 'Mac' => '02:42:ac:11:00:02'],
+            ['Ip' => '10.0.0.9', 'Mac' => '00:11:22:33:44:55'],
+            ['Ip' => '192.168.1.5', 'Mac' => '00:11:22:33:44:66'],
+            ['Ip' => '192.168.1.60', 'Mac' => '01:00:5e:00:00:fb'],
+            ['Ip' => '192.168.1.255', 'Mac' => 'ff:ff:ff:ff:ff:ff'],
+            ['Ip' => 'nonsense', 'Mac' => 'nonsense'],
+        ]);
+
+        $this->assertSame(['192.168.1.1', '192.168.1.50'], NetworkNeighbour::query()->orderBy('ip')->pluck('ip')->all());
+        $pi = NetworkNeighbour::query()->where('ip', '192.168.1.50')->firstOrFail();
+        $this->assertSame(['31.30.4.122', '192.168.1.0/24', 'B8:27:EB:12:34:56'], [$pi->site, $pi->network, $pi->mac]);
+        $this->assertFalse($pi->randomMac);
+
+        // Seen again at another address: the same neighbour (by its MAC), with a name from a scan.
+        $this->travel(5)->minutes();
+        $this->report('neighbours', [['Ip' => '192.168.1.51', 'Mac' => 'B8:27:EB:12:34:56', 'Hostname' => 'raspberrypi.lan']]);
+        $pi->refresh();
+        $this->assertSame(['192.168.1.51', 'raspberrypi.lan'], [$pi->ip, $pi->hostname]);
+        $this->assertSame(2, NetworkNeighbour::count());
+    }
+
+    public function test_nothing_is_recorded_when_discovery_is_off_on_the_device_or_in_the_portal(): void
+    {
+        $this->agent('off');
+        $this->report('off', [['Ip' => '192.168.1.50', 'Mac' => 'b8-27-eb-12-34-56']]);
+        $this->assertSame(0, NetworkNeighbour::count());
+
+        NetworkNeighbour::setEnabled(false);
+        $this->report('scan', [['Ip' => '192.168.1.50', 'Mac' => 'b8-27-eb-12-34-56']]);
+        $this->assertSame(0, NetworkNeighbour::count());
+        $this->assertSame(__('Network discovery is turned off in the portal'), Device::first()->commandRefusal('scanNetwork', ['cidr' => '192.168.1.0/24']));
+
+        NetworkNeighbour::setEnabled(true);
+        $this->report('scan', [['Ip' => '192.168.1.50', 'Mac' => 'b8-27-eb-12-34-56']]);
+        $this->assertSame(1, NetworkNeighbour::count());
+    }
+
+    public function test_a_ping_only_device_follows_its_mac_to_a_new_address(): void
+    {
+        $this->agent();
+        $printer = new Device;
+        $printer->forceFill(['kind' => 'ping', 'name' => 'Printer', 'os' => '', 'token' => hash('sha256', 'p'), 'ping_address' => '192.168.1.30', 'ping_prefix' => 24, 'ping_mac' => 'AA:BB:CC:00:00:30'])->save();
+
+        $this->report('neighbours', [['Ip' => '192.168.1.31', 'Mac' => 'aa-bb-cc-00-00-30']]);
+
+        $this->assertSame('192.168.1.31', $printer->fresh()->ping_address);
+        // Known: not shown as unknown.
+        $this->assertCount(0, NetworkNeighbour::unknown());
+    }
+
+    public function test_unknown_devices_are_on_the_map_and_can_be_added_or_ignored(): void
+    {
+        config(['mdm.public_address' => '31.30.4.122']);
+        $this->agent();
+        $this->report('neighbours', [
+            ['Ip' => '192.168.1.50', 'Mac' => 'b8-27-eb-12-34-56', 'Hostname' => 'raspberrypi.lan'],
+            ['Ip' => '192.168.1.1', 'Mac' => '50-C7-BF-AA-BB-CC'],
+            ['Ip' => '192.168.1.77', 'Mac' => '7a:11:22:33:44:55'],
+        ]);
+        // The report signed in as the device.
+        $this->actingAs(User::factory()->create());
+        $pi = NetworkNeighbour::query()->where('ip', '192.168.1.50')->firstOrFail();
+        $phone = NetworkNeighbour::query()->where('ip', '192.168.1.77')->firstOrFail();
+        $this->assertTrue($phone->randomMac);
+
+        $map = NetworkMap::build();
+        $nodes = collect($map['nodes'])->keyBy('id');
+        $edges = collect($map['edges'])->keyBy('id');
+        // The gateway is drawn as the gateway, not as an unknown device.
+        $this->assertSame(['raspberrypi.lan', '192.168.1.77'], $nodes->where('kind', 'unknown')->pluck('label')->values()->all());
+        $this->assertSame('unknown', $edges["net:31.30.4.122|192.168.1.0/24>unknown:{$pi->id}"]['type']);
+        $this->assertSame([$pi->id, $phone->id], array_column($map['networks'][0]['unknown'], 'id'));
+
+        Livewire::test(Page::class)->assertSee('2 unknown devices')->assertSee('raspberrypi.lan')
+            ->call('ignore', $phone->id)->assertSee('1 ignored device')
+            ->call('add', $pi->id)->assertRedirect();
+
+        $added = Device::query()->where('kind', 'ping')->firstOrFail();
+        $this->assertSame(['raspberrypi', '192.168.1.50', 24, 'B8:27:EB:12:34:56'], [$added->name, $added->ping_address, $added->ping_prefix, $added->ping_mac]);
+        $this->assertCount(0, NetworkNeighbour::unknown());
+    }
+
+    public function test_more_unknown_devices_than_fit_are_one_node(): void
+    {
+        config(['mdm.public_address' => '31.30.4.122']);
+        $this->agent();
+        $this->report('neighbours', collect(range(1, 12))->map(fn ($i) => ['Ip' => '192.168.1.'.(100 + $i), 'Mac' => sprintf('00:11:22:33:44:%02X', $i)])->all());
+
+        $nodes = collect(NetworkMap::build()['nodes'])->where('kind', 'unknown');
+
+        $this->assertCount(NetworkMap::MAX_UNKNOWN_NODES, $nodes);
+        $this->assertSame('+5 unknown', $nodes->last()['label']);
+    }
+
+    public function test_a_scan_goes_to_an_agent_in_the_network_that_allows_it(): void
+    {
+        config(['mdm.public_address' => '31.30.4.122']);
+        $this->actingAs(User::factory()->create());
+        $agent = $this->agent('neighbours');
+        $key = 'net:31.30.4.122|192.168.1.0/24';
+
+        // Not allowed on the device: no scan.
+        $network = collect(NetworkMap::build()['networks'])->firstWhere('id', $key);
+        $this->assertNull($network['scan']['agent']);
+        $this->assertStringContainsString('network_discovery', $network['scan']['refusal']);
+        Livewire::test(Page::class)->call('scan', $key)->assertHasErrors();
+        $this->assertSame(0, $agent->commands()->count());
+
+        $agent->forceFill(['data' => json_encode(['machine' => $this->machine('scan')])])->save();
+        Livewire::test(Page::class)->call('scan', $key)->assertHasNoErrors();
+        $command = $agent->commands()->firstOrFail();
+        $this->assertSame(['scanNetwork', ['cidr' => '192.168.1.0/24'], 'scan:192.168.1.0/24'], [$command->command, $command->params, $command->target]);
+        $this->assertSame($command->id, collect(NetworkMap::build()['networks'])->firstWhere('id', $key)['scan']['command']['id']);
+
+        // Only networks of /22 and smaller, in the right notation.
+        $this->assertNull(\App\Models\DeviceCommand::sanitizeParams('scanNetwork', ['cidr' => '10.0.0.0/16']));
+        $this->assertNull(\App\Models\DeviceCommand::sanitizeParams('scanNetwork', ['cidr' => '192.168.1.7/24']));
+        // Older agents cannot.
+        $old = $this->agent('scan', 'old-token', '1.15.0');
+        $this->assertSame(__('Needs agent :version or newer', ['version' => '1.16.0']), $old->commandRefusal('scanNetwork', ['cidr' => '192.168.1.0/24']));
+    }
+
+    public function test_system_admins_turn_discovery_off_for_the_portal(): void
+    {
+        User::factory()->create();
+        $user = User::factory()->create();
+        $this->actingAs($user);
+        $this->agent();
+        Livewire::test(Page::class)->call('toggleDiscovery')->assertForbidden();
+
+        config(['boilerplate.system_admins' => [(string) $user->id]]);
+        $this->actingAs($user->fresh());
+        Livewire::test(Page::class)->call('toggleDiscovery');
+        $this->assertFalse(NetworkNeighbour::enabled());
+    }
+
+    public function test_an_unknown_device_alert_is_sent_once(): void
+    {
+        $user = User::factory()->create();
+        $rule = AlertRule::query()->create(['user_id' => $user->id, 'type' => 'unknown_device', 'target' => [], 'channels' => [], 'enabled' => true]);
+        $this->agent();
+        $this->report('neighbours', [['Ip' => '192.168.1.50', 'Mac' => 'b8-27-eb-12-34-56']]);
+
+        AlertEvaluator::run();
+        AlertEvaluator::run();
+
+        $this->assertSame(1, $rule->events()->count());
+        $this->assertStringContainsString('192.168.1.50 appeared in 192.168.1.0/24', $rule->events()->first()->message);
+    }
+}

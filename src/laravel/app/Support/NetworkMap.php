@@ -3,6 +3,8 @@
 namespace App\Support;
 
 use App\Models\Device;
+use App\Models\DeviceCommand;
+use App\Models\NetworkNeighbour;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Throwable;
@@ -21,6 +23,9 @@ class NetworkMap
 {
     /** Interfaces that stay inside the machine (containers, VMs) or are no network. */
     public const SKIPPED_TYPES = ['docker', 'virtual', 'bluetooth'];
+
+    /** Unknown devices drawn per network; the rest are one node ("+12 unknown"). */
+    public const MAX_UNKNOWN_NODES = 8;
 
     /** Seconds the addresses of this server's name are kept. */
     private const RESOLVE_TTL = 3600;
@@ -66,6 +71,16 @@ class NetworkMap
         });
     }
 
+    /** The site of an agent: the public address it reports from; this server's when it reports over a private one. */
+    public static function siteOf(Device $device, ?string $serverSite): string
+    {
+        return match (true) {
+            Device::isPublicIp($device->public_ip) => $device->public_ip,
+            $device->public_ip !== null && $serverSite !== null => $serverSite,
+            default => '?',
+        };
+    }
+
     private function make(Collection $devices): array
     {
         $serverIps = self::serverAddresses();
@@ -79,11 +94,7 @@ class NetworkMap
         // private address is in the network of this server (it connects from inside).
         $siteOf = [];
         foreach ($agents as $device) {
-            $siteOf[$device->id] = match (true) {
-                Device::isPublicIp($device->public_ip) => $device->public_ip,
-                $device->public_ip !== null && $serverSite !== null => $serverSite,
-                default => '?',
-            };
+            $siteOf[$device->id] = self::siteOf($device, $serverSite);
         }
 
         // The networks of the agents' interfaces.
@@ -238,6 +249,36 @@ class NetworkMap
             }
         }
 
+        // Devices the agents see in their networks that the portal does not know (agents 1.16.0+),
+        // not the gateway nor an address of a device of the network (ping-only without a MAC).
+        foreach (NetworkNeighbour::unknown($devices) as $neighbour) {
+            $key = 'net:'.$neighbour->site.'|'.$neighbour->network;
+            $network = $this->networks[$key] ?? null;
+            if ($network === null || ($network['gateway'] ?? null) === $neighbour->ip
+                || in_array($neighbour->mac, array_map(fn ($gateway) => strtoupper(str_replace('-', ':', (string) $gateway['mac'])), $network['gateways']), true)
+                || collect($network['members'])->contains(fn ($member) => $member['address'] === $neighbour->ip)) {
+                continue;
+            }
+            $this->networks[$key]['unknown'][] = $neighbour;
+        }
+        foreach ($this->networks as $key => $network) {
+            $unknown = $network['unknown'] ?? [];
+            $shown = count($unknown) > self::MAX_UNKNOWN_NODES ? array_slice($unknown, 0, self::MAX_UNKNOWN_NODES - 1) : $unknown;
+            foreach ($shown as $neighbour) {
+                $this->node('unknown:'.$neighbour->id, 'unknown', $neighbour->displayName, $neighbour->hostname ? $neighbour->ip : $neighbour->mac,
+                    'fas fa-question', 'secondary', state: $neighbour->fresh ? 'up' : 'offline', url: '#'.self::anchor($key),
+                    badges: array_values(array_filter([$neighbour->first_seen_at->gte(now()->subDay()) ? __('new') : null])),
+                    extra: ['title' => self::neighbourTitle($neighbour), 'group' => $network['site']]);
+                $this->edge($key, 'unknown:'.$neighbour->id, 'unknown', $neighbour->fresh, $neighbour->ip);
+            }
+            if (count($unknown) > count($shown)) {
+                $rest = count($unknown) - count($shown);
+                $this->node('unknown:'.$key, 'unknown', __('+:count unknown', ['count' => $rest]), __('see the network below'), 'fas fa-ellipsis-h', 'secondary',
+                    url: '#'.self::anchor($key), extra: ['group' => $network['site'], 'more' => true]);
+                $this->edge($key, 'unknown:'.$key, 'unknown', true);
+            }
+        }
+
         // This server: in the network the agents reach it from over private addresses, else at its site.
         if ($serverSite !== null) {
             $local = $agents->filter(fn (Device $device) => $device->public_ip !== null && ! Device::isPublicIp($device->public_ip))->pluck('public_ip')->all();
@@ -268,7 +309,57 @@ class NetworkMap
             'online' => $network['online'],
             'devices' => collect($network['members'])->keys()->map(fn ($id) => ['id' => $id, 'name' => $byId[$id]->displayName, 'online' => ! $byId[$id]->offline, 'ping' => $byId[$id]->isPingOnly])->values()->all(),
             'relays' => collect($network['members'])->keys()->filter(fn ($id) => ! $byId[$id]->isPingOnly && ! $byId[$id]->offline && $byId[$id]->signsRequests)->map(fn ($id) => $byId[$id]->displayName)->values()->all(),
+            'anchor' => self::anchor($key),
+            'unknown' => collect($network['unknown'] ?? [])->map(fn (NetworkNeighbour $neighbour) => [
+                'id' => $neighbour->id, 'ip' => $neighbour->ip, 'mac' => $neighbour->mac, 'hostname' => $neighbour->hostname,
+                'fresh' => $neighbour->fresh, 'random' => $neighbour->randomMac, 'title' => self::neighbourTitle($neighbour),
+            ])->all(),
+            'scan' => $network['site'] === null ? null : self::scanner($network, $byId),
         ])->sortBy(fn ($network) => [$network['kind'] === 'vpn' ? 1 : 0, -count($network['devices'])])->values()->all();
+    }
+
+    /** The id of the network's card on the page (the links of its unknown devices go there). */
+    public static function anchor(string $key): string
+    {
+        return 'network-'.substr(md5($key), 0, 10);
+    }
+
+    private static function neighbourTitle(NetworkNeighbour $neighbour): string
+    {
+        return collect([
+            __('MAC :mac', ['mac' => $neighbour->mac]).($neighbour->randomMac ? ' ('.__('private, made up by the device').')' : ''),
+            __('first seen :time', ['time' => $neighbour->first_seen_at->diffForHumans()]),
+            __('last seen :time', ['time' => $neighbour->last_seen_at->diffForHumans()]),
+        ])->implode(' · ');
+    }
+
+    /**
+     * Who can scan the network: [device id, name] of the first online agent in it that allows scans
+     * (network_discovery "scan" in its config.json), or the reason no one can, and the scan of the
+     * last 10 minutes (or one still running).
+     *
+     * @return array{agent: ?int, name: ?string, refusal: ?string, command: ?array}
+     */
+    private static function scanner(array $network, Collection $byId): array
+    {
+        $agents = collect($network['members'])->filter(fn ($member, $id) => ! $byId[$id]->isPingOnly && $member['connected'] && $member['type'] !== 'vpn')->keys();
+        $refusal = (int) explode('/', $network['cidr'])[1] < DeviceCommand::MIN_SCAN_PREFIX
+            ? __('Too large to scan (at most /:prefix)', ['prefix' => DeviceCommand::MIN_SCAN_PREFIX])
+            : null;
+        $agent = $refusal ? null : $agents->map(fn ($id) => $byId[$id])->first(fn (Device $device) => $device->commandRefusal('scanNetwork', ['cidr' => $network['cidr']]) === null);
+        if ($refusal === null && $agent === null) {
+            $refusal = $agents->contains(fn ($id) => $byId[$id]->networkDiscovery === 'scan')
+                ? __('The agents that allow scans here are offline')
+                : __('No agent here allows scans (network_discovery "scan" in its config.json)');
+        }
+        $command = DeviceCommand::query()->where('command', 'scanNetwork')->where('target', 'scan:'.$network['cidr'])->whereIn('device_id', $agents->all())
+            ->where(fn ($query) => $query->where('created_at', '>=', now()->subMinutes(10))->orWhereIn('status', DeviceCommand::ACTIVE))
+            ->latest('id')->first();
+
+        return ['agent' => $agent?->id, 'name' => $agent?->displayName, 'refusal' => $refusal, 'command' => $command ? [
+            'id' => $command->id, 'status' => $command->status, 'progress' => $command->progress, 'message' => $command->message,
+            'active' => in_array($command->status, DeviceCommand::ACTIVE, true), 'by' => $byId[$command->device_id]->displayName ?? null,
+        ] : null];
     }
 
     private function node(string $id, string $kind, string $label, ?string $sub, string $icon, string $tone, string $state = 'up', ?string $url = null, array $badges = [], array $extra = []): void
@@ -291,6 +382,16 @@ class NetworkMap
         $mask = $prefix === 32 ? 0xFFFFFFFF : ((-1 << (32 - $prefix)) & 0xFFFFFFFF);
 
         return long2ip($ip & $mask).'/'.$prefix;
+    }
+
+    /** An address of a host in the network: not its network address, broadcast, loopback or link-local. */
+    public static function isHost(string $cidr, string $address): bool
+    {
+        [$network, $prefix] = explode('/', $cidr);
+        $ip = ip2long($address);
+        $broadcast = ip2long($network) | ((1 << (32 - (int) $prefix)) - 1);
+
+        return self::contains($cidr, $address) && self::cidr($address, 32) !== null && ((int) $prefix >= 31 || ($ip !== ip2long($network) && $ip !== $broadcast));
     }
 
     public static function contains(string $cidr, string $address): bool
