@@ -127,9 +127,11 @@ class NetworkDiscoveryTest extends TestCase
         // The gateway is drawn as the gateway, not as an unknown device.
         $this->assertSame(['raspberrypi.lan', '192.168.1.77'], $nodes->where('kind', 'unknown')->pluck('label')->values()->all());
         $this->assertSame('unknown', $edges["net:31.30.4.122|192.168.1.0/24>unknown:{$pi->id}"]['type']);
+        // A click opens its network's card in the list.
+        $this->assertStringContainsString('/networks?view=list#network-', $nodes["unknown:{$pi->id}"]['url']);
         $this->assertSame([$pi->id, $phone->id], array_column($map['networks'][0]['unknown'], 'id'));
 
-        Livewire::test(Page::class)->assertSee('2 unknown devices')->assertSee('raspberrypi.lan')
+        Livewire::withQueryParams(['view' => 'list'])->test(Page::class)->assertSee('2 unknown devices')->assertSee('raspberrypi.lan')
             ->call('ignore', $phone->id)->assertSee('1 ignored device')
             ->call('add', $pi->id)->assertRedirect();
 
@@ -232,7 +234,25 @@ class NetworkDiscoveryTest extends TestCase
         $refusal = collect(NetworkMap::build()['networks'])->firstWhere('id', 'net:31.30.4.122|192.168.1.0/24')['scan']['refusal'];
 
         // The level as of the last report (a remediation shows with the next one), and the old agent.
-        $this->assertStringContainsString('nas: network_discovery is "neighbours"', $refusal);
-        $this->assertStringContainsString('old-pc: Needs agent 1.16.0 or newer', $refusal);
+        $this->assertSame('nas: network_discovery "neighbours" · old-pc: needs agent 1.16.0', $refusal);
+    }
+
+    public function test_the_device_menu_scans_its_own_networks(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $agent = $this->agent('neighbours');
+        // Docker networks and larger ones than /22 are not offered.
+        $this->assertSame(['192.168.1.0/24'], $agent->scannableNetworks);
+
+        // Not allowed on the device: offered with the reason, not sent.
+        Livewire::test(\App\Livewire\DeviceCommands::class, ['selectedDeviceId' => $agent->id])
+            ->assertSee('Scan 192.168.1.0/24')->assertSee('network_discovery is')
+            ->call('scan', '192.168.1.0/24')->assertHasErrors('command');
+
+        $agent->forceFill(['data' => json_encode(['machine' => $this->machine('scan')])])->save();
+        Livewire::test(\App\Livewire\DeviceCommands::class, ['selectedDeviceId' => $agent->id])
+            ->call('scan', '10.0.0.0/24')->assertHasNoErrors()
+            ->call('scan', '192.168.1.0/24')->assertHasNoErrors();
+        $this->assertSame([['cidr' => '192.168.1.0/24']], $agent->commands()->where('command', 'scanNetwork')->pluck('params')->all());
     }
 }

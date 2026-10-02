@@ -266,7 +266,7 @@ class NetworkMap
             $shown = count($unknown) > self::MAX_UNKNOWN_NODES ? array_slice($unknown, 0, self::MAX_UNKNOWN_NODES - 1) : $unknown;
             foreach ($shown as $neighbour) {
                 $this->node('unknown:'.$neighbour->id, 'unknown', $neighbour->displayName, $neighbour->hostname ? $neighbour->ip : $neighbour->mac,
-                    'fas fa-question', 'secondary', state: $neighbour->fresh ? 'up' : 'offline', url: '#'.self::anchor($key),
+                    'fas fa-question', 'secondary', state: $neighbour->fresh ? 'up' : 'offline', url: self::cardUrl($key),
                     badges: array_values(array_filter([$neighbour->first_seen_at->gte(now()->subDay()) ? __('new') : null])),
                     extra: ['title' => self::neighbourTitle($neighbour), 'group' => $network['site']]);
                 $this->edge($key, 'unknown:'.$neighbour->id, 'unknown', $neighbour->fresh, $neighbour->ip);
@@ -274,7 +274,7 @@ class NetworkMap
             if (count($unknown) > count($shown)) {
                 $rest = count($unknown) - count($shown);
                 $this->node('unknown:'.$key, 'unknown', __('+:count unknown', ['count' => $rest]), __('see the network below'), 'fas fa-ellipsis-h', 'secondary',
-                    url: '#'.self::anchor($key), extra: ['group' => $network['site'], 'more' => true]);
+                    url: self::cardUrl($key), extra: ['group' => $network['site'], 'more' => true]);
                 $this->edge($key, 'unknown:'.$key, 'unknown', true);
             }
         }
@@ -318,6 +318,12 @@ class NetworkMap
         ])->sortBy(fn ($network) => [$network['kind'] === 'vpn' ? 1 : 0, -count($network['devices'])])->values()->all();
     }
 
+    /** The network's card in the list view of the page (where its unknown devices are listed). */
+    public static function cardUrl(string $key): string
+    {
+        return route('networks', ['view' => 'list']).'#'.self::anchor($key);
+    }
+
     /** The id of the network's card on the page (the links of its unknown devices go there). */
     public static function anchor(string $key): string
     {
@@ -350,17 +356,26 @@ class NetworkMap
         if ($refusal === null) {
             // Why each agent of the network cannot scan (too old, not allowed, offline): the first
             // that can scans, otherwise their reasons are shown.
+            // Short, the agents with the same reason together: "FURV4_1, IPAD-ANNA: network_discovery "neighbours"".
             $reasons = [];
             foreach ($agents as $id) {
-                $reason = $byId[$id]->commandRefusal('scanNetwork', ['cidr' => $network['cidr']]);
+                $device = $byId[$id];
+                $reason = $device->commandRefusal('scanNetwork', ['cidr' => $network['cidr']]);
                 if ($reason === null) {
-                    $agent = $byId[$id];
+                    $agent = $device;
                     break;
                 }
-                $reasons[] = $byId[$id]->displayName.': '.$reason;
+                $short = match (true) {
+                    $device->offline => __('offline'),
+                    version_compare((string) $device->agent_version, Device::NETWORK_DISCOVERY_VERSION, '<') => __('needs agent :version', ['version' => Device::NETWORK_DISCOVERY_VERSION]),
+                    $device->networkDiscovery !== 'scan' => __('network_discovery ":level"', ['level' => $device->networkDiscovery ?? 'neighbours']),
+                    default => $reason,
+                };
+                $reasons[$short][] = $device->displayName;
             }
             if ($agent === null) {
-                $refusal = $reasons === [] ? __('No agent in this network') : implode(' · ', array_slice($reasons, 0, 3));
+                $refusal = $reasons === [] ? __('No agent in this network')
+                    : collect($reasons)->map(fn ($names, $reason) => implode(', ', array_slice($names, 0, 4)).(count($names) > 4 ? ' …' : '').': '.$reason)->implode(' · ');
             }
         }
         $command = DeviceCommand::query()->where('command', 'scanNetwork')->where('target', 'scan:'.$network['cidr'])->whereIn('device_id', $agents->all())

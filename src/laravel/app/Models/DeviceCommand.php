@@ -319,7 +319,7 @@ class DeviceCommand extends Model
             'sync' => 'fas fa-cloud-download-alt',
             'wake' => 'fas fa-sun',
             'pingNow' => 'fas fa-network-wired',
-            'scanNetwork' => 'fas fa-satellite-dish',
+            'scanNetwork' => 'fas fa-search-location',
             default => 'fas fa-terminal',
         };
     }

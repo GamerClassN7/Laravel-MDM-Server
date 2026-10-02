@@ -294,7 +294,7 @@ class AlertEvaluator
                 'triggered_at' => now(),
                 'resolved_at' => now(),
             ]);
-            Notifier::notify($rule->user, "❔ {$neighbour->displayName}: ".__('Unknown device'), $message."\n".url('/networks#'.NetworkMap::anchor('net:'.$neighbour->site.'|'.$neighbour->network)), $rule->channels);
+            Notifier::notify($rule->user, "❔ {$neighbour->displayName}: ".__('Unknown device'), $message."\n".NetworkMap::cardUrl('net:'.$neighbour->site.'|'.$neighbour->network), $rule->channels);
             $sent++;
         }
 

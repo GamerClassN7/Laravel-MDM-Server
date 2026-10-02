@@ -36,7 +36,19 @@ class DeviceCommands extends Component
         }
     }
 
-    /** Wake-on-LAN: another agent in the same network sends the magic packet. */
+    /** Scans one of the device's own networks (network_discovery "scan" on the device). */
+    public function scan(string $network)
+    {
+        $device = Device::find($this->selectedDeviceId);
+        if ($device === null || ! in_array($network, $device->scannableNetworks, true)) {
+            return;
+        }
+        if (! $device->issueCommand('scanNetwork', ['cidr' => $network], auth()->user())) {
+            $this->addError('command', $device->commandRefusal('scanNetwork', ['cidr' => $network]) ?? __('Already on its way.'));
+        }
+    }
+
+        /** Wake-on-LAN: another agent in the same network sends the magic packet. */
     public function wake()
     {
         $device = Device::find($this->selectedDeviceId);
