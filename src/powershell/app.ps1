@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.13.2'
+$AgentVersion = '1.13.3'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -2791,9 +2791,38 @@ function Test-WakeParams {
     return @{ Macs = $macs; Broadcasts = $broadcasts }
 }
 
+function Get-WakeInterfaces {
+    # The local interfaces in the networks of the broadcast addresses (network broadcast => name and
+    # address), so each packet leaves on the interface of its network, not the default route's.
+    param ([System.Net.IPAddress[]]$Broadcasts)
+
+    $found = @{}
+    try {
+        foreach ($interface in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+            if ($interface.OperationalStatus -ne 'Up') { continue }
+            foreach ($unicast in $interface.GetIPProperties().UnicastAddresses) {
+                $address = $unicast.Address
+                if ($address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or -not $unicast.IPv4Mask) { continue }
+                $ip = $address.GetAddressBytes()
+                $mask = $unicast.IPv4Mask.GetAddressBytes()
+                $broadcast = [System.Net.IPAddress]::new([byte[]](0..3 | ForEach-Object { ($ip[$_] -band $mask[$_]) -bor (255 -bxor $mask[$_]) }))
+                if ($Broadcasts -contains $broadcast -and -not $found.ContainsKey("$broadcast")) {
+                    $found["$broadcast"] = @{ Name = $interface.Name; Address = $address }
+                }
+            }
+        }
+    }
+    catch {
+        Write-AgentLog "Wake-on-LAN: interfaces not read ($($_.Exception.Message)), sending through the default route"
+    }
+    return $found
+}
+
 function Send-MagicPacket {
     # Wake-on-LAN for a device in this network: 6 x 0xFF and 16 x its MAC, as UDP broadcast to
-    # ports 9 and 7 of each broadcast address (the network's own one leaves on the right interface).
+    # ports 9 and 7. Each network's packets leave on the interface with an address in it (bound to
+    # that address, on Linux also to the interface), together with 255.255.255.255; without such an
+    # interface they go through the default route. Returns the interfaces used.
     param (
         [string[]]
         $Macs,
@@ -2801,22 +2830,52 @@ function Send-MagicPacket {
         $Broadcasts
     )
 
-    $client = New-Object System.Net.Sockets.UdpClient
-    try {
-        $client.EnableBroadcast = $true
-        foreach ($mac in $Macs) {
+    # @(): one MAC must stay a list of one packet, not become the bytes of it.
+    $packets = @(foreach ($mac in $Macs) {
             $bytes = [byte[]]($mac -split '[:-]' | ForEach-Object { [Convert]::ToByte($_, 16) })
-            $packet = [byte[]](@(0xFF) * 6 + ($bytes * 16))
-            foreach ($broadcast in $Broadcasts) {
-                foreach ($port in 9, 7) {
-                    [void]$client.Send($packet, $packet.Length, (New-Object System.Net.IPEndPoint($broadcast, $port)))
+            , [byte[]](@(0xFF) * 6 + ($bytes * 16))
+        })
+    $limited = [System.Net.IPAddress]::Broadcast
+    $interfaces = Get-WakeInterfaces -Broadcasts $Broadcasts
+    # One send per interface (its network's broadcast and 255.255.255.255), the rest unbound.
+    $routes = @(foreach ($broadcast in $Broadcasts | Where-Object { -not $_.Equals($limited) }) {
+            $interface = $interfaces["$broadcast"]
+            if ($interface) { @{ Interface = $interface; Targets = @($broadcast, $limited) } }
+        })
+    $unbound = @($Broadcasts | Where-Object { -not $interfaces.ContainsKey("$_") -or $_.Equals($limited) })
+    if ($routes.Count -gt 0) {
+        # 255.255.255.255 goes out with the bound ones.
+        $unbound = @($unbound | Where-Object { -not $_.Equals($limited) })
+    }
+    if ($unbound.Count -gt 0) { $routes += @{ Interface = $null; Targets = $unbound } }
+
+    $used = @()
+    foreach ($route in $routes) {
+        $client = if ($route.Interface) {
+            New-Object System.Net.Sockets.UdpClient (New-Object System.Net.IPEndPoint($route.Interface.Address, 0))
+        } else {
+            New-Object System.Net.Sockets.UdpClient
+        }
+        try {
+            $client.EnableBroadcast = $true
+            if ($route.Interface -and $OnLinux) {
+                # SO_BINDTODEVICE (the agent runs as root): 255.255.255.255 too leaves on it.
+                try { $client.Client.SetRawSocketOption(1, 25, [System.Text.Encoding]::ASCII.GetBytes("$($route.Interface.Name)`0")) } catch { }
+            }
+            foreach ($packet in $packets) {
+                foreach ($target in $route.Targets) {
+                    foreach ($port in 9, 7) {
+                        [void]$client.Send($packet, $packet.Length, (New-Object System.Net.IPEndPoint($target, $port)))
+                    }
                 }
             }
         }
+        finally {
+            $client.Close()
+        }
+        $used += if ($route.Interface) { "$($route.Interface.Name) ($($route.Interface.Address))" } else { "the default route ($($route.Targets -join ', '))" }
     }
-    finally {
-        $client.Close()
-    }
+    return $used
 }
 
 function Save-CommandState {
@@ -3467,10 +3526,10 @@ function Invoke-DeviceCommand {
         'wake' {
             try {
                 $wake = Test-WakeParams -Params $Params
-                Send-MagicPacket -Macs $wake.Macs -Broadcasts $wake.Broadcasts
-                Write-AgentLog "Magic packet sent to $($wake.Macs -join ', ') via $($wake.Broadcasts -join ', ')"
+                $via = @(Send-MagicPacket -Macs $wake.Macs -Broadcasts $wake.Broadcasts) -join ', '
+                Write-AgentLog "Magic packet sent to $($wake.Macs -join ', ') via $via"
                 # Running until the woken device reports (the server finishes it, or it times out).
-                [void](Send-CommandStatus -Id $Id -Status running -Progress 50 -Message "Magic packet sent to $($wake.Macs -join ', '), waiting for the device to come online")
+                [void](Send-CommandStatus -Id $Id -Status running -Progress 50 -Message "Magic packet sent to $($wake.Macs -join ', ') via $via, waiting for the device to come online")
             }
             catch {
                 Write-AgentLog "Wake-on-LAN failed: $($_.Exception.Message)" -ErrorRecord $_

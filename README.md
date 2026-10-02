@@ -472,7 +472,9 @@ NAS or Raspberry Pi that is always on:
    server sees, the first `X-Forwarded-For` hop behind a proxy).
 3. The relay gets a `wake` command with the MAC addresses and the broadcast addresses (the network's
    own one and `255.255.255.255`) in its signed command response. It checks them again and sends the
-   packet to UDP ports 9 and 7. The command is the relay's (its history shows it); the woken device
+   packet to UDP ports 9 and 7, from the interface with an address in that network (agents 1.13.3+:
+   bound to its address, on Linux also to the interface), not the one of the default route (Docker,
+   VPN, a second card); the command says which interface it used. The command is the relay's (its history shows it); the woken device
    shows it like its other commands, with a progress bar.
 4. The command runs until the woken device reports (agents 1.13.2+; older ones are done once the
    packet is out). When it does not come online within 10 minutes, the wake fails and the woken
