@@ -48,6 +48,10 @@ A ping-only device (a printer, a NAS without the agent): an agent in its network
 
 ![Ping-only device](docs/screenshots/ping.png)
 
+Networks: a map of the fleet from what the agents report, top down the internet, the public addresses, their gateways, the networks (LAN, Wi-Fi, VPN) and the devices, with this server where it is:
+
+![Networks](docs/screenshots/networks.png)
+
 Notifications: firing alerts, rules and channels (ntfy, Discord, Telegram, e-mail, …):
 
 ![Notifications](docs/screenshots/notifications.png)
@@ -556,6 +560,35 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
   the unanswered periods marked. Every ping is kept for 30 days (`ping_results`, pruned daily).
 - In the device list it has a network icon; alerts offer the status only (offline for *n* minutes). Its address, prefix and MAC are changed in
   **Ping settings** in the device menu.
+
+### Networks
+
+**Networks** in the main menu draws the fleet as a map, built from what the agents report (no
+scanning). Top down:
+
+1. **Internet**.
+2. **Public addresses** (sites): the address each agent reaches the server from. An agent that
+   reaches it over a private address is inside the network of this server (hairpin NAT, split DNS).
+3. **Gateways**: the default gateway of the interfaces (agents 1.15.0+, with its MAC from the
+   neighbour table). One router of several networks (a LAN and a guest Wi-Fi) is one node.
+4. **Networks**: the IPv4 subnets of the interfaces, per site, LAN, Wi-Fi, LAN + Wi-Fi or mobile.
+   VPNs (WireGuard, Tailscale, …) span the sites and hang from the internet; the /32 of a VPN
+   client is in its /24. Docker, VM and Bluetooth interfaces are left out.
+5. **Devices**, linked to every network they have an interface in: a solid line for LAN, dotted for
+   Wi-Fi, dashed for VPN. A device in one network only sits under it (in up to three rows), one of
+   several between them. Ping-only devices are in the network of their address; their agent shows
+   how many it pings.
+
+**This server** is placed at the public address its name (`APP_URL`, else the address system admins
+open the portal with) resolves to, in the network the agents reach it from over private
+addresses; `MDM_PUBLIC_ADDRESS` sets the address by hand.
+
+A link that is down (a disconnected interface, an offline device) stays as a faint line; a network
+without anything online is drawn faint. A device that is the only agent in its networks is
+**isolated** (dashed orange): nothing next to it can wake it or ping the devices around it. The map is
+dragged and zoomed (wheel, two fingers, the buttons; **fit** shows all of it), a click on a device
+opens it, and it follows the agents live over Reverb. Under it every network is listed with its
+devices, gateway and the agents that can ping and wake in it.
 
 ### Dashboard
 

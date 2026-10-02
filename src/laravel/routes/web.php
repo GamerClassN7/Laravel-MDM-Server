@@ -95,6 +95,7 @@ Route::middleware('guest')->group(function () {
 Route::middleware('auth')->group(function () {
     Route::redirect('/', '/devices');
     Route::get('/devices', ShowDevices::class)->name('devices');
+    Route::get('/networks', App\Livewire\Networks\Page::class)->name('networks');
     Route::get('/notifications', App\Livewire\Notifications\Page::class)->name('notifications');
 });
 

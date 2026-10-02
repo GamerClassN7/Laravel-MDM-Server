@@ -852,6 +852,10 @@ class Device extends Model
                         ? ['Address' => $address['Address'], 'PrefixLength' => (int) $address['PrefixLength']] : null,
                     self::listOf($network['Addresses'] ?? []),
                 ))),
+                // Agents 1.15.0+: the default gateway of the interface and its MAC (network map).
+                'Gateway' => filter_var($network['Gateway'] ?? null, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ?: null,
+                'GatewayMac' => is_string($network['GatewayMac'] ?? null) && preg_match(DeviceCommand::MAC_PATTERN, $network['GatewayMac'])
+                    ? strtoupper(str_replace('-', ':', $network['GatewayMac'])) : null,
             ];
         }
         usort($networks, fn ($a, $b) => [! $a['Connected'], strtolower($a['Name'])] <=> [! $b['Connected'], strtolower($b['Name'])]);
