@@ -63,11 +63,11 @@ RUN apk add --no-cache nginx php84-fpm supervisor \
     && mkdir -p /run/nginx /var/lib/nginx/tmp /var/log/nginx \
     && chown -R app:app /run/nginx /var/lib/nginx /var/log/nginx
 
-COPY docker/nginx/nginx.conf /etc/nginx/nginx.conf
-COPY docker/php/php.ini /etc/php84/conf.d/zz-app.ini
-COPY docker/php/fpm.conf /etc/php84/php-fpm.d/www.conf
-COPY docker/supervisor/supervisord.conf /etc/supervisord.conf
-COPY docker/entrypoint.sh /usr/local/bin/entrypoint
+COPY src/docker/nginx/nginx.conf /etc/nginx/nginx.conf
+COPY src/docker/php/php.ini /etc/php84/conf.d/zz-app.ini
+COPY src/docker/php/fpm.conf /etc/php84/php-fpm.d/www.conf
+COPY src/docker/supervisor/supervisord.conf /etc/supervisord.conf
+COPY src/docker/entrypoint.sh /usr/local/bin/entrypoint
 
 COPY --from=vendor --chown=app:app /var/www ./
 COPY --from=assets --chown=app:app /build/public/build ./public/build

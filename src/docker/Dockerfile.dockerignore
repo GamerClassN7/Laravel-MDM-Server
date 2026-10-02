@@ -1,6 +1,7 @@
-# Only src/laravel and docker/ are needed to build the image
+# Next to src/docker/Dockerfile (BuildKit reads <Dockerfile>.dockerignore; the context is the
+# repository root). Only src/laravel, src/docker/ and the agent are needed to build the image
 *
-!docker/
+!src/docker/
 !src/laravel/
 !src/powershell/app.ps1
 src/laravel/.env

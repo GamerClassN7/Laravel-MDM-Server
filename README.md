@@ -70,7 +70,8 @@ Notifications: firing alerts, rules and channels (ntfy, Discord, Telegram, e-mai
 |------|---------|
 | `src/laravel` | Server application (Laravel) |
 | `src/powershell` | Agent (Windows, Debian / Ubuntu) |
-| `Dockerfile`, `docker-compose.yml`, `docker/` | Container setup |
+| `src/docker` | Container image: `Dockerfile` (built from the repository root) and its nginx, PHP, supervisor and entrypoint configuration |
+| `docker-compose.yml`, `docker-compose.mysql.yml` | Running the image |
 
 ## Server setup
 

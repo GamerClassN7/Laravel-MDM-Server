@@ -2,7 +2,9 @@
 services:
   app:
     image: ghcr.io/gamerclassn7/laravel-mdm-server:latest
-    build: .
+    build:
+      context: .
+      dockerfile: src/docker/Dockerfile
     env_file: src/laravel/.env
     environment:
       DB_HOST: database
