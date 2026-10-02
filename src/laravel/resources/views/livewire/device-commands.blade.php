@@ -143,15 +143,22 @@
         </div>
     </div>
 
-    @if ($recentWake)
-        <div class="small mt-2 {{ $recentWake->status === 'failed' || $recentWake->status === 'expired' ? 'text-danger' : 'text-muted' }}">
-            <i class="fas fa-sun me-1"></i>{{ __('Wake-on-LAN through :relay', ['relay' => $recentWake->device?->displayName]) }}:
-            {{ in_array($recentWake->status, ['queued', 'sent'], true) ? __('waiting for :relay to send the magic packet', ['relay' => $recentWake->device?->displayName]) : $recentWake->statusLabel }}@if ($recentWake->resultNote) · {{ $recentWake->resultNote }}@endif
-            @if ($recentWake->status === 'succeeded')
-                · {{ __('waiting for the device to come online…') }}
-            @endif
+    @if ($recentWake?->active)
+        {{-- Like the other commands: a progress bar until the device comes online (agents 1.13.2+). --}}
+        <div class="mt-3">
+            @include('partials.device.command-progress', [
+                'command' => $recentWake,
+                'note' => in_array($recentWake->status, ['queued', 'sent'], true)
+                    ? __('waiting for :relay to send the magic packet', ['relay' => $recentWake->device?->displayName])
+                    : ($recentWake->displayMessage ?: __('Magic packet sent by :relay, waiting for the device to come online', ['relay' => $recentWake->device?->displayName])),
+            ])
         </div>
-    @elseif ($selectedDevice->offline && ($hasData || $selectedDevice->isPingOnly) && $wakeRefusal)
+    @elseif ($recentWake?->status === 'succeeded')
+        {{-- Agents before 1.13.2 are done once the packet is out. --}}
+        <div class="small text-muted mt-2">
+            <i class="fas fa-sun me-1"></i>{{ __('Magic packet sent by :relay', ['relay' => $recentWake->device?->displayName]) }} · {{ __('waiting for the device to come online…') }}
+        </div>
+    @elseif (! $recentWake && $selectedDevice->offline && ($hasData || $selectedDevice->isPingOnly) && $wakeRefusal)
         <div class="small text-muted mt-2"><i class="fas fa-sun me-1"></i>{{ __('Wake-on-LAN') }}: {{ $wakeRefusal }}</div>
     @endif
 

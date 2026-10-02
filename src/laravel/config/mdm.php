@@ -17,6 +17,10 @@ return [
     // Time zone of the script schedules (cron expressions), e.g. Europe/Prague.
     'timezone' => env('APP_TIMEZONE', 'UTC'),
 
+    // pwsh for checking scripts with the PowerShell parser when they are saved (found in PATH when
+    // not set); without it a lighter check of their structure is used.
+    'pwsh' => env('MDM_PWSH'),
+
     // Seconds a signed message may differ from the server clock.
     'signature_max_skew' => 300,
 

@@ -30,6 +30,16 @@
         @if ($alert['message'])
             <div class="small text-body-secondary text-break">{{ $alert['message'] }}</div>
         @endif
+        @if ($alert['details'] ?? [])
+            <details class="small text-body-secondary">
+                <summary>{{ trans_choice(':count more|:count more', count($alert['details'])) }}</summary>
+                <ul class="mb-0 ps-3 text-break">
+                    @foreach ($alert['details'] as $detail)
+                        <li>{{ $detail }}</li>
+                    @endforeach
+                </ul>
+            </details>
+        @endif
         @if ($alert['failure'])
             <div class="small text-danger"><i class="fas fa-times-circle me-1"></i>{{ __('Last attempt failed: :reason', ['reason' => $alert['failure']]) }}</div>
         @endif

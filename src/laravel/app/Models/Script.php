@@ -14,6 +14,7 @@ use SteelAnts\LaravelBoilerplate\Traits\Auditable;
 /**
  * A remediation script: a PowerShell detection script (exit 0 = compliant, 1 = needs remediation)
  * and an optional remediation script, run on the devices as SYSTEM / root without network access.
+ * With manual_remediation the runs only detect; the remediation is started per device (Remediate).
  */
 class Script extends Model
 {
@@ -23,12 +24,16 @@ class Script extends Model
 
     public const MAX_TIMEOUT = 3600;
 
+    /** The most a detection or remediation script may have, in bytes (as in Intune: 200 kB). */
+    public const MAX_CODE_BYTES = 204800;
+
     /** Runs not taken by the agent within this time expire (the signed manifest does too). */
     public const RUN_TTL = 86400;
 
-    protected $fillable = ['name', 'description', 'platform', 'detection', 'remediation', 'timeout', 'schedule', 'schedule_target'];
+    protected $fillable = ['name', 'description', 'platform', 'detection', 'remediation', 'timeout', 'schedule', 'schedule_target', 'manual_remediation'];
 
     protected $casts = [
+        'manual_remediation' => 'boolean',
         'schedule_target' => 'array',
         'last_scheduled_at' => 'datetime',
     ];
@@ -124,6 +129,18 @@ class Script extends Model
         ]));
     }
 
+    /** The fingerprint of a run that only detects: the device gets no remediation script. */
+    public function detectionFingerprint(): string
+    {
+        return self::fingerprintOf($this->platform, (int) $this->timeout, $this->detection, null);
+    }
+
+    /** Whether runs only detect and the remediation is started by hand. */
+    public function getDetectsOnlyAttribute(): bool
+    {
+        return $this->manual_remediation && $this->remediation !== null;
+    }
+
     public function runs(): HasMany
     {
         return $this->hasMany(ScriptRun::class);
@@ -149,23 +166,26 @@ class Script extends Model
     }
 
     /**
-     * Queues a run on each device that can run it and triggers the agents. Returns the runs.
+     * Queues a run on each device that can run it and triggers the agents. Returns the runs. A
+     * script with manual remediation only detects, unless $remediate (Remediate on a device).
      *
      * @param  array<int>  $deviceIds
      * @return \Illuminate\Support\Collection<int, ScriptRun>
      */
-    public function runOn(array $deviceIds, ?User $user = null, bool $scheduled = false)
+    public function runOn(array $deviceIds, ?User $user = null, bool $scheduled = false, bool $remediate = false)
     {
+        $detectOnly = $this->detectsOnly && ! $remediate;
         $runs = Device::query()->whereIn('id', $deviceIds)->get()
             ->filter(fn (Device $device) => $this->unavailableReason($device) === null)
-            ->map(function (Device $device) use ($user) {
+            ->map(function (Device $device) use ($user, $detectOnly) {
                 // A newer run replaces a waiting one of the same script.
                 $this->runs()->where('device_id', $device->id)->where('status', 'pending')->update(['status' => 'superseded']);
 
                 $run = $this->runs()->create([
                     'device_id' => $device->id,
                     'version' => $this->version,
-                    'fingerprint' => $this->fingerprint,
+                    'mode' => $detectOnly ? 'detect' : null,
+                    'fingerprint' => $detectOnly ? $this->detectionFingerprint() : $this->fingerprint,
                     'issued_by' => $user?->id,
                     'issued_at' => now(),
                     'expires_at' => now()->addSeconds(self::RUN_TTL),
@@ -178,7 +198,11 @@ class Script extends Model
             ->values();
 
         $activity = new Activity;
-        $activity->lang_text = $scheduled ? __('Scheduled run of Script :name', ['name' => $this->name]) : __('Ran Script :name', ['name' => $this->name]);
+        $activity->lang_text = match (true) {
+            $remediate => __('Remediated with Script :name', ['name' => $this->name]),
+            $scheduled => __('Scheduled run of Script :name', ['name' => $this->name]),
+            default => __('Ran Script :name', ['name' => $this->name]),
+        };
         $activity->data = ['version' => $this->version, 'fingerprint' => $this->fingerprint, 'devices' => $runs->pluck('device_id')->all()];
         $activity->affected()->associate($this);
         $activity->save();

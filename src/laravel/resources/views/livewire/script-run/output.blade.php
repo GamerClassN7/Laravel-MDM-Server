@@ -1,6 +1,6 @@
 <div>
     <div class="d-flex flex-wrap align-items-center gap-2 small text-muted mb-2">
-        <x-badge :color="$run->statusColor" size="sm" variant="subtle">{{ __(ucfirst($run->status)) }}</x-badge>
+        <x-badge :color="$run->statusColor" size="sm" variant="subtle">{{ \App\Models\ScriptRun::statusLabel($run->status) }}</x-badge>
         <span>{{ $run->script?->name }} v{{ $run->version }}</span>
         <span>· {{ $run->device?->displayName }}</span>
         @if ($run->finished_at)

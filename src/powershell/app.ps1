@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.13.0'
+$AgentVersion = '1.14.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -259,6 +259,139 @@ function Get-WingetSoftware {
 }
 
 
+function Invoke-WingetInUserSession {
+    # Runs "winget <Arguments>" as the logged-on user (a one-off task: interactive, highest
+    # privileges, no password needed; conhost --headless keeps it without a window on Windows 10
+    # 1809+). Returns @{ User; Code; Lines }, $null when nobody is logged on. -OnWait gets the
+    # lines so far every 2 s. The arguments must be of a checked form (ids, fixed options).
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Arguments,
+        [string]
+        $Title = 'winget',
+        [int]
+        $TimeoutSeconds = 900,
+        [scriptblock]
+        $OnWait
+    )
+
+    $user = try { (Get-CimInstance -ClassName Win32_ComputerSystem -Property UserName).UserName } catch { $null }
+    if (-not $user) { return $null }
+    $tag = [guid]::NewGuid().ToString('N')
+    $name = "Laravel-MDM-Winget-$($tag.Substring(0, 12))"
+    # Windows\Temp: the user can create the file, SYSTEM reads it.
+    $log = Join-Path $env:SystemRoot "Temp\mdm-winget-$tag.log"
+    # cmd writes winget's exit code into the log itself (MDMEXIT=; the redirection goes first,
+    # "=0>>" would redirect handle 0), so the result does not depend on when Task Scheduler
+    # updates LastTaskResult (267009 = still running).
+    $command = "title Laravel MDM - $Title & echo Laravel MDM: $Title. This window closes by itself. & winget $Arguments > `"$log`" 2>&1 & >>`"$log`" echo MDMEXIT=!errorlevel!"
+    if ([Environment]::OSVersion.Version.Build -ge 17763 -and (Test-Path "$env:SystemRoot\System32\conhost.exe")) {
+        $execute = "$env:SystemRoot\System32\conhost.exe"
+        $taskArguments = "--headless `"$env:SystemRoot\System32\cmd.exe`" /v:on /c `"$command`""
+    } else {
+        $execute = "$env:SystemRoot\System32\cmd.exe"
+        $taskArguments = "/v:on /c `"$command`""
+    }
+    # No $state here: -OnWait runs in this scope and reads the update job's $state.
+    $code = -1
+    $lines = @()
+    try {
+        $action = New-ScheduledTaskAction -Execute $execute -Argument $taskArguments
+        $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds $TimeoutSeconds) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $name -ErrorAction Stop
+        $deadline = (Get-Date).AddSeconds($TimeoutSeconds + 60)
+        $exit = $null
+        do {
+            Start-Sleep -Seconds 2
+            $lines = @(Get-Content -Path $log -Encoding UTF8 -ErrorAction SilentlyContinue)
+            $exit = $lines | Where-Object { $_ -match '^MDMEXIT=(-?\d+)' } | Select-Object -Last 1
+            $info = Get-ScheduledTaskInfo -TaskName $name -ErrorAction Stop
+            $taskState = (Get-ScheduledTask -TaskName $name -ErrorAction Stop).State
+            # 267009 = still running, 267011 = not started yet.
+            $busy = "$taskState" -eq 'Running' -or $info.LastTaskResult -in 267009, 267011
+            if ($OnWait -and -not $exit) { try { & $OnWait $lines } catch { } }
+        } while (-not $exit -and $busy -and (Get-Date) -lt $deadline)
+        $lines = @(Get-Content -Path $log -Encoding UTF8 -ErrorAction SilentlyContinue)
+        # cmd may have written MDMEXIT= between the last read and the task state check.
+        if (-not $exit) { $exit = $lines | Where-Object { $_ -match '^MDMEXIT=(-?\d+)' } | Select-Object -Last 1 }
+        if ($exit -match '^MDMEXIT=(-?\d+)') {
+            $code = [int]$Matches[1]
+        } elseif ($busy) {
+            Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+            $code = -1
+        } else {
+            $code = [BitConverter]::ToInt32([BitConverter]::GetBytes([uint32]$info.LastTaskResult), 0)
+        }
+    }
+    finally {
+        Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -Path $log -Force -ErrorAction SilentlyContinue
+    }
+    return @{ User = $user; Code = $code; Lines = @($lines | Where-Object { $_ -notmatch '^MDMEXIT=' }) }
+}
+
+function Get-WingetUpdates {
+    # The updates winget offers, as SYSTEM (machine-wide installs) and in the session of the
+    # logged-on user (installs only for them, which SYSTEM does not see; the user's own
+    # "winget upgrade" shows both). Scope: machine, or user for the ones only the user sees.
+    $system = @(Get-WingetSoftware -Updatable)
+    $known = @{}
+    foreach ($item in $system) {
+        $item | Add-Member -Name 'Scope' -Value 'machine' -MemberType NoteProperty -Force
+        $known[$item.Id] = $true
+        $item
+    }
+    # Without conhost --headless (before Windows 10 1809) the check would open a window on the
+    # user's desktop at every inventory: only an update the user asked for does that.
+    if ($env:OS -ne 'Windows_NT' -or [Environment]::OSVersion.Version.Build -lt 17763 -or -not (Test-Path "$env:SystemRoot\System32\conhost.exe")) { return }
+    try {
+        $session = Invoke-WingetInUserSession -Arguments 'upgrade --accept-source-agreements --disable-interactivity' -Title 'checking for updates' -TimeoutSeconds 180
+    }
+    catch {
+        return
+    }
+    if (-not $session -or $session.Code -notin 0, -1978335189) { return }
+    foreach ($values in @(ConvertFrom-WingetTable -Lines $session.Lines)) {
+        $id = $values[1]
+        if ($known.ContainsKey($id) -or $values.Count -lt 5 -or $id -notmatch '^[A-Za-z0-9][A-Za-z0-9._+\-]*$') { continue }
+        $known[$id] = $true
+        [PSCustomObject]@{
+            Name      = $values[0]
+            Id        = $id
+            Version   = $values[2]
+            Avaliable = $values[3]
+            Source    = $values[$values.Count - 1]
+            Scope     = 'user'
+        }
+    }
+}
+
+function Get-WingetStatus {
+    # What a running winget is doing, from its output so far (any language): the download in
+    # MB / percent, else that the installer runs. Lines are split at the carriage returns of its
+    # progress bar.
+    param ([string[]]$Lines)
+
+    $segments = @($Lines | ForEach-Object { "$_" -split "`r" } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    for ($i = $segments.Count - 1; $i -ge 0; $i--) {
+        $text = $segments[$i]
+        if ($text -match '([0-9]+(?:[.,][0-9]+)?)\s*(KB|MB|GB)\s*/\s*([0-9]+(?:[.,][0-9]+)?)\s*(KB|MB|GB)') {
+            # A text line after the bar: the download is done, the next step runs.
+            if ($i -lt $segments.Count - 1) { return 'running the installer' }
+            return "downloading $($Matches[1]) $($Matches[2]) / $($Matches[3]) $($Matches[4])"
+        }
+        if ($text -match '^[^0-9]*?([0-9]{1,3})\s*%$') {
+            if ($i -lt $segments.Count - 1) { return 'running the installer' }
+            return "downloading $($Matches[1]) %"
+        }
+    }
+    if ($segments.Count -gt 0) { return 'preparing' }
+    return 'starting'
+}
+
 function Get-WindowsUpdate {
     $UpdateSession = New-Object -ComObject Microsoft.Update.Session
     $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
@@ -320,13 +453,9 @@ function Install-WindowsUpdate {
             $waiting += $update.Title
             continue
         }
-        # Drivers (Type 2) are flagged so (graphics drivers) but install without a window, as Windows
-        # Update itself installs them as SYSTEM.
-        if ($update.InstallationBehavior.CanRequestUserInput -and [int]$update.Type -ne 2) {
-            # Would wait for a window nobody sees (SYSTEM has no desktop).
-            [void]$State.Failures.Add("$($update.Title): asks for user input, install it on the device")
-            continue
-        }
+        # CanRequestUserInput is set for many drivers and vendor packages (NVIDIA, Intel, firmware):
+        # with ForceQuiet they install without a window, as Windows Update itself installs them as
+        # SYSTEM. One that really needs a person fails and says so in its result.
         if (-not $update.EulaAccepted) { $update.AcceptEula() }
         $Updates.Add($update) | Out-Null
     }
@@ -1451,7 +1580,7 @@ function Initialize-ServerKey {
     } elseif ($ServerKeyFingerprint -and $key.fingerprint -ne $ServerKeyFingerprint.ToLowerInvariant()) {
         throw "The pinned server key $($key.fingerprint) does not match -ServerKeyFingerprint $ServerKeyFingerprint. Reinstall with -ResetServerKey if the server key was replaced on purpose."
     } elseif ($embedded -and (Get-KeyFingerprint -Key $embedded) -ne $key.fingerprint) {
-        Write-AgentLog "Warning: this agent carries server key $(Get-KeyFingerprint -Key $embedded), the pinned key $($key.fingerprint) stays trusted"
+        Write-AgentLog "Warning: this agent carries server key $(Get-KeyFingerprint -Key $embedded), the pinned key $($key.fingerprint) stays trusted" -IsError
     }
 
     Set-ServerKey -Key $key
@@ -1832,7 +1961,7 @@ function Request-ScriptRuns {
             $script:ScriptQueue.Enqueue($run)
         }
         catch {
-            Write-AgentLog "Script run $runId rejected: $($_.Exception.Message)"
+            Write-AgentLog "Script run $runId rejected: $($_.Exception.Message)" -ErrorRecord $_
             if ($runId) {
                 try { Invoke-MdmApi -Method Post -Path "device/scripts/runs/$runId" -Token $Token -Body @{ status = 'rejected'; error = $_.Exception.Message } | Out-Null } catch { }
             }
@@ -1910,7 +2039,10 @@ function Update-ScriptRun {
     $manifest = $current.Run.Manifest
     $output = $current.Output.ToString()
     if ($output.Length -gt 16000) { $output = $output.Substring(0, 16000) }
-    Write-AgentLog "Script '$($manifest.name)' ($($manifest.fingerprint)): $status$(if ($current.Error) { ", $($current.Error)" })"
+    # A run that only detects (manual remediation): exit 1 is "needs remediation", started from the
+    # portal; reported as failed (nothing ran), the server tells it apart.
+    $logged = if ($manifest.detect_only -and $status -eq 'failed' -and $current.Exit['detection'] -eq 1) { 'needs remediation (started from the portal)' } else { $status }
+    Write-AgentLog "Script '$($manifest.name)' ($($manifest.fingerprint)): $logged$(if ($current.Error) { ", $($current.Error)" })"
     try {
         Invoke-MdmApi -Method Post -Path "device/scripts/runs/$($manifest.run_id)" -Token $Token -Body @{
         status              = $status
@@ -1923,7 +2055,7 @@ function Update-ScriptRun {
         } | Out-Null
     }
     catch {
-        Write-AgentLog "Script result not sent: $($_.Exception.Message)"
+        Write-AgentLog "Script result not sent: $($_.Exception.Message)" -ErrorRecord $_
     }
 }
 
@@ -1932,10 +2064,15 @@ function Update-ScriptRun {
 #region Agent
 
 function Write-AgentLog {
+    # -IsError, or -ErrorRecord of an error that is not just the network: the line also goes to the
+    # server, as an alert of the device (Send-AgentErrors).
     param (
         [Parameter(Mandatory = $true)]
         [string]
-        $Message
+        $Message,
+        [switch]
+        $IsError,
+        $ErrorRecord
     )
 
     $LogPath = "$AgentDir/agent.log"
@@ -1943,6 +2080,98 @@ function Write-AgentLog {
         Move-Item -Path $LogPath -Destination "$LogPath.1" -Force
     }
     "{0:yyyy-MM-dd HH:mm:ss} {1}" -f (Get-Date), $Message | Add-Content -Path $LogPath -Encoding UTF8
+    if ($IsError -or ($ErrorRecord -and -not (Test-NetworkError -ErrorRecord $ErrorRecord))) {
+        Add-AgentError -Message $Message
+    }
+}
+
+function Test-NetworkError {
+    # The server or the network could not be reached (nothing the server can show while it is so);
+    # an answer of the server with an error is not one.
+    param ($ErrorRecord)
+
+    $exception = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
+    if ($exception -and $null -ne $exception.Data['MdmStatus']) { return $false }
+    # By name: Windows PowerShell has no System.Net.Http before the first request loads it (a type
+    # literal would throw). An IOException only under one of them (a broken connection), not a
+    # file the agent could not write.
+    $network = @('System.Net.Http.HttpRequestException', 'System.Net.Sockets.SocketException', 'System.Net.WebSockets.WebSocketException',
+        'System.Net.WebException', 'System.TimeoutException', 'System.Threading.Tasks.TaskCanceledException') |
+        ForEach-Object { $_ -as [type] } | Where-Object { $_ }
+    $inner = $false
+    while ($exception) {
+        if (@($network | Where-Object { $_.IsInstanceOfType($exception) }).Count -gt 0 -or ($inner -and $exception -is [System.IO.IOException])) {
+            return $true
+        }
+        $exception = $exception.InnerException
+        $inner = $true
+    }
+    return $false
+}
+
+function Add-AgentError {
+    # Kept (also over a restart) until the server took it, the same message counted once.
+    param ([string]$Message)
+
+    # Only the agent itself, not its jobs (they have their own variables).
+    if ($null -eq $script:AgentErrors) { return }
+    try {
+        $now = Get-UnixTime
+        $text = if ($Message.Length -gt 500) { $Message.Substring(0, 500) } else { $Message }
+        $known = $script:AgentErrors | Where-Object { $_['message'] -eq $text } | Select-Object -First 1
+        if ($known) {
+            # Index syntax: .count of a dictionary is its number of entries.
+            $known['count'] = [int]$known['count'] + 1
+            $known['last'] = $now
+        } else {
+            if ($script:AgentErrors.Count -ge 30) { $script:AgentErrors.RemoveAt(0) }
+            [void]$script:AgentErrors.Add([ordered]@{ message = $text; count = 1; first = $now; last = $now })
+        }
+        ConvertTo-Json -InputObject @($script:AgentErrors) -Depth 3 -Compress | Set-Content -Path "$AgentDir/pending-errors.json" -Encoding UTF8
+    }
+    catch {
+        # Never break the log line itself.
+    }
+}
+
+function Initialize-AgentErrors {
+    $script:AgentErrors = New-Object System.Collections.ArrayList
+    try {
+        if (Test-Path -Path "$AgentDir/pending-errors.json") {
+            # ForEach-Object: Windows PowerShell's ConvertFrom-Json passes the array on as one object.
+            foreach ($item in @(Get-Content -Path "$AgentDir/pending-errors.json" -Raw -Encoding UTF8 | ConvertFrom-Json | ForEach-Object { $_ })) {
+                if ($item.message) {
+                    [void]$script:AgentErrors.Add([ordered]@{ message = "$($item.message)"; count = [int]$item.count; first = [long]$item.first; last = [long]$item.last })
+                }
+            }
+        }
+    }
+    catch {
+        $script:AgentErrors.Clear()
+    }
+}
+
+function Send-AgentErrors {
+    # The errors of the log to the server (an alert of the device); kept when it cannot take them.
+    param ([Parameter(Mandatory = $true)][string]$Token)
+
+    if (-not $script:AgentErrors -or $script:AgentErrors.Count -eq 0) { return }
+    $batch = @($script:AgentErrors.ToArray())
+    try {
+        Invoke-MdmApi -Method Post -Path 'device/errors' -Token $Token -Body @{ errors = $batch } | Out-Null
+        $sent = $true
+    }
+    catch {
+        # A server without it (or an agent that does not sign): nothing to wait for.
+        $sent = $_.Exception.Data['MdmStatus'] -in 403, 404
+        if (-not $sent) { return }
+    }
+    foreach ($item in $batch) { $script:AgentErrors.Remove($item) }
+    if ($script:AgentErrors.Count -eq 0) {
+        Remove-Item -Path "$AgentDir/pending-errors.json" -Force -ErrorAction SilentlyContinue
+    } else {
+        ConvertTo-Json -InputObject @($script:AgentErrors) -Depth 3 -Compress | Set-Content -Path "$AgentDir/pending-errors.json" -Encoding UTF8
+    }
 }
 
 function Invoke-MdmApi {
@@ -2298,7 +2527,7 @@ if (-not `$onLinux) { Unregister-ScheduledTask -TaskName 'Laravel-MDM-Agent-Rest
         $pwsh = (Get-Process -Id $PID).Path
         # Not in the agent's cgroup: systemd would stop it together with the agent.
         systemd-run --unit="laravel-mdm-agent-restart-$PID" --collect --quiet $pwsh -NoProfile -NonInteractive -EncodedCommand $encoded 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { Write-AgentLog 'Agent update: systemd-run failed, no rollback watcher' }
+        if ($LASTEXITCODE -ne 0) { Write-AgentLog 'Agent update: systemd-run failed, no rollback watcher' -IsError }
         return
     }
     try {
@@ -2341,7 +2570,7 @@ function Start-AgentJob {
 
 function Start-InventoryCollection {
     # Windows Update search and winget are expensive, run them rarely in a separate idle-priority process.
-    return Start-AgentJob -Name 'inventory' -Functions 'Get-WingetSoftware', 'Get-WindowsUpdate', 'Get-AptUpdates', 'Get-UserCommand', 'Get-FlatpakUpdates', 'Get-SnapUpdates', 'Get-PowerShellReleaseUpdate', 'Get-PowerShellManager', 'ConvertFrom-WingetTable', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules' -ArgumentList $OnLinux -ScriptBlock {
+    return Start-AgentJob -Name 'inventory' -Functions 'Get-WingetSoftware', 'Get-WingetUpdates', 'Invoke-WingetInUserSession', 'Get-WindowsUpdate', 'Get-AptUpdates', 'Get-UserCommand', 'Get-FlatpakUpdates', 'Get-SnapUpdates', 'Get-PowerShellReleaseUpdate', 'Get-PowerShellManager', 'ConvertFrom-WingetTable', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules' -ArgumentList $OnLinux -ScriptBlock {
         param ($OnLinux)
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
         $data = @{}
@@ -2353,7 +2582,7 @@ function Start-InventoryCollection {
             try { $packages += @(Get-SnapUpdates) } catch { }
         } else {
             try { $data['os_updates'] = @(Get-WindowsUpdate) } catch { }
-            try { $packages += @(Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source) } catch { }
+            try { $packages += @(Get-WingetUpdates | Select-Object -Property Id, Version, Avaliable, Source, Scope) } catch { }
         }
         try { $packages += @(Get-PowerShellReleaseUpdate -OnLinux $OnLinux -Known (@($data['os_updates']) + $packages)) } catch { }
         $data['packages_updates'] = $packages
@@ -2430,13 +2659,13 @@ function Get-Report {
     if ($Health) {
         $data['disk_health'] = $Health
     }
-    try { $data['services'] = @(Get-AgentServices) } catch { Write-AgentLog "Services failed: $($_.Exception.Message)" }
+    try { $data['services'] = @(Get-AgentServices) } catch { Write-AgentLog "Services failed: $($_.Exception.Message)" -ErrorRecord $_ }
     try {
         $docker = Get-DockerContainers
         if ($docker) { $data['docker'] = $docker }
     }
     catch {
-        Write-AgentLog "Docker failed: $($_.Exception.Message)"
+        Write-AgentLog "Docker failed: $($_.Exception.Message)" -ErrorRecord $_
     }
 
     return $data
@@ -2475,6 +2704,69 @@ function Set-PingTargets {
         } | Select-Object -First 32)
 }
 
+function Invoke-Pings {
+    # Pings the targets (@{ Id; Address }) at once and returns id => @{ Up; Rtt; Via }. A target in
+    # the network of a local interface is pinged from that interface (the system ping: -I on Linux,
+    # -S with its address on Windows), not over whatever the default route picks (Docker, VPN, a
+    # second card); the others, or without a ping command, with .NET Ping.
+    param ($Targets, [int]$TimeoutMs = 1000)
+
+    if ($null -eq $script:PingCommand) {
+        $script:PingCommand = if ($OnLinux) { (Get-Command -Name ping -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source } else { "$env:SystemRoot\System32\ping.exe" }
+        if (-not $script:PingCommand -or -not (Test-Path -Path $script:PingCommand)) { $script:PingCommand = '' }
+        # BusyBox ping (Alpine) knows no -n (it does not resolve names anyway).
+        $script:PingNumeric = $OnLinux -and $script:PingCommand -and "$((Get-Item -Path $script:PingCommand -ErrorAction SilentlyContinue).ResolvedTarget)" -notmatch 'busybox'
+    }
+    $networks = if ($script:PingCommand) { @(Get-LocalNetworks) } else { @() }
+    $seconds = [Math]::Max(1, [int][Math]::Ceiling($TimeoutMs / 1000))
+    $runs = @(foreach ($target in $Targets) {
+            $network = if ($networks.Count -gt 0) { Find-LocalNetwork -Networks $networks -Address $target.Address } else { $null }
+            if ($network) {
+                $info = New-Object System.Diagnostics.ProcessStartInfo
+                $info.FileName = $script:PingCommand
+                # The address comes from Set-PingTargets (a parsed IPv4 address), the name from the system.
+                $info.Arguments = if ($OnLinux) { "$(if ($script:PingNumeric) { '-n ' })-c 1 -W $seconds -I `"$($network.Name)`" $($target.Address)" } else { "-n 1 -w $TimeoutMs -S $($network.Address) $($target.Address)" }
+                $info.UseShellExecute = $false
+                $info.RedirectStandardOutput = $true
+                $info.RedirectStandardError = $true
+                $info.CreateNoWindow = $true
+                $process = try { [System.Diagnostics.Process]::Start($info) } catch { $null }
+                if ($process) {
+                    @{ Id = $target.Id; Process = $process; Output = $process.StandardOutput.ReadToEndAsync(); Via = $network.Name }
+                    continue
+                }
+            }
+            $ping = New-Object System.Net.NetworkInformation.Ping
+            @{ Id = $target.Id; Ping = $ping; Task = $ping.SendPingAsync($target.Address, $TimeoutMs); Via = $null }
+        })
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMs + 2000)
+    $results = @{}
+    foreach ($run in $runs) {
+        $left = [Math]::Max(0, [int]($deadline - (Get-Date)).TotalMilliseconds)
+        $up = $false
+        $rtt = $null
+        if ($run.Process) {
+            if ($run.Process.WaitForExit($left)) {
+                $text = try { $run.Output.Result } catch { '' }
+                # Windows answers 0 also for "destination unreachable": only a reply carries TTL=.
+                $up = $run.Process.ExitCode -eq 0 -and ($OnLinux -or $text -match 'TTL=')
+                if ($up -and $text -match '[=<]\s*([0-9]+(?:[.,][0-9]+)?)\s*ms') { $rtt = [double]($Matches[1].Replace(',', '.')) }
+            } else {
+                try { $run.Process.Kill() } catch { }
+            }
+            $run.Process.Dispose()
+        } else {
+            try { [void]$run.Task.Wait($left) } catch { }
+            $reply = if ($run.Task.Status -eq 'RanToCompletion') { $run.Task.Result } else { $null }
+            $up = $reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
+            if ($up) { $rtt = [double]$reply.RoundtripTime }
+            $run.Ping.Dispose()
+        }
+        $results[$run.Id] = @{ Up = [bool]$up; Rtt = $rtt; Via = $run.Via }
+    }
+    return $results
+}
+
 function Send-PingResults {
     # Pings the ping-only devices (all at once, 1 s timeout) and reports which answered: the
     # answer is their online status in the portal.
@@ -2487,17 +2779,11 @@ function Send-PingResults {
     if (-not $script:PingTargets -or $script:PingTargets.Count -eq 0) {
         return
     }
-    $pings = @($script:PingTargets | ForEach-Object {
-            $ping = New-Object System.Net.NetworkInformation.Ping
-            @{ Id = $_.Id; Ping = $ping; Task = $ping.SendPingAsync($_.Address, 1000) }
-        })
-    try { [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($pings | ForEach-Object { $_.Task }), 3000) } catch { }
+    $pings = Invoke-Pings -Targets $script:PingTargets -TimeoutMs 1000
     $at = Get-UnixTime
-    $results = @($pings | ForEach-Object {
-            $reply = if ($_.Task.Status -eq 'RanToCompletion') { $_.Task.Result } else { $null }
-            $up = $reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
-            $_.Ping.Dispose()
-            @{ id = $_.Id; up = [bool]$up; rtt = $(if ($up) { [double]$reply.RoundtripTime } else { $null }); at = $at }
+    $results = @($script:PingTargets | ForEach-Object {
+            $reply = $pings[$_.Id]
+            @{ id = $_.Id; up = [bool]$reply.Up; rtt = $(if ($reply.Up) { $reply.Rtt } else { $null }); at = $at }
         })
     try {
         $response = Invoke-MdmApi -Method Post -Path 'device/pings' -Token $Token -Body @{ results = $results }
@@ -2506,7 +2792,7 @@ function Send-PingResults {
         }
     }
     catch {
-        Write-AgentLog "Ping results not sent: $($_.Exception.Message)"
+        Write-AgentLog "Ping results not sent: $($_.Exception.Message)" -ErrorRecord $_
         # Not reached: the pings go into the history later (see Send-Backlog).
         if ($null -eq $_.Exception.Data['MdmStatus']) { Add-Backlog -Kind 'pings' -Items $results -Max 10000 }
     }
@@ -2565,7 +2851,7 @@ function Update-Agent {
         [System.IO.File]::WriteAllBytes((Join-Path $AgentDir 'app.ps1'), $bytes)
     }
     catch {
-        Write-AgentLog "Agent update failed: $($_.Exception.Message)"
+        Write-AgentLog "Agent update failed: $($_.Exception.Message)" -ErrorRecord $_
         [void](Send-CommandStatus -Id $CommandId -Status failed -Message $_.Exception.Message)
         return
     }
@@ -2606,9 +2892,15 @@ function Send-CommandStatus {
         return $true
     }
     catch {
-        Write-AgentLog "Command ${Id}: status '$Status' not reported: $($_.Exception.Message)"
-        # The server gave the command up meanwhile (not_running) or does not know it.
-        return $_.Exception.Data['MdmError'] -in 'not_running', 'Not Found'
+        # The server gave the command up meanwhile (not_running) or does not know it: expected
+        # (cancelled, given up, a wake finished by the woken device), not an error of the agent.
+        $gone = $_.Exception.Data['MdmError'] -in 'not_running', 'Not Found'
+        if ($gone) {
+            Write-AgentLog "Command ${Id}: status '$Status' not reported: $($_.Exception.Message)"
+        } else {
+            Write-AgentLog "Command ${Id}: status '$Status' not reported: $($_.Exception.Message)" -ErrorRecord $_
+        }
+        return $gone
     }
 }
 
@@ -2651,7 +2943,7 @@ function Complete-PendingCommand {
         }
     }
     catch {
-        Write-AgentLog "Pending command: $($_.Exception.Message)"
+        Write-AgentLog "Pending command: $($_.Exception.Message)" -ErrorRecord $_
         Remove-Item -Path $path -Force -ErrorAction SilentlyContinue
         return $true
     }
@@ -2678,10 +2970,12 @@ function Test-UpdateParams {
         throw "'$kind' updates are not available on this platform"
     }
 
-    # winget: the source of the package in the inventory (servers before 1.12.3 do not send it).
+    # winget: the source of the package in the inventory (servers before 1.12.3 do not send it), and
+    # whether it is installed only for the logged-on user (SYSTEM does not see it).
     $source = if ($kind -eq 'winget' -and "$($Params.source)" -in 'winget', 'msstore') { "$($Params.source)" } else { '' }
+    $scope = if ($kind -eq 'winget' -and "$($Params.scope)" -eq 'user') { 'user' } else { '' }
 
-    return @{ kind = $kind; id = "$($Params.id)"; user = "$($Params.user)"; edition = "$($Params.edition)"; version = "$($Params.version)"; source = $source }
+    return @{ kind = $kind; id = "$($Params.id)"; user = "$($Params.user)"; edition = "$($Params.edition)"; version = "$($Params.version)"; source = $source; scope = $scope }
 }
 
 function Test-WakeParams {
@@ -2700,9 +2994,74 @@ function Test-WakeParams {
     return @{ Macs = $macs; Broadcasts = $broadcasts }
 }
 
+function Get-LocalNetworks {
+    # The IPv4 addresses of the interfaces that are up, with their network: name, address, mask and
+    # broadcast (bytes), so a packet can leave on the interface of its network.
+    $networks = @()
+    try {
+        foreach ($interface in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+            if ($interface.OperationalStatus -ne 'Up') { continue }
+            foreach ($unicast in $interface.GetIPProperties().UnicastAddresses) {
+                $address = $unicast.Address
+                # A mask of 0.0.0.0 would be a network of every address.
+                if ($address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or -not $unicast.IPv4Mask -or "$($unicast.IPv4Mask)" -eq '0.0.0.0' -or [System.Net.IPAddress]::IsLoopback($address)) { continue }
+                $ip = $address.GetAddressBytes()
+                $mask = $unicast.IPv4Mask.GetAddressBytes()
+                $networks += @{
+                    Name      = $interface.Name
+                    Address   = $address
+                    Mask      = $mask
+                    Network   = [byte[]](0..3 | ForEach-Object { $ip[$_] -band $mask[$_] })
+                    Broadcast = [System.Net.IPAddress]::new([byte[]](0..3 | ForEach-Object { ($ip[$_] -band $mask[$_]) -bor (255 -bxor $mask[$_]) }))
+                }
+            }
+        }
+    }
+    catch {
+        Write-AgentLog "Network interfaces not read ($($_.Exception.Message)), using the default route"
+    }
+    return $networks
+}
+
+function Find-LocalNetwork {
+    # The local interface whose network contains the address (the longest prefix), or $null.
+    param ($Networks, [System.Net.IPAddress]$Address)
+
+    $bytes = $Address.GetAddressBytes()
+    $best = $null
+    $bestBits = -1
+    foreach ($network in $Networks) {
+        $inside = $true
+        foreach ($i in 0..3) {
+            if (($bytes[$i] -band $network.Mask[$i]) -ne $network.Network[$i]) { $inside = $false; break }
+        }
+        if (-not $inside) { continue }
+        $bits = 0
+        foreach ($b in $network.Mask) { $bits += [Convert]::ToString($b, 2).Replace('0', '').Length }
+        if ($bits -gt $bestBits) { $best = $network; $bestBits = $bits }
+    }
+    return $best
+}
+
+function Get-WakeInterfaces {
+    # The local interfaces in the networks of the broadcast addresses (network broadcast => name and
+    # address), so each packet leaves on the interface of its network, not the default route's.
+    param ([System.Net.IPAddress[]]$Broadcasts)
+
+    $found = @{}
+    foreach ($network in Get-LocalNetworks) {
+        if ($Broadcasts -contains $network.Broadcast -and -not $found.ContainsKey("$($network.Broadcast)")) {
+            $found["$($network.Broadcast)"] = @{ Name = $network.Name; Address = $network.Address }
+        }
+    }
+    return $found
+}
+
 function Send-MagicPacket {
     # Wake-on-LAN for a device in this network: 6 x 0xFF and 16 x its MAC, as UDP broadcast to
-    # ports 9 and 7 of each broadcast address (the network's own one leaves on the right interface).
+    # ports 9 and 7. Each network's packets leave on the interface with an address in it (bound to
+    # that address, on Linux also to the interface), together with 255.255.255.255; without such an
+    # interface they go through the default route. Returns the interfaces used.
     param (
         [string[]]
         $Macs,
@@ -2710,22 +3069,52 @@ function Send-MagicPacket {
         $Broadcasts
     )
 
-    $client = New-Object System.Net.Sockets.UdpClient
-    try {
-        $client.EnableBroadcast = $true
-        foreach ($mac in $Macs) {
+    # @(): one MAC must stay a list of one packet, not become the bytes of it.
+    $packets = @(foreach ($mac in $Macs) {
             $bytes = [byte[]]($mac -split '[:-]' | ForEach-Object { [Convert]::ToByte($_, 16) })
-            $packet = [byte[]](@(0xFF) * 6 + ($bytes * 16))
-            foreach ($broadcast in $Broadcasts) {
-                foreach ($port in 9, 7) {
-                    [void]$client.Send($packet, $packet.Length, (New-Object System.Net.IPEndPoint($broadcast, $port)))
+            , [byte[]](@(0xFF) * 6 + ($bytes * 16))
+        })
+    $limited = [System.Net.IPAddress]::Broadcast
+    $interfaces = Get-WakeInterfaces -Broadcasts $Broadcasts
+    # One send per interface (its network's broadcast and 255.255.255.255), the rest unbound.
+    $routes = @(foreach ($broadcast in $Broadcasts | Where-Object { -not $_.Equals($limited) }) {
+            $interface = $interfaces["$broadcast"]
+            if ($interface) { @{ Interface = $interface; Targets = @($broadcast, $limited) } }
+        })
+    $unbound = @($Broadcasts | Where-Object { -not $interfaces.ContainsKey("$_") -or $_.Equals($limited) })
+    if ($routes.Count -gt 0) {
+        # 255.255.255.255 goes out with the bound ones.
+        $unbound = @($unbound | Where-Object { -not $_.Equals($limited) })
+    }
+    if ($unbound.Count -gt 0) { $routes += @{ Interface = $null; Targets = $unbound } }
+
+    $used = @()
+    foreach ($route in $routes) {
+        $client = if ($route.Interface) {
+            New-Object System.Net.Sockets.UdpClient (New-Object System.Net.IPEndPoint($route.Interface.Address, 0))
+        } else {
+            New-Object System.Net.Sockets.UdpClient
+        }
+        try {
+            $client.EnableBroadcast = $true
+            if ($route.Interface -and $OnLinux) {
+                # SO_BINDTODEVICE (the agent runs as root): 255.255.255.255 too leaves on it.
+                try { $client.Client.SetRawSocketOption(1, 25, [System.Text.Encoding]::ASCII.GetBytes("$($route.Interface.Name)`0")) } catch { }
+            }
+            foreach ($packet in $packets) {
+                foreach ($target in $route.Targets) {
+                    foreach ($port in 9, 7) {
+                        [void]$client.Send($packet, $packet.Length, (New-Object System.Net.IPEndPoint($target, $port)))
+                    }
                 }
             }
         }
+        finally {
+            $client.Close()
+        }
+        $used += if ($route.Interface) { "$($route.Interface.Name) ($($route.Interface.Address))" } else { "the default route ($($route.Targets -join ', '))" }
     }
-    finally {
-        $client.Close()
-    }
+    return $used
 }
 
 function Save-CommandState {
@@ -2740,7 +3129,7 @@ function Save-CommandState {
         $state | ConvertTo-Json -Depth 5 -Compress | Set-Content -Path "$AgentDir/commands-state.json" -Encoding UTF8
     }
     catch {
-        Write-AgentLog "Command state not saved: $($_.Exception.Message)"
+        Write-AgentLog "Command state not saved: $($_.Exception.Message)" -ErrorRecord $_
     }
 }
 
@@ -2813,7 +3202,7 @@ function Start-UpdateJob {
     $progressFile = "$AgentDir/update-progress.json"
     Remove-Item -Path $progressFile -Force -ErrorAction SilentlyContinue
     [void](Send-CommandStatus -Id $CommandId -Status running -Progress 0 -Message 'Starting')
-    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Install-PowerShellRelease', 'Get-PowerShellReleaseUpdate', 'Get-PowerShellManager', 'Get-WingetPath', 'Get-WingetSoftware', 'ConvertFrom-WingetTable', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log", $progressFile, $Params, $CommandId, "$AgentDir/update-result.json" -ScriptBlock {
+    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Invoke-WingetInUserSession', 'Get-WingetUpdates', 'Get-WingetStatus', 'Install-PowerShellRelease', 'Get-PowerShellReleaseUpdate', 'Get-PowerShellManager', 'Get-WingetPath', 'Get-WingetSoftware', 'ConvertFrom-WingetTable', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log", $progressFile, $Params, $CommandId, "$AgentDir/update-result.json" -ScriptBlock {
         param ($OnLinux, $OutputLog, $ProgressFile, $Params, $CommandId, $ResultFile)
 
         # When an update replaces the PowerShell the agent runs in (apt, a GitHub release, snap,
@@ -2824,7 +3213,7 @@ function Start-UpdateJob {
         if ((Test-Path -Path $OutputLog) -and (Get-Item -Path $OutputLog).Length -gt 2MB) {
             Move-Item -Path $OutputLog -Destination "$OutputLog.1" -Force
         }
-        $state = @{ Failures = [System.Collections.ArrayList]@(); Base = 0; Span = 100; Last = $null }
+        $state = @{ Failures = [System.Collections.ArrayList]@(); Base = 0; Span = 100; Last = $null; WingetPercent = 0; WingetLabel = 'winget upgrade' }
         function Set-Progress ([int]$Percent, [string]$Message) {
             # Percent within the current step (Base .. Base + Span), written for the agent loop.
             $total = [Math]::Min(100, [Math]::Max(0, $state.Base + [int]($state.Span * $Percent / 100)))
@@ -2906,54 +3295,37 @@ function Start-UpdateJob {
             $global:LASTEXITCODE = $code
             return , $output
         }
-        function Invoke-WingetUpgradeAsUser ([string]$Id) {
-            # A one-off task of the logged-on user (interactive, highest privileges, no password
-            # needed), the way the user would run it; $null when nobody is logged on. The id is of
-            # the checked form (Test-UpdateParams), so it is safe in the command line.
-            $user = try { (Get-CimInstance -ClassName Win32_ComputerSystem -Property UserName).UserName } catch { $null }
-            if (-not $user) {
+        function Invoke-WingetUpgradeAsUser ([string]$Id, [string]$Source = 'winget') {
+            # In the session of the logged-on user, the way they would run it; $null when nobody
+            # is logged on. The id is of the checked form (Test-UpdateParams); the source is the
+            # one the inventory listed (Store apps are installed per user: msstore).
+            $Source = if ($Source -eq 'msstore') { 'msstore' } else { 'winget' }
+            "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id ($Source, in the session of the logged-on user)" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
+            $started = Get-Date
+            try {
+                $session = Invoke-WingetInUserSession -Arguments "upgrade --id `"$Id`" --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity --source $Source" `
+                    -Title "updating $Id" -TimeoutSeconds $wingetTimeout -OnWait { param ($lines) Set-WingetProgress -Status "$(Get-WingetStatus -Lines $lines), in the session of the user" -Started $started }
+            }
+            catch {
+                $output = @("Not run in the session of the logged-on user: $($_.Exception.Message)")
+                $output | Add-Content -Path $OutputLog -Encoding UTF8
+                $global:LASTEXITCODE = -1
+                return , $output
+            }
+            if ($null -eq $session) {
                 "winget upgrade ${Id}: nobody is logged on, not tried in a user session" | Add-Content -Path $OutputLog -Encoding UTF8
                 return $null
             }
-            "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id (in the session of $user)" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
-            $tag = [guid]::NewGuid().ToString('N')
-            $name = "Laravel-MDM-Winget-$($tag.Substring(0, 12))"
-            # Windows\Temp: the user can create the file, SYSTEM reads it.
-            $log = Join-Path $env:SystemRoot "Temp\mdm-winget-$tag.log"
-            $arguments = "/c winget upgrade --id `"$Id`" --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity --source winget > `"$log`" 2>&1"
-            $code = -1
-            $output = @()
-            try {
-                $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" -Argument $arguments
-                $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
-                $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds $wingetTimeout) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-                Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
-                Start-ScheduledTask -TaskName $name -ErrorAction Stop
-                $deadline = (Get-Date).AddSeconds($wingetTimeout + 60)
-                do {
-                    Start-Sleep -Seconds 3
-                    $info = Get-ScheduledTaskInfo -TaskName $name -ErrorAction Stop
-                    $state = (Get-ScheduledTask -TaskName $name -ErrorAction Stop).State
-                } while (("$state" -eq 'Running' -or $info.LastTaskResult -eq 267011) -and (Get-Date) -lt $deadline)
-                # The exit code of cmd (winget's) as a signed number.
-                $code = [BitConverter]::ToInt32([BitConverter]::GetBytes([uint32]$info.LastTaskResult), 0)
-                if ("$state" -eq 'Running') {
-                    Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
-                    $code = -1
-                }
-                $output = @(Get-Content -Path $log -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' -and $_ -notmatch '^[\s\-\\|/\u2588\u2592]*$' })
-            }
-            catch {
-                $output = @("Not run in the session of ${user}: $($_.Exception.Message)")
-            }
-            finally {
-                Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
-                Remove-Item -Path $log -Force -ErrorAction SilentlyContinue
-            }
-            $output | Add-Content -Path $OutputLog -Encoding UTF8
-            "exit code $code" | Add-Content -Path $OutputLog -Encoding UTF8
-            $global:LASTEXITCODE = $code
+            $output = @($session.Lines | Where-Object { $_ -match '\S' -and $_ -notmatch '^[\s\-\\|/\u2588\u2592]*$' })
+            @("(in the session of $($session.User))") + $output | Add-Content -Path $OutputLog -Encoding UTF8
+            "exit code $($session.Code)" | Add-Content -Path $OutputLog -Encoding UTF8
+            $global:LASTEXITCODE = $session.Code
             return , $output
+        }
+        function Set-WingetProgress ([string]$Status, [datetime]$Started) {
+            # The step's message ("winget upgrade X (2/5)") with what winget does and for how long.
+            $elapsed = (Get-Date) - $Started
+            Set-Progress $state.WingetPercent ("{0}: {1} ({2}:{3:00})" -f $state.WingetLabel, $Status, [int][Math]::Floor($elapsed.TotalMinutes), $elapsed.Seconds)
         }
         function Invoke-WingetUpgradeOnce ([string]$Winget, [string]$Id, [string]$Source, [string[]]$Extra = @()) {
             "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id ($Source $($Extra -join ' '))" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
@@ -2964,7 +3336,17 @@ function Start-UpdateJob {
             try {
                 $process = Start-Process -FilePath $Winget -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
                 $null = $process.Handle # without it ExitCode stays empty in Windows PowerShell
-                if ($process.WaitForExit($wingetTimeout * 1000)) {
+                # What winget does (download, installer) every 2 s in the progress.
+                $started = Get-Date
+                $deadline = $started.AddSeconds($wingetTimeout)
+                while (-not $process.WaitForExit(2000) -and (Get-Date) -lt $deadline) {
+                    $text = try {
+                        $stream = [System.IO.File]::Open($out, 'Open', 'Read', 'ReadWrite')
+                        try { if ($stream.Length -gt 8192) { [void]$stream.Seek(-8192, 'End') }; (New-Object System.IO.StreamReader($stream)).ReadToEnd() } finally { $stream.Dispose() }
+                    } catch { '' }
+                    Set-WingetProgress -Status "$(Get-WingetStatus -Lines @($text -split "`n"))$(if ($Source) { ", $Source" })" -Started $started
+                }
+                if ($process.HasExited) {
                     $code = $process.ExitCode
                 } else {
                     # The installer is a child of winget: end the whole tree.
@@ -2998,7 +3380,15 @@ function Start-UpdateJob {
                     $winget = Get-WingetPath
                     if (-not $winget) { [void]$state.Failures.Add('winget not found'); break }
                     Set-Progress 10 "winget upgrade $id"
-                    $output = Invoke-WingetUpgrade -Winget $winget -Id $id -Source $Params.source
+                    $state.WingetPercent = 10
+                    $state.WingetLabel = "winget upgrade $id"
+                    if ($Params.scope -eq 'user') {
+                        # Installed only for the user: SYSTEM does not see it.
+                        $output = Invoke-WingetUpgradeAsUser -Id $id -Source $Params.source
+                        if ($null -eq $output) { $output = @('Installed only for a user, who is not logged on now: it is updated when they are'); $global:LASTEXITCODE = -1 }
+                    } else {
+                        $output = Invoke-WingetUpgrade -Winget $winget -Id $id -Source $Params.source
+                    }
                     "winget upgrade ${id}: exit $LASTEXITCODE"
                     Add-Result "winget upgrade $id" $LASTEXITCODE $output $wingetOk
                 }
@@ -3096,14 +3486,17 @@ function Start-UpdateJob {
                 # One package at a time instead of "upgrade --all": each has a timeout, one that
                 # hangs or fails does not stop the others. winget also updates PowerShell 7
                 # (Microsoft.PowerShell). App Installer is winget itself: replacing it ends winget.
-                $listed = try { @(Get-WingetSoftware -Updatable) } catch { [void]$state.Failures.Add("winget: $($_.Exception.Message)"); @() }
+                $listed = try { @(Get-WingetUpdates) } catch { [void]$state.Failures.Add("winget: $($_.Exception.Message)"); @() }
                 # Frameworks of Store apps (VCLibs, UI.Xaml, Windows App Runtime) are updated by the Store,
                 # winget fails on them as SYSTEM (0x8A15005C).
                 $packages = @($listed | Where-Object { $_.Id -and $_.Id -notmatch '^Microsoft\.(AppInstaller|VCLibs|UI\.Xaml|WindowsAppRuntime)' -and "$($_.Avaliable)" -ne '' })
                 $done = 0
                 foreach ($package in $packages) {
-                    Set-Progress ([int](40 * $done / [Math]::Max(1, $packages.Count))) "winget upgrade $($package.Id) ($($done + 1)/$($packages.Count))"
-                    $output = Invoke-WingetUpgrade -Winget $winget -Id $package.Id -Source $package.Source
+                    $state.WingetPercent = [int](40 * $done / [Math]::Max(1, $packages.Count))
+                    $state.WingetLabel = "winget upgrade $($package.Id) ($($done + 1)/$($packages.Count))"
+                    Set-Progress $state.WingetPercent $state.WingetLabel
+                    $output = if ($package.Scope -eq 'user') { Invoke-WingetUpgradeAsUser -Id $package.Id -Source $package.Source } else { Invoke-WingetUpgrade -Winget $winget -Id $package.Id -Source $package.Source }
+                    if ($null -eq $output) { $output = @('Installed only for a user, who is not logged on now'); $global:LASTEXITCODE = -1 }
                     "winget upgrade $($package.Id): exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
                     Add-Result "winget upgrade $($package.Id)" $LASTEXITCODE $output $wingetOk
                     $done++
@@ -3334,7 +3727,7 @@ function Invoke-DeviceCommand {
                     $updateParams = Test-UpdateParams -Params $Params
                 }
                 catch {
-                    Write-AgentLog "Update refused: $($_.Exception.Message)"
+                    Write-AgentLog "Update refused: $($_.Exception.Message)" -ErrorRecord $_
                     [void](Send-CommandStatus -Id $Id -Status failed -Message "Refused by the agent: $($_.Exception.Message)")
                     return
                 }
@@ -3354,12 +3747,13 @@ function Invoke-DeviceCommand {
         'wake' {
             try {
                 $wake = Test-WakeParams -Params $Params
-                Send-MagicPacket -Macs $wake.Macs -Broadcasts $wake.Broadcasts
-                Write-AgentLog "Magic packet sent to $($wake.Macs -join ', ') via $($wake.Broadcasts -join ', ')"
-                [void](Send-CommandStatus -Id $Id -Status succeeded -Message "Magic packet sent to $($wake.Macs -join ', ')")
+                $via = @(Send-MagicPacket -Macs $wake.Macs -Broadcasts $wake.Broadcasts) -join ', '
+                Write-AgentLog "Magic packet sent to $($wake.Macs -join ', ') via $via"
+                # Running until the woken device reports (the server finishes it, or it times out).
+                [void](Send-CommandStatus -Id $Id -Status running -Progress 50 -Message "Magic packet sent to $($wake.Macs -join ', ') via $via, waiting for the device to come online")
             }
             catch {
-                Write-AgentLog "Wake-on-LAN failed: $($_.Exception.Message)"
+                Write-AgentLog "Wake-on-LAN failed: $($_.Exception.Message)" -ErrorRecord $_
                 [void](Send-CommandStatus -Id $Id -Status failed -Message "Wake-on-LAN failed: $($_.Exception.Message)")
             }
         }
@@ -3371,27 +3765,22 @@ function Invoke-DeviceCommand {
                 [void](Send-CommandStatus -Id $Id -Status failed -Message 'It is not one of the devices this agent pings')
                 return
             }
-            $ping = New-Object System.Net.NetworkInformation.Ping
-            try {
-                $reply = try { $ping.Send($target.Address, 2000) } catch { $null }
-            }
-            finally {
-                $ping.Dispose()
-            }
-            $up = $reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
-            $result = @{ id = $target.Id; up = [bool]$up; rtt = $(if ($up) { [double]$reply.RoundtripTime } else { $null }); at = Get-UnixTime }
-            try { Invoke-MdmApi -Method Post -Path 'device/pings' -Token $script:AgentToken -Body @{ results = @($result) } | Out-Null } catch { Write-AgentLog "Ping result not sent: $($_.Exception.Message)" }
+            $reply = (Invoke-Pings -Targets @($target) -TimeoutMs 2000)[$target.Id]
+            $up = [bool]$reply.Up
+            $via = if ($reply.Via) { " via $($reply.Via)" } else { '' }
+            $result = @{ id = $target.Id; up = $up; rtt = $(if ($up) { $reply.Rtt } else { $null }); at = Get-UnixTime }
+            try { Invoke-MdmApi -Method Post -Path 'device/pings' -Token $script:AgentToken -Body @{ results = @($result) } | Out-Null } catch { Write-AgentLog "Ping result not sent: $($_.Exception.Message)" -ErrorRecord $_ }
             if ($up) {
-                [void](Send-CommandStatus -Id $Id -Status succeeded -Message "$($target.Address) answered in $($reply.RoundtripTime) ms")
+                [void](Send-CommandStatus -Id $Id -Status succeeded -Message "$($target.Address) answered in $($reply.Rtt) ms$via")
             } else {
-                [void](Send-CommandStatus -Id $Id -Status failed -Message "$($target.Address) did not answer within 2 s")
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "$($target.Address) did not answer within 2 s$via")
             }
         }
         'turnOff' {
             [void](Send-CommandStatus -Id $Id -Status running -Message 'Shutting down')
             $failure = Invoke-PowerAction -Restart:$false
             if ($failure) {
-                Write-AgentLog "Turn off failed: $failure"
+                Write-AgentLog "Turn off failed: $failure" -IsError
                 [void](Send-CommandStatus -Id $Id -Status failed -Message "Turn off failed: $failure")
             } else {
                 [void](Send-CommandStatus -Id $Id -Status succeeded -Message 'Shutting down')
@@ -3405,7 +3794,7 @@ function Invoke-DeviceCommand {
             if ($failure) {
                 # Not restarting after all: report it now, so it can be tried again.
                 Remove-Item -Path "$AgentDir/pending-command.json" -Force -ErrorAction SilentlyContinue
-                Write-AgentLog "Restart failed: $failure"
+                Write-AgentLog "Restart failed: $failure" -IsError
                 [void](Send-CommandStatus -Id $Id -Status failed -Message "Restart failed: $failure")
             }
         }
@@ -3513,7 +3902,8 @@ function Receive-WsMessage {
     $Realtime.Pending = $null
 
     if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
-        throw "WebSocket closed by server: $($result.CloseStatusDescription)"
+        # A WebSocketException: the connection is set up again, it is not an error of the agent.
+        throw (New-Object System.Net.WebSockets.WebSocketException "WebSocket closed by server: $($result.CloseStatusDescription)")
     }
 
     if (-not $Realtime.Message) {
@@ -3567,7 +3957,7 @@ function Invoke-RealtimeMessage {
             Send-WsMessage -Socket $Realtime.Socket -Message @{ event = 'pusher:pong'; data = @{} }
         }
         'pusher:error' {
-            throw "WebSocket error: $($Message.data)"
+            throw (New-Object System.Net.WebSockets.WebSocketException "WebSocket error: $($Message.data)")
         }
         'command' {
             if ($Message.channel -ne $Realtime.Config.channel) {
@@ -3577,7 +3967,7 @@ function Invoke-RealtimeMessage {
             # the commands themselves come from the signed API, so nothing can be injected or replayed.
             $payload = if ($data.p -is [string]) { $data.p | ConvertFrom-Json } else { $null }
             if (-not (Test-ServerSignature -Context 'MDM1-WS' -Message "$($data.p)" -Signature "$($data.sig)") -or "$($payload.device_id)" -ne "$($script:DeviceId)" -or [Math]::Abs((Get-UnixTime) - [long]$payload.ts) -gt 300) {
-                Write-AgentLog 'Ignoring a command event that is not signed by the server for this device'
+                Write-AgentLog 'Ignoring a command event that is not signed by the server for this device' -IsError
                 return
             }
             $response = Invoke-MdmApi -Method Post -Path 'device/commands/take' -Token $Token -Body @{}
@@ -3788,7 +4178,7 @@ function Get-Backlog {
                 foreach ($item in @(Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json | ForEach-Object { $_ })) { if ($item) { [void]$list.Add($item) } }
             }
         }
-        catch { Write-AgentLog "Backlog ${Kind}: $($_.Exception.Message)" }
+        catch { Write-AgentLog "Backlog ${Kind}: $($_.Exception.Message)" -ErrorRecord $_ }
         $script:Backlog[$Kind] = $list
     }
     return , $script:Backlog[$Kind]
@@ -3803,7 +4193,7 @@ function Save-Backlog {
         if ($list.Count -eq 0) { Remove-Item -Path $path -Force -ErrorAction SilentlyContinue; return }
         ConvertTo-Json -InputObject @($list) -Depth 4 -Compress | Set-Content -Path $path -Encoding UTF8
     }
-    catch { Write-AgentLog "Backlog ${Kind} not saved: $($_.Exception.Message)" }
+    catch { Write-AgentLog "Backlog ${Kind} not saved: $($_.Exception.Message)" -ErrorRecord $_ }
 }
 
 function Add-Backlog {
@@ -3824,6 +4214,7 @@ function Send-Backlog {
 
     if ($script:BacklogSent -and ((Get-Date) - $script:BacklogSent).TotalSeconds -lt 20) { return }
     $script:BacklogSent = Get-Date
+    Send-AgentErrors -Token $Token
     foreach ($kind in 'metrics', 'pings') {
         $list = Get-Backlog -Kind $kind
         if ($list.Count -eq 0) { continue }
@@ -3845,7 +4236,7 @@ function Send-Backlog {
                 $list.Clear()
                 Save-Backlog -Kind $kind
             }
-            Write-AgentLog "Backlog ($kind) not sent: $($_.Exception.Message)"
+            Write-AgentLog "Backlog ($kind) not sent: $($_.Exception.Message)" -ErrorRecord $_
         }
     }
 }
@@ -3868,7 +4259,7 @@ function Send-Heartbeat {
         if ($stateJson -ne $script:LastStateJson) { $state = $current }
     }
     catch {
-        Write-AgentLog "Live state failed: $($_.Exception.Message)"
+        Write-AgentLog "Live state failed: $($_.Exception.Message)" -ErrorRecord $_
     }
     # Reverb limits messages to 10 kB (with the signature): a large state (many services) goes over HTTPS instead.
     $stateOverWs = $state -and $stateJson.Length -le 7000
@@ -3906,7 +4297,7 @@ function Send-Heartbeat {
         Send-Backlog -Token $Token
     }
     catch {
-        Write-AgentLog "Heartbeat failed: $($_.Exception.Message)"
+        Write-AgentLog "Heartbeat failed: $($_.Exception.Message)" -ErrorRecord $_
         if ($sample -and $null -eq $_.Exception.Data['MdmStatus']) {
             # Not reached at all (an answer with an error would not change by waiting).
             Add-Backlog -Kind 'metrics' -Items $sample -Max 2880
@@ -3915,6 +4306,7 @@ function Send-Heartbeat {
 }
 
 function Start-Agent {
+    Initialize-AgentErrors
     # Keep the agent in the background, user applications take precedence.
     try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
 
@@ -3980,7 +4372,7 @@ function Start-Agent {
                         [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status running -Progress 60 -Message 'Inventory collected')
                     }
                 } else {
-                    Write-AgentLog "Inventory collection failed: $($inventoryJob.ChildJobs[0].JobStateInfo.Reason)"
+                    Write-AgentLog "Inventory collection failed: $($inventoryJob.ChildJobs[0].JobStateInfo.Reason)" -IsError
                     if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'collecting') {
                         [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status failed -Message "Inventory collection failed: $($inventoryJob.ChildJobs[0].JobStateInfo.Reason)")
                         $script:SyncRequest = $null
@@ -4002,7 +4394,7 @@ function Start-Agent {
             }
             catch {
                 # Script problems must not tear down the WebSocket connection.
-                Write-AgentLog "Scripts: $($_.Exception.Message)"
+                Write-AgentLog "Scripts: $($_.Exception.Message)" -ErrorRecord $_
             }
             if ($OnLinux -and $inventory -and -not $inventoryJob -and ((Get-Date) - $lastPackageCheck).TotalSeconds -ge 60) {
                 # Packages installed outside the agent (apt, unattended-upgrades): collect again once
@@ -4035,7 +4427,7 @@ function Start-Agent {
                     $health = @{ CollectedAt = Get-Date; Data = $data }
                     $lastReport = [DateTime]::MinValue
                 } else {
-                    Write-AgentLog "Disk health collection failed: $($healthJob.ChildJobs[0].JobStateInfo.Reason)"
+                    Write-AgentLog "Disk health collection failed: $($healthJob.ChildJobs[0].JobStateInfo.Reason)" -IsError
                 }
                 Remove-Job -Job $healthJob -Force
                 $healthJob = $null
@@ -4063,7 +4455,7 @@ function Start-Agent {
                 }
                 catch {
                     # HTTP problems must not tear down the WebSocket connection.
-                    Write-AgentLog "Report failed: $($_.Exception.Message)"
+                    Write-AgentLog "Report failed: $($_.Exception.Message)" -ErrorRecord $_
                     if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'report') {
                         [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status failed -Message "Report failed: $($_.Exception.Message)")
                         $script:SyncRequest = $null
@@ -4097,7 +4489,7 @@ function Start-Agent {
             }
         }
         catch {
-            Write-AgentLog "Error: $($_.Exception.Message)"
+            Write-AgentLog "Error: $($_.Exception.Message)" -ErrorRecord $_
             if ($realtime) {
                 $realtime.Socket.Dispose()
                 $realtime = $null
@@ -4219,6 +4611,6 @@ try {
 }
 catch {
     # Errors before the loop (token, keys, configuration) would end the task without a trace.
-    try { Write-AgentLog "Agent stopped: $($_.Exception.Message)" } catch { }
+    try { Write-AgentLog "Agent stopped: $($_.Exception.Message)" -ErrorRecord $_ } catch { }
     exit 1
 }

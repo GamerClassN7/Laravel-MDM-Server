@@ -6,6 +6,9 @@
                 <div class="d-flex flex-wrap align-items-center gap-2 small text-muted">
                     <x-badge color="secondary" size="sm" variant="subtle" :icon="match ($script->platform) { 'windows' => 'fab fa-windows', 'linux' => 'fab fa-linux', default => 'fas fa-desktop' }">{{ __(\App\Models\Script::PLATFORMS[$script->platform]) }}</x-badge>
                     <x-badge color="primary" size="sm" variant="subtle">v{{ $script->version }}</x-badge>
+                    @if ($script->detectsOnly)
+                        <x-badge color="warning" size="sm" variant="subtle" icon="fas fa-hand-pointer">{{ __('Manual remediation') }}</x-badge>
+                    @endif
                     <span title="{{ $script->updated_at }}"><i class="far fa-clock me-1"></i>{{ __('Changed :time', ['time' => $script->updated_at->diffForHumans()]) }}</span>
                     @if ($script->scheduled)
                         <span class="d-inline-flex flex-wrap align-items-center gap-1" title="{{ $script->nextScheduledRun() }}">
@@ -42,11 +45,13 @@
             @foreach ([
                 'compliant' => ['label' => __('Compliant'), 'class' => 'is-green', 'icon' => 'fas fa-check'],
                 'remediated' => ['label' => __('Remediated'), 'class' => 'is-purple', 'icon' => 'fas fa-magic'],
+                'noncompliant' => ['label' => __('Needs remediation'), 'class' => 'is-orange', 'icon' => 'fas fa-hand-pointer'],
                 'failed' => ['label' => __('Failed'), 'class' => 'is-red', 'icon' => 'fas fa-times'],
                 'waiting' => ['label' => __('Waiting'), 'class' => '', 'icon' => 'fas fa-hourglass-half'],
             ] as $key => $stat)
-                {{-- Boilerplate stat tile (.stat, .stat-ico). --}}
-                <div class="col-6 col-md-3">
+                @continue($key === 'noncompliant' && ! $script->detectsOnly && $stats[$key] === 0)
+                {{-- Boilerplate stat tile (.stat, .stat-ico); equal widths, 4 or 5 of them. --}}
+                <div class="col-6 col-md">
                     <div class="card card-body h-100">
                         <div class="stat gap-3">
                             <div class="stat-ico {{ $stat['class'] }} {{ $stats[$key] > 0 ? '' : 'opacity-50' }}"><i class="{{ $stat['icon'] }}"></i></div>

@@ -4,6 +4,7 @@ namespace App\Support;
 
 use App\Models\Device;
 use App\Models\DeviceCommand;
+use App\Models\Script;
 use App\Models\ScriptRun;
 use App\Models\User;
 use Illuminate\Support\Collection;
@@ -34,12 +35,29 @@ class SmartAlerts
      */
     public static function for(Device $device, ?Collection $commands = null): array
     {
-        if (empty($device->data)) {
+        // Ping-only devices have no report: only a failed wake.
+        if (empty($device->data) && ! $device->isPingOnly) {
             return [];
         }
         $commands ??= self::recentCommands($device);
         $active = $commands->filter->active;
         $alerts = [];
+
+        // The last wake of this device (sent by another agent) failed and it is still offline.
+        $wake = $device->offline ? self::lastWake($device) : null;
+        if ($wake && in_array($wake->status, ['failed', 'expired'], true)) {
+            $alerts[] = [
+                'key' => 'wake',
+                'severity' => 'danger',
+                'icon' => 'fas fa-sun',
+                'title' => __('Wake failed'),
+                'message' => ($wake->displayMessage ?: $wake->statusLabel).' · '.__('through :relay', ['relay' => $wake->device?->displayName ?? '?']).' · '.$wake->updated_at->diffForHumans(),
+                'action' => ['command' => 'wake', 'label' => __('Try again'), 'icon' => 'fas fa-redo'],
+            ];
+        }
+        if (empty($device->data)) {
+            return self::finish($device, $alerts, $active);
+        }
 
         if ($device->offline) {
             $alerts[] = [
@@ -134,6 +152,21 @@ class SmartAlerts
             ];
         }
 
+        // Errors from the agent's log (agents 1.13.2+), newest first.
+        $errors = $device->recentAgentErrors;
+        if ($errors !== []) {
+            $describe = fn ($error) => $error['message'].' · '.trans_choice(':count time|:count times', $error['count']).', '.\Illuminate\Support\Carbon::createFromTimestamp($error['last'], config('app.timezone'))->diffForHumans();
+            $alerts[] = [
+                'key' => 'agent_errors',
+                'severity' => 'warning',
+                'icon' => 'fas fa-bug',
+                'title' => trans_choice('The agent reported :count error|The agent reported :count errors', count($errors)),
+                'message' => $describe($errors[0]),
+                'details' => count($errors) > 1 ? array_map($describe, array_slice($errors, 1)) : [],
+                'action' => ['command' => 'clearAgentErrors', 'label' => __('Clear'), 'icon' => 'fas fa-check'],
+            ];
+        }
+
         $failedScripts = $device->scriptRuns()->with('script')
             ->whereIn('id', ScriptRun::query()->selectRaw('max(id)')->where('device_id', $device->id)->groupBy('script_id'))
             ->whereIn('status', ['failed', 'error', 'rejected'])->get();
@@ -148,10 +181,29 @@ class SmartAlerts
             ];
         }
 
+        // Scripts with manual remediation whose latest run here found something to remediate.
+        $toRemediate = $device->scriptRuns()->with('script')
+            ->whereIn('id', ScriptRun::query()->selectRaw('max(id)')->where('device_id', $device->id)->groupBy('script_id'))
+            ->where('status', 'noncompliant')->get()
+            ->filter(fn ($run) => $run->script?->remediation !== null);
+        foreach ($toRemediate as $run) {
+            $alerts[] = [
+                'key' => 'remediate:'.$run->script_id,
+                'severity' => 'warning',
+                'icon' => 'fas fa-magic',
+                'title' => __(':script needs remediation', ['script' => $run->script->name]),
+                'message' => __('Detected :time, the remediation runs when you start it.', ['time' => ($run->finished_at ?? $run->updated_at)->diffForHumans()]),
+                'action' => ['command' => 'remediate', 'params' => ['script' => $run->script_id], 'label' => __('Remediate'), 'icon' => 'fas fa-magic',
+                    'confirm' => __('Run the remediation of :script on :device now?', ['script' => $run->script->name, 'device' => $device->displayName])],
+                'tab' => 'scripts',
+            ];
+        }
+
         // The last run of each command (and target) that failed, unless it ran again since.
         foreach ($commands->groupBy(fn ($command) => $command->command.'|'.$command->target) as $runs) {
             $last = $runs->sortByDesc('id')->first();
-            if (! in_array($last->status, ['failed', 'expired'], true) || in_array($last->command, DeviceCommand::UNTRACKED, true)) {
+            // A wake is about the device it wakes: its alert is there.
+            if (! in_array($last->status, ['failed', 'expired'], true) || in_array($last->command, DeviceCommand::UNTRACKED, true) || $last->command === 'wake') {
                 continue;
             }
             $failure = ($last->message ?: $last->statusLabel).' · '.$last->updated_at->diffForHumans();
@@ -175,10 +227,33 @@ class SmartAlerts
             ];
         }
 
+        return self::finish($device, $alerts, $active);
+    }
+
+    /** The defaults, the commands on their way and the refusals; without the dismissed ones, sorted. */
+    private static function finish(Device $device, array $alerts, Collection $active): array
+    {
         foreach ($alerts as &$alert) {
-            $alert += ['message' => null, 'action' => null, 'tab' => null, 'copy' => null, 'failure' => null, 'refusal' => null];
+            $alert += ['message' => null, 'details' => [], 'action' => null, 'tab' => null, 'copy' => null, 'failure' => null, 'refusal' => null];
             $alert['active'] = null;
-            if ($alert['action']) {
+            if (($alert['action']['command'] ?? null) === 'clearAgentErrors') {
+                // Not a command for the device: done right away.
+                $alert['action'] += ['params' => [], 'confirm' => null];
+            } elseif (($alert['action']['command'] ?? null) === 'remediate') {
+                // A full run of the script (remediation scripts are for system admins).
+                $alert['action'] += ['params' => [], 'confirm' => null];
+                $script = Script::find($alert['action']['params']['script'] ?? null);
+                $alert['refusal'] = match (true) {
+                    $script === null => __('Nothing to do anymore.'),
+                    ! \Illuminate\Support\Facades\Gate::allows('is-system-admin') => __('Only system admins run scripts'),
+                    default => $script->unavailableReason($device),
+                };
+            } elseif (($alert['action']['command'] ?? null) === 'wake') {
+                // Sent by another agent; the alert is only there while its last wake failed (nothing
+                // on its way), so only the refusal of the wake itself.
+                $alert['action'] += ['params' => [], 'confirm' => null];
+                $alert['refusal'] = $device->wakeRefusal();
+            } elseif ($alert['action']) {
                 $alert['action'] += ['params' => [], 'confirm' => null];
                 // The command on its way (also a doUpdates for a single update).
                 $alert['active'] = Device::findActive($active, $alert['action']['command'], $alert['action']['params'] ?: null)
@@ -194,6 +269,13 @@ class SmartAlerts
         usort($alerts, fn ($a, $b) => [$a['key'] !== 'offline', self::SEVERITIES[$a['severity']]] <=> [$b['key'] !== 'offline', self::SEVERITIES[$b['severity']]]);
 
         return $alerts;
+    }
+
+    /** The latest wake of the device of the last day (a command of the agent that sent it). */
+    private static function lastWake(Device $device): ?DeviceCommand
+    {
+        return DeviceCommand::query()->with('device')->where('command', 'wake')->where('target', 'device:'.$device->id)
+            ->where('updated_at', '>=', now()->subSeconds(self::FAILED_COMMAND_WINDOW))->latest('id')->first();
     }
 
     /** What the alert says: a dismissal holds until this changes (e.g. "5 updates" → "6 updates"). */
@@ -261,6 +343,23 @@ class SmartAlerts
         }
         if ($alert['refusal']) {
             return $alert['refusal'];
+        }
+        if ($alert['action']['command'] === 'remediate') {
+            $script = Script::find($alert['action']['params']['script'] ?? null);
+            if ($script === null || ! $user?->can('is-system-admin')) {
+                return __('Only system admins run scripts');
+            }
+
+            return $script->runOn([$device->id], $user, false, true)->isNotEmpty() ? null : __('Already on its way.');
+        }
+        if ($alert['action']['command'] === 'clearAgentErrors') {
+            $device->clearAgentErrors();
+            \App\Support\LiveUpdates::device($device->id, 'errors');
+
+            return null;
+        }
+        if ($alert['action']['command'] === 'wake') {
+            return $device->wake($user) ? null : __('Already on its way.');
         }
 
         return $device->issueCommand($alert['action']['command'], $alert['action']['params'], $user) ? null : __('Already on its way.');

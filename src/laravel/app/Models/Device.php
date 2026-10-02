@@ -74,6 +74,7 @@ class Device extends Model
         'public_key' => 'array',
         'key_registered_at' => 'datetime',
         'tags' => 'array',
+        'agent_errors' => 'array',
     ];
 
     public const MAX_TAGS = 20;
@@ -304,7 +305,8 @@ class Device extends Model
             }
         }
         if ($taken->isNotEmpty()) {
-            \App\Support\LiveUpdates::device($id, 'command');
+            // A wake taken by the relay shows on the device it wakes too.
+            DeviceCommand::announce($id, ...$taken->pluck('target')->all());
         }
 
         return $taken;
@@ -407,7 +409,7 @@ class Device extends Model
 
         // Instant delivery over WebSocket; the command stays queued for the HTTP report as a fallback.
         rescue(fn () => \App\Events\DeviceCommandIssued::dispatch($this, $command));
-        \App\Support\LiveUpdates::device($this->id, 'command');
+        DeviceCommand::announce($this->id, $target);
 
         return $issued;
     }
@@ -748,7 +750,8 @@ class Device extends Model
                 ($row['Source'] ?? null) === 'snap' => ['kind' => 'snap', 'id' => (string) ($row['Id'] ?? '')],
                 // Installed from the GitHub release, the agent installs the newer one from there.
                 ($row['Source'] ?? null) === 'github.com/PowerShell' => version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') ? null : ['kind' => 'pwsh', 'id' => (string) ($row['Avaliable'] ?? ''), 'title' => 'PowerShell '.($row['Avaliable'] ?? '')],
-                $this->platform === 'windows' => ['kind' => 'winget', 'id' => (string) ($row['Id'] ?? ''), 'source' => in_array($row['Source'] ?? null, ['winget', 'msstore'], true) ? $row['Source'] : null],
+                // Scope user: installed only for the logged-on user (agents 1.14.0+ update it in their session).
+                $this->platform === 'windows' => ['kind' => 'winget', 'id' => (string) ($row['Id'] ?? ''), 'source' => in_array($row['Source'] ?? null, ['winget', 'msstore'], true) ? $row['Source'] : null, 'scope' => ($row['Scope'] ?? null) === 'user' ? 'user' : null],
                 default => null,
             },
             'module' => $this->platform === 'windows' && ! empty($row['User'])
@@ -1004,7 +1007,10 @@ class Device extends Model
             if ($relay->isMobile && (! $allowMobile || $this->public_ip === null || $relay->public_ip !== $this->public_ip)) {
                 continue;
             }
-            if ($this->public_ip !== null && $relay->public_ip !== null && $this->public_ip !== $relay->public_ip) {
+            // Only addresses of the same family tell: the same network can reach the server over
+            // IPv6 from one device and over IPv4 from another.
+            if ($this->public_ip !== null && $relay->public_ip !== null && $this->public_ip !== $relay->public_ip
+                && str_contains($this->public_ip, ':') === str_contains($relay->public_ip, ':')) {
                 continue;
             }
             $shared = array_intersect_key($networks, $relay->ipv4Networks(self::RELAY_INTERFACE_TYPES, true));
@@ -1123,6 +1129,7 @@ class Device extends Model
             $values = ['ping_relay_id' => $relay->id, 'ping_rtt' => $up ? $rtt : null];
             if ($up) {
                 $values['last_seen_at'] = now();
+                DeviceCommand::completeWakes($id);
             }
             static::query()->whereKey($id)->toBase()->update($values);
             PingResult::query()->create(['device_id' => $id, 'up' => $up, 'rtt' => $up ? $rtt : null, 'relay_id' => $relay->id]);
@@ -1174,6 +1181,64 @@ class Device extends Model
         }
 
         return $taken;
+    }
+
+    /** Distinct agent errors kept per device, and for how long. */
+    public const MAX_AGENT_ERRORS = 20;
+
+    public const AGENT_ERRORS_DAYS = 7;
+
+    /**
+     * Errors from the agent's log ([{message, count, first, last}], unix times): merged with the
+     * ones it sent before by message, the newest MAX_AGENT_ERRORS of the last days. Returns how
+     * many were taken.
+     */
+    public function recordAgentErrors(mixed $errors): int
+    {
+        if (! is_array($errors)) {
+            return 0;
+        }
+        $oldest = now()->subDays(self::AGENT_ERRORS_DAYS)->getTimestamp();
+        $newest = now()->addMinutes(5)->getTimestamp();
+        $kept = collect($this->agent_errors ?? [])->keyBy('message');
+        $taken = 0;
+        foreach (array_slice($errors, 0, 50) as $error) {
+            $message = is_array($error) && is_string($error['message'] ?? null) ? trim(mb_strcut($error['message'], 0, 500)) : '';
+            $last = is_array($error) && is_numeric($error['last'] ?? null) ? (int) $error['last'] : null;
+            if ($message === '' || $last === null || $last < $oldest || $last > $newest) {
+                continue;
+            }
+            $first = is_numeric($error['first'] ?? null) ? min((int) $error['first'], $last) : $last;
+            $count = is_numeric($error['count'] ?? null) ? max(1, min(100000, (int) $error['count'])) : 1;
+            $before = $kept->get($message);
+            $kept->put($message, [
+                'message' => $message,
+                'count' => ($before['count'] ?? 0) + $count,
+                'first' => min($before['first'] ?? $first, $first),
+                'last' => max($before['last'] ?? $last, $last),
+            ]);
+            $taken++;
+        }
+        $this->agent_errors = $kept->filter(fn ($error) => $error['last'] >= $oldest)
+            ->sortByDesc('last')->take(self::MAX_AGENT_ERRORS)->values()->all() ?: null;
+        static::query()->whereKey($this->id)->toBase()->update(['agent_errors' => $this->agent_errors === null ? null : json_encode($this->agent_errors)]);
+
+        return $taken;
+    }
+
+    /** The agent's errors of the last days, newest first. */
+    public function getRecentAgentErrorsAttribute(): array
+    {
+        $oldest = now()->subDays(self::AGENT_ERRORS_DAYS)->getTimestamp();
+
+        return array_values(array_filter($this->agent_errors ?? [], fn ($error) => ($error['last'] ?? 0) >= $oldest));
+    }
+
+    /** Forgets the agent's errors (the alert's Clear). */
+    public function clearAgentErrors(): void
+    {
+        $this->agent_errors = null;
+        static::query()->whereKey($this->id)->toBase()->update(['agent_errors' => null]);
     }
 
     /** Checks and cleans the settings of a ping-only device; null when they are not valid. */
@@ -1249,11 +1314,35 @@ class Device extends Model
             ->where('created_at', '>=', now()->subMinutes(10))->latest('id')->first();
     }
 
-    /** The latest wake of this device in the last 10 minutes (sent through another agent). */
+    /**
+     * The latest wake of this device of the last 10 minutes, or one still on its way (sent through
+     * another agent; a wake runs until the device reports, up to its timeout after it was taken).
+     */
     public function recentWake(): ?DeviceCommand
     {
         return DeviceCommand::query()->with('device')->where('command', 'wake')->where('target', 'device:'.$this->id)
-            ->where('created_at', '>=', now()->subMinutes(10))->latest('id')->first();
+            ->where(fn ($query) => $query->where('created_at', '>=', now()->subMinutes(10))->orWhereIn('status', DeviceCommand::ACTIVE))
+            ->latest('id')->first();
+    }
+
+    /** Interface types of the hardware; the others (Docker, VPN, bridges, virtual) are virtual. */
+    public const PHYSICAL_NETWORK_TYPES = ['lan', 'wifi', 'cellular', 'bluetooth'];
+
+    /**
+     * The interfaces as the Networks tab lists them: the ones with a public address, then the
+     * physical connected ones, virtual connected, physical disconnected, virtual disconnected; in
+     * the reported order within each.
+     */
+    public static function sortNetworks(array $networks): array
+    {
+        $rank = fn (array $network) => match (true) {
+            collect($network['IPAddresses'] ?? [])->contains(fn ($address) => self::isPublicIp($address)) => 0,
+            default => 1 + ($network['Connected'] ? 0 : 2) + (in_array($network['Type'] ?? null, self::PHYSICAL_NETWORK_TYPES, true) ? 0 : 1),
+        };
+        $ranked = array_map(fn ($network, $index) => [$rank($network), $index, $network], $networks, array_keys($networks));
+        usort($ranked, fn ($a, $b) => [$a[0], $a[1]] <=> [$b[0], $b[1]]);
+
+        return array_column($ranked, 2);
     }
 
     /** The interface type from its name and description (agents before 1.8.0 do not report it). */

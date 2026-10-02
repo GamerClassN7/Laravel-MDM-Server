@@ -213,11 +213,17 @@ agent is back. Commands without news are given up after a timeout. A command tha
 way is never queued again: double clicks, two users or an action for all devices do not run it twice.
 
 **Smart alerts** show what needs attention on a device (restart required, a newer agent, updates,
-low disk space, disk health, failed services and remediations, failed commands) with the action
-that fixes it. An alert can be dismissed: it stays hidden until it says something else (e.g. more
+low disk space, disk health, failed services and remediations, failed commands, errors from the
+agent's log) with the action that fixes it. An alert can be dismissed: it stays hidden until it says something else (e.g. more
 updates) or goes away and comes back. The **Smart alerts** dashboard widget lists them for all
 devices, with one button per alert for all devices that can take the action now.
 A device without a heartbeat for 90 seconds is shown as offline.
+
+**Agent errors:** agents 1.13.2+ send the errors they write to their log (a failed inventory,
+report or command status, a crash of the agent) to the server once it answers, each message once
+with how often and when it happened; they are kept over a restart until the server took them. Not
+reaching the server (network down, the WebSocket reconnecting) is not one. The device shows them as
+an alert (the newest ones of the last 7 days) until **Clear**.
 
 When the agent cannot reach the server (network outage, server down), it keeps the CPU and memory
 samples, and the results of the ping-only devices it pings, in `backlog-metrics.json` /
@@ -308,6 +314,19 @@ no desktop) or for an application to close is ended with its process tree, repor
 the next package goes on (agents 1.10.1+; before, one such installer stopped `winget upgrade --all`
 for good). App Installer, which is winget itself, is left out. Every step with its result is written to `agent.log`, the full
 output of apt / winget to `updates.log`, and the update list is collected again right after.
+
+On Windows (agents 1.14.0+):
+
+- **The same list as the user's `winget upgrade`:** `SYSTEM` does not see applications installed
+  only for a user (into their profile). The agent therefore also asks winget in the session of the
+  logged-on user (a hidden one-off task) and adds what only they see, marked **user**. Those are
+  updated in that session; nobody logged on means they wait.
+- **What winget is doing** is shown in the progress: the download (MB or percent), that the
+  installer runs, or that it runs in the user's session, with the time so far. For example
+  `winget upgrade ONLYOFFICE.DesktopEditors (5/5): running the installer (3:12)`.
+- **Windows Update** installs the updates it marks as "may ask for user input" too: drivers and
+  vendor packages (NVIDIA, Intel, firmware) carry that flag but install quietly (`ForceQuiet`), as
+  Windows Update installs them itself. One that really needs a person fails with its result.
 On Linux the update list tells what apt would install now (a simulated `apt-get upgrade`, no
 network): updates deferred by phasing and held back ones (pinned, held, or needing other packages
 to change) are shown with an icon and do not count as available updates. The list is also
@@ -359,6 +378,17 @@ they then have to be reinstalled.
 - **Remediation script** (optional): runs after a detection that exited with 1, then the detection
   runs again. Without a remediation, exit 1 means failed.
 - Each script targets **All**, **Windows** or **Linux** and has a timeout (up to 1 hour).
+- **Remediate manually** (a switch in the script): runs and schedules only detect. The device gets
+  the run without the remediation script (its manifest and fingerprint leave it out, so no agent
+  can remediate with it). Exit 1 is **Needs remediation**: the device shows an alert with
+  **Remediate**, and its latest run has a **Remediate** button in the runs table (output column).
+  Remediate starts a full run on that device (detection, remediation, detection again). The script
+  page counts the devices that need it.
+
+Before saving, both scripts are checked: up to 200 kB each, valid PowerShell (with the PowerShell
+parser when `pwsh` is on the server, `MDM_PWSH` or `PATH`; otherwise unterminated strings,
+here-strings and comments and unbalanced brackets are found), and the detection has an `exit 0` and
+an `exit 1` outside comments and strings.
 
 The code is entered as text and stored byte for byte. Its **fingerprint** (SHA-256 over the
 platform, the timeout and the hashes of both scripts) changes with every code change, and a new
@@ -409,6 +439,11 @@ device list shows them and filters by a tag with one click. Scheduled scripts an
 tags, so a newly tagged device is included without changing them.
 
 ### Notifications and alerts
+
+Notifications link to the device. The scheduler that sends them has no request to take the address
+from, so it uses `APP_URL` when that is set to a real address, otherwise the address system admins
+open the portal with (remembered in `storage/app/portal-url`; not localhost, and not any request's
+`Host` header).
 
 **Notifications** in the main menu, per user and in the style of
 [Beszel](https://beszel.dev/guide/notifications/):
@@ -466,13 +501,19 @@ NAS or Raspberry Pi that is always on:
    server sees, the first `X-Forwarded-For` hop behind a proxy).
 3. The relay gets a `wake` command with the MAC addresses and the broadcast addresses (the network's
    own one and `255.255.255.255`) in its signed command response. It checks them again and sends the
-   packet to UDP ports 9 and 7. The command is the relay's (its history shows it); the woken device
-   shows the progress until it is back.
+   packet to UDP ports 9 and 7, from the interface with an address in that network (agents 1.13.3+:
+   bound to its address, on Linux also to the interface), not the one of the default route (Docker,
+   VPN, a second card); the command says which interface it used. The command is the relay's (its history shows it); the woken device
+   shows it like its other commands, with a progress bar.
+4. The command runs until the woken device reports (agents 1.13.2+; older ones are done once the
+   packet is out). When it does not come online within 10 minutes, the wake fails and the woken
+   device shows an alert with **Try again**.
 
 Devices on a battery (laptops) move between networks: their last report may show a network they
 have left, and the same private address (`192.168.1.0/24`) can be another network elsewhere. They
 only send a magic packet when no stationary agent can and they reach the server through the same
-public address as the sleeping device. Every relay needs a report from the last 11 minutes, so its
+public address as the sleeping device. Only addresses of the same family count (a network can reach
+the server over IPv6 from one device and over IPv4 from another). Every relay needs a report from the last 11 minutes, so its
 networks are current.
 
 **Wake-on-LAN settings** in the device menu set the MAC address and the IPv4 address with its
@@ -493,7 +534,10 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
 
 - An online agent 1.10.0+ in the same network (an interface in that IPv4 network, a report from
   the last 11 minutes) pings it with every heartbeat (30 s, 1 s timeout). Agents on a battery never
-  ping: in another network the same address may answer for another machine.
+  ping: in another network the same address may answer for another machine. Agents 1.13.4+ ping
+  from the interface in the device's network (the system `ping` with `-I` on Linux, `-S` with its
+  address on Windows), not over the default route (Docker, VPN, a second card); **Sync** says which
+  interface answered.
 - The ping-only devices of a network are spread over all agents that can ping them: each goes to
   the one with the fewest so far, and stays with its agent while that is as good. When an agent goes
   offline, the others take its devices with their next ping (32 per agent at most).

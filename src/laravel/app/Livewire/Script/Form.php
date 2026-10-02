@@ -3,6 +3,7 @@
 namespace App\Livewire\Script;
 
 use App\Models\Script;
+use App\Support\PowerShellCheck;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\Rule;
 use Livewire\Component;
@@ -25,6 +26,9 @@ class Form extends Component
 
     public string $remediation = '';
 
+    /** Runs only detect; the remediation is started per device (an alert with Remediate). */
+    public bool $manualRemediation = false;
+
     public function mount(?int $scriptId = null): void
     {
         Gate::authorize('is-system-admin');
@@ -33,6 +37,7 @@ class Form extends Component
             $this->fill($script->only(['name', 'platform', 'timeout', 'detection']));
             $this->description = (string) $script->description;
             $this->remediation = (string) $script->remediation;
+            $this->manualRemediation = (bool) $script->manual_remediation;
         }
     }
 
@@ -43,8 +48,9 @@ class Form extends Component
             'description' => 'nullable|string|max:2000',
             'platform' => ['required', Rule::in(array_keys(Script::PLATFORMS))],
             'timeout' => 'required|integer|min:5|max:'.Script::MAX_TIMEOUT,
-            'detection' => 'required|string|max:200000',
-            'remediation' => 'nullable|string|max:200000',
+            'detection' => 'required|string',
+            'remediation' => 'nullable|string',
+            'manualRemediation' => 'boolean',
         ];
     }
 
@@ -52,6 +58,33 @@ class Form extends Component
     {
         Gate::authorize('is-system-admin');
         $this->validate();
+        // At most MAX_CODE_BYTES each (bytes as stored, not characters); a detection says compliant
+        // (exit 0) or not (exit 1); both scripts have to parse.
+        $failed = false;
+        foreach (['detection' => $this->detection, 'remediation' => $this->remediation] as $field => $code) {
+            if (trim($code) === '') {
+                continue;
+            }
+            if (strlen($code) > Script::MAX_CODE_BYTES) {
+                $this->addError($field, __('The script has :size kB, at most :max kB.', ['size' => number_format(strlen($code) / 1024, 1), 'max' => Script::MAX_CODE_BYTES / 1024]));
+                $failed = true;
+
+                continue;
+            }
+            $errors = PowerShellCheck::errors($code);
+            if ($errors !== []) {
+                $this->addError($field, __('Not valid PowerShell: :errors', ['errors' => implode('; ', array_slice($errors, 0, 3))]));
+                $failed = true;
+            }
+        }
+        $missing = $failed ? [] : array_values(array_filter([0, 1], fn ($exit) => ! PowerShellCheck::exits($this->detection, $exit)));
+        if ($missing !== []) {
+            $this->addError('detection', __('The detection has to end with exit 0 (compliant) and exit 1 (needs remediation), :missing is missing.', ['missing' => implode(', ', array_map(fn ($exit) => "exit $exit", $missing))]));
+            $failed = true;
+        }
+        if ($failed) {
+            return;
+        }
 
         $script = Script::findOrNew($this->scriptId);
         $script->fill([
@@ -62,6 +95,7 @@ class Form extends Component
             // Byte for byte as entered: the fingerprint and the device check these bytes.
             'detection' => $this->detection,
             'remediation' => $this->remediation,
+            'manual_remediation' => $this->manualRemediation,
         ]);
         $script->exists ? $script->updated_by = auth()->id() : $script->created_by = auth()->id();
         $script->save();

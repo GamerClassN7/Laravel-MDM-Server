@@ -1,4 +1,4 @@
-{{-- One command on its way: label, state, progress bar (indeterminate until the agent reports percent). --}}
+{{-- One command on its way: label, state ($note instead of it), progress bar (indeterminate until the agent reports percent). --}}
 @php
     /** @var \App\Models\DeviceCommand $command */
     $percent = $command->progress;
@@ -9,7 +9,7 @@
             @unless ($compact ?? false)
                 <i class="{{ $command->icon }} me-1 text-body-secondary"></i>{{ $command->label }} ·
             @endunless
-            <span class="text-body-secondary">{{ $command->displayMessage ?: $command->statusLabel }}</span>
+            <span class="text-body-secondary">{{ ($note ?? null) ?: $command->displayMessage ?: $command->statusLabel }}</span>
         </span>
         @if ($percent !== null && $command->status === 'running')
             <span class="text-nowrap fw-semibold">{{ $percent }} %</span>

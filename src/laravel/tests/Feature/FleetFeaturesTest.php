@@ -222,6 +222,32 @@ class FleetFeaturesTest extends TestCase
         $this->assertSame(0, AlertRule::first()->events()->whereNull('resolved_at')->count());
     }
 
+    public function test_notification_links_use_the_address_the_portal_is_opened_with(): void
+    {
+        $this->withoutVite();
+        config(['app.url' => 'http://localhost']);
+        // Only a signed-in user's page is taken, not any request's Host header.
+        $this->get('http://evil.example/login');
+        $this->assertNull(\App\Support\PortalUrl::remembered());
+        // Nor a user who is not a system admin (they could send any Host header with their session).
+        $admin = User::factory()->create();
+        config(['boilerplate.system_admins' => [(string) $admin->id]]);
+        $this->actingAs(User::factory()->create())->get('https://evil.example/devices')->assertOk();
+        $this->assertNull(\App\Support\PortalUrl::remembered());
+        $this->actingAs($admin)->get('https://mdm.example.com/devices')->assertOk();
+        $this->assertSame('https://mdm.example.com', \App\Support\PortalUrl::remembered());
+
+        // The scheduler (no request) links there.
+        \App\Support\PortalUrl::apply();
+        $this->assertSame('https://mdm.example.com/devices?selectedDeviceId=5', url('/devices?selectedDeviceId=5'));
+
+        // APP_URL set to a real address wins.
+        config(['app.url' => 'https://portal.example.org']);
+        $this->assertTrue(\App\Support\PortalUrl::configured());
+        $this->actingAs($admin)->get('https://other.example.com/devices');
+        $this->assertSame('https://mdm.example.com', \App\Support\PortalUrl::remembered());
+    }
+
     public function test_metric_disk_and_scope_alerts(): void
     {
         Http::fake();
@@ -443,6 +469,86 @@ class FleetFeaturesTest extends TestCase
         $this->assertSame(0, $elsewhere->commands()->count() + $old->commands()->count());
     }
 
+    public function test_wake_runs_until_the_device_reports_and_fails_as_an_alert_of_the_device(): void
+    {
+        $sleeping = $this->device('sleep', ['Networks' => [$this->network('192.168.1.20')]], online: false);
+        $relay = $this->device('relay', ['Networks' => [$this->network('192.168.1.5', 24, 'AA-BB-CC-DD-EE-02')]], version: '1.13.2');
+        // The same network reaching the server over IPv6 from one and over IPv4 from the other.
+        Device::query()->whereKey($sleeping->id)->update(['public_ip' => '2001:db8::20']);
+        Device::query()->whereKey($relay->id)->update(['public_ip' => '1.1.1.1']);
+        $this->assertNull($sleeping->fresh()->wakeRefusal());
+
+        $this->actingAs(User::factory()->create());
+        $command = $sleeping->fresh()->wake();
+        $this->signedJson('POST', '/api/device/commands/take', [], 'relay')->assertJsonPath('tasks.0.command', 'wake');
+        // Agents 1.13.2+: running once the packet is out; a progress bar on the woken device.
+        $this->signedJson('POST', "/api/device/commands/{$command->id}", ['status' => 'running', 'progress' => 50, 'message' => 'Magic packet sent to AA:BB:CC:DD:EE:01, waiting for the device to come online'], 'relay')->assertOk();
+        $this->actingAs(User::factory()->create());
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $sleeping->id])
+            ->assertSee('waiting for the device to come online')
+            ->assertSeeHtml('progress-bar');
+
+        // The device reports: done.
+        $this->signedJson('POST', '/api/device/heartbeat', [], 'sleep')->assertNoContent();
+        $this->assertSame('succeeded', $command->fresh()->status);
+        $this->assertStringStartsWith('Online after', $command->fresh()->message);
+
+        // Another time it does not come online: an alert of the device, not of the relay.
+        Device::query()->whereKey($sleeping->id)->update(['last_seen_at' => now()->subHour()]);
+        $again = $sleeping->fresh()->wake();
+        $this->signedJson('POST', '/api/device/commands/take', [], 'relay');
+        $this->signedJson('POST', "/api/device/commands/{$again->id}", ['status' => 'running', 'progress' => 50], 'relay')->assertOk();
+        $this->travel(11)->minutes();
+        Device::recordHeartbeat($relay->id, channel: 'http');
+        DeviceCommand::expireStale();
+        $this->assertSame('expired', $again->fresh()->status);
+        $this->assertStringContainsString('did not come online within 10 minutes', $again->fresh()->message);
+
+        $alerts = collect(\App\Support\SmartAlerts::for($sleeping->fresh()));
+        $wake = $alerts->firstWhere('key', 'wake');
+        $this->assertSame('danger', $wake['severity']);
+        $this->assertSame('wake', $wake['action']['command']);
+        $this->assertNull($wake['refusal']);
+        $this->assertNull(collect(\App\Support\SmartAlerts::for($relay->fresh()))->first(fn ($alert) => str_starts_with($alert['key'], 'failed:')));
+
+        // Try again from the alert: a new wake through the relay.
+        $this->actingAs(User::factory()->create());
+        Livewire::test(\App\Livewire\DeviceAlerts::class, ['selectedDeviceId' => $sleeping->id])->call('runAlert', 'wake')->assertHasNoErrors();
+        $this->assertSame(1, $relay->commands()->where('command', 'wake')->active()->count());
+    }
+
+    public function test_errors_from_the_agent_log_are_an_alert_of_the_device(): void
+    {
+        Carbon::setTestNow('2026-10-02 12:00:00');
+        $device = $this->device('a', version: '1.13.2');
+        $errors = [
+            ['message' => 'Inventory collection failed: access denied', 'count' => 3, 'first' => now()->subHour()->getTimestamp(), 'last' => now()->subMinutes(5)->getTimestamp()],
+            ['message' => 'Report failed: HTTP 500', 'count' => 1, 'first' => now()->subMinutes(2)->getTimestamp(), 'last' => now()->subMinutes(2)->getTimestamp()],
+            ['message' => 'Too old', 'count' => 1, 'last' => now()->subDays(8)->getTimestamp()],
+            ['message' => '', 'last' => now()->getTimestamp()],
+        ];
+        $this->signedJson('POST', '/api/device/errors', ['errors' => $errors], 'a')->assertJson(['taken' => 2]);
+        // The same error again is counted, not listed twice.
+        $this->signedJson('POST', '/api/device/errors', ['errors' => [$errors[1]]], 'a')->assertJson(['taken' => 1]);
+
+        $device->refresh();
+        $this->assertSame(['Report failed: HTTP 500', 'Inventory collection failed: access denied'], array_column($device->recentAgentErrors, 'message'));
+        $this->assertSame(2, $device->recentAgentErrors[0]['count']);
+
+        $alert = collect(\App\Support\SmartAlerts::for($device))->firstWhere('key', 'agent_errors');
+        $this->assertSame('The agent reported 2 errors', $alert['title']);
+        $this->assertStringStartsWith('Report failed: HTTP 500 · 2 times', $alert['message']);
+        $this->assertCount(1, $alert['details']);
+
+        $this->actingAs(User::factory()->create());
+        Livewire::test(\App\Livewire\DeviceAlerts::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('The agent reported 2 errors')
+            ->call('runAlert', 'agent_errors')
+            ->assertDontSee('The agent reported');
+        $this->assertNull($device->fresh()->agent_errors);
+        Carbon::setTestNow();
+    }
+
     public function test_ping_only_device_is_pinged_by_a_stationary_agent_in_its_network(): void
     {
         $user = User::factory()->create();
@@ -499,6 +605,9 @@ class FleetFeaturesTest extends TestCase
             ->assertSee('50 %')
             ->assertSee('192.168.1.50')
             ->call('setRange', '7d')->assertSet('range', '7d');
+        // The range from the URL (?range=30d), as for devices with the agent.
+        Livewire::withQueryParams(['range' => '30d'])->test(\App\Livewire\PingMonitor::class, ['deviceId' => $printer->id])->assertSet('range', '30d');
+        Livewire::withQueryParams(['range' => 'nope'])->test(\App\Livewire\PingMonitor::class, ['deviceId' => $printer->id])->assertSet('range', '1h');
         Livewire::test(\App\Livewire\PingSettings::class, ['deviceId' => $printer->id])
             ->set('address', 'nope')->call('save')->assertHasErrors('address')
             ->set('address', '192.168.1.51')->set('mac', '')->call('save')->assertHasNoErrors()->assertDispatched('ping-settings-saved');
@@ -749,6 +858,20 @@ class FleetFeaturesTest extends TestCase
         $this->assertSame(['58:11:22:A1:59:F0'], $device->wakeMacs);
     }
 
+    public function test_networks_are_listed_public_physical_virtual_online_first(): void
+    {
+        $net = fn ($name, $type, $connected, $ip = '10.0.0.1') => ['Name' => $name, 'Type' => $type, 'Connected' => $connected, 'IPAddresses' => [$ip]];
+        $sorted = Device::sortNetworks([
+            $net('docker-off', 'docker', false),
+            $net('wifi-off', 'wifi', false),
+            $net('vpn-on', 'vpn', true),
+            $net('lan-on', 'lan', true),
+            $net('wan', 'lan', true, '31.30.4.122'),
+            $net('lan2-on', 'lan', true),
+        ]);
+        $this->assertSame(['wan', 'lan-on', 'lan2-on', 'vpn-on', 'wifi-off', 'docker-off'], array_column($sorted, 'Name'));
+    }
+
     public function test_a_winget_update_carries_its_source(): void
     {
         $device = $this->device('pc', ['Platform' => 'windows'], version: '1.12.3');
@@ -757,6 +880,10 @@ class FleetFeaturesTest extends TestCase
         // Unknown: the agent tries the Microsoft Store, then the winget repository.
         $this->assertArrayNotHasKey('source', $device->updateTarget('app', ['Id' => 'Git.Git', 'Source' => '']));
         $this->assertArrayNotHasKey('source', DeviceCommand::sanitizeParams('installUpdate', ['kind' => 'winget', 'id' => 'Git.Git', 'source' => 'evil; rm']));
+        // Installed only for the logged-on user (agents 1.14.0+ update it in their session).
+        $this->assertSame('user', $device->updateTarget('app', ['Id' => 'Discord.Discord', 'Source' => 'winget', 'Scope' => 'user'])['scope']);
+        $this->assertArrayNotHasKey('scope', $device->updateTarget('app', ['Id' => 'Git.Git', 'Source' => 'winget', 'Scope' => 'machine']));
+        $this->assertArrayNotHasKey('scope', DeviceCommand::sanitizeParams('installUpdate', ['kind' => 'winget', 'id' => 'Git.Git', 'scope' => 'root']));
     }
 
     public function test_winget_exit_codes_are_explained(): void

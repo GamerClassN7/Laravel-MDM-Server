@@ -62,7 +62,7 @@ class DeviceCommands extends Component
             'finished_at' => now(),
             'message' => $command->status === 'queued' ? __('Cancelled by :user', ['user' => $user]) : __('Given up by :user', ['user' => $user]),
         ]);
-        \App\Support\LiveUpdates::device($command->device_id, 'command');
+        DeviceCommand::announce($command->device_id, $command->target);
     }
 
     public function deleteDevice()
