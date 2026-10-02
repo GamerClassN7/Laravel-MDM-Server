@@ -205,4 +205,20 @@ class NetworkDiscoveryTest extends TestCase
         $this->assertSame(1, $rule->events()->count());
         $this->assertStringContainsString('192.168.1.50 appeared in 192.168.1.0/24', $rule->events()->first()->message);
     }
+
+    public function test_installations_start_with_a_script_that_allows_scans(): void
+    {
+        $script = \App\Models\Script::query()->where('name', 'Allow network scans')->firstOrFail();
+
+        // Detection only on a run: the remediation waits for Remediate.
+        $this->assertTrue($script->manual_remediation);
+        $this->assertSame('all', $script->platform);
+        $this->assertSame($script->fingerprint, \App\Models\Script::fingerprintOf('all', 60, $script->detection, $script->remediation));
+        // It passes the checks of the script form.
+        $this->assertSame([], \App\Support\PowerShellCheck::errors($script->detection));
+        $this->assertSame([], \App\Support\PowerShellCheck::errors($script->remediation));
+        $this->assertTrue(\App\Support\PowerShellCheck::exits($script->detection, 0));
+        $this->assertTrue(\App\Support\PowerShellCheck::exits($script->detection, 1));
+        $this->assertStringContainsString("network_discovery -NotePropertyValue 'scan'", $script->remediation);
+    }
 }

@@ -13,6 +13,9 @@ class DataTable extends DataTableComponent
 {
     use UseDatabaseEloquent;
 
+    /** Columns hidden on narrow screens (dt-hide-*, resources/sass/app.scss). */
+    public string $tableClass = 'table align-middle dt-hide-md-2 dt-hide-md-4';
+
     public ?int $scriptId = null;
 
     public ?int $deviceId = null;
@@ -32,6 +35,10 @@ class DataTable extends DataTableComponent
         // The script pages are for system admins; a device's runs are shown to whoever sees it.
         if ($this->deviceId === null) {
             Gate::authorize('is-system-admin');
+        }
+        // In a device's tab (next to the device list) also without Finished on phones and Version below xl.
+        if ($this->deviceId !== null) {
+            $this->tableClass .= ' dt-hide-sm-5 dt-hide-xl-2';
         }
         parent::mount();
     }
@@ -153,8 +160,9 @@ class DataTable extends DataTableComponent
     {
         $remediate = $this->canRemediate($row) && Gate::allows('is-system-admin')
             ? '<button class="btn btn-sm btn-warning text-nowrap" type="button" wire:click="remediate('.(int) $row->id.')" wire:loading.attr="disabled"'
-                .' wire:confirm="'.e(__('Run the remediation of :script on :device now?', ['script' => $row->script->name, 'device' => $row->device->displayName])).'">'
-                .'<i class="fas fa-magic me-1"></i>'.e(__('Remediate')).'</button>'
+                .' wire:confirm="'.e(__('Run the remediation of :script on :device now?', ['script' => $row->script->name, 'device' => $row->device->displayName])).'"'
+                .' title="'.e(__('Remediate')).'" aria-label="'.e(__('Remediate')).'">'
+                .'<i class="fas fa-magic me-sm-1"></i><span class="d-none d-sm-inline">'.e(__('Remediate')).'</span></button>'
             : '';
         if (! $value && ! $row->error) {
             return $remediate;
@@ -165,8 +173,9 @@ class DataTable extends DataTableComponent
             'parameters' => ['runId' => $row->id],
         ]);
 
-        return '<button class="btn btn-sm btn-light text-nowrap" type="button" x-on:click="Livewire.dispatch(\'openModal\', '.e($modal).')">'
-            .'<i class="fas fa-terminal me-1"></i>'.e(__('Output')).'</button>'
+        return '<button class="btn btn-sm btn-light text-nowrap" type="button" x-on:click="Livewire.dispatch(\'openModal\', '.e($modal).')"'
+            .' title="'.e(__('Output')).'" aria-label="'.e(__('Output')).'">'
+            .'<i class="fas fa-terminal me-sm-1"></i><span class="d-none d-sm-inline">'.e(__('Output')).'</span></button>'
             .($remediate ? ' '.$remediate : '');
     }
 }

@@ -261,7 +261,7 @@ class ScriptTest extends TestCase
             ->call('save')
             ->assertHasNoErrors()
             ->assertDispatched('scriptSaved');
-        $script = Script::firstOrFail();
+        $script = Script::query()->where('name', 'Disk space')->firstOrFail();
         $this->assertSame("\$free = 10\r\nif (\$free -lt 5) { exit 1 }\r\nexit 0\r\n", $script->detection);
         $this->assertNull($script->remediation);
 
@@ -297,10 +297,11 @@ class ScriptTest extends TestCase
         $form("if (Test-Path /x) { exit 0 }\nexit 1", "Write-Host \"fix")->assertHasErrors(['remediation'])->assertHasNoErrors('detection');
         $big = "if (Test-Path /x) { exit 0 }\nexit 1\n# ".str_repeat('x', Script::MAX_CODE_BYTES);
         $this->assertSame('The script has 200.0 kB, at most 200 kB.', $error($form($big), 'detection'));
-        $this->assertSame(0, Script::count());
+        // Nothing saved (only the script every installation starts with).
+        $this->assertSame(0, Script::query()->where('name', 'Check')->count());
 
         $form("\$a = @\"\nmultiline \"text\" exit 5\n\"@\nif (Test-Path /x) { exit 0 }\nexit 1", "New-Item /x")->assertHasNoErrors();
-        $this->assertSame(1, Script::count());
+        $this->assertSame(1, Script::query()->where('name', 'Check')->count());
 
         // The whole agent passes the light check.
         $this->assertSame([], \App\Support\PowerShellCheck::lex(file_get_contents(base_path('../powershell/app.ps1')))['errors']);

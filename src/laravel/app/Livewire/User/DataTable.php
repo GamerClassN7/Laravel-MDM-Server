@@ -14,6 +14,9 @@ class DataTable extends DataTableComponent
     use HasUsersPerPage;
     use UseDatabaseEloquent;
 
+    /** Columns hidden on narrow screens (dt-hide-*, resources/sass/app.scss). */
+    public string $tableClass = 'table align-middle dt-hide-md-1 dt-hide-md-4';
+
     public $listeners = ['userAdded' => '$refresh'];
 
     private array $badgeCache = [];
@@ -81,6 +84,12 @@ class DataTable extends DataTableComponent
         }
 
         return e($value) . ' <span class="badge text-bg-danger ms-1">' . __('System Admin') . '</span>';
+    }
+
+    /** Long addresses wrap instead of widening the table on phones. */
+    public function renderColumnEmail(mixed $value, $row): string
+    {
+        return '<span class="text-break">' . e($value) . '</span>';
     }
 
     public function renderColumnTotpForce($value, $row): string

@@ -12,6 +12,9 @@ class DataTable extends DataTableComponent
 {
     use UseDatabase;
 
+    /** Columns hidden on narrow screens (dt-hide-*, resources/sass/app.scss). */
+    public string $tableClass = 'table align-middle dt-hide-md-2 dt-hide-md-5';
+
     public bool $paginated = true;
 
     public int $itemsPerPage = 100;

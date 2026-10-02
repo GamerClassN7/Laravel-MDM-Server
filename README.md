@@ -628,9 +628,12 @@ know show up. What an agent may do is set on the device, in `network_discovery` 
 - **Portal switch:** system admins turn **Network discovery** off on the Networks page; the server
   then takes no neighbours and sends no scans, whatever the agents allow.
 
-The level of each agent is shown in its **Agent** tab. To change it on many devices, a remediation
-script can set `network_discovery` in `config.json` (`%ProgramData%\Laravel-MDM` or
-`/opt/laravel-mdm`); the agent reads it with its next report.
+The level of each agent is shown in its **Agent** tab. To allow scans on many devices, every
+installation comes with the remediation script **Allow network scans** (all platforms, manual
+remediation): run it on the devices that should scan, it detects which ones do not allow scans yet,
+and **Remediate** sets `network_discovery` to `scan` in their `config.json` (a backup is kept as
+`config.json.bak`). The agent reads it with its next report. Scripts find the agent's directory in
+`MDM_AGENT_DIR` (also with `-InstallPath`).
 
 ### Dashboard
 

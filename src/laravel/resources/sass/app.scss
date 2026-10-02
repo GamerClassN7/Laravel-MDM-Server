@@ -290,3 +290,21 @@ label.mdm-tag {
     &.is-unknown { stroke: rgba(160, 170, 190, .6); stroke-width: 1.5; stroke-dasharray: 4 4; }
     &.is-down { opacity: .15; }
 }
+
+// Data tables (steelants/livewire-datatable): columns a table hides on narrow screens, set in its
+// $tableClass: dt-hide-{sm|md|lg|xl}-{n} hides the n-th column (headers, filters, cells) below that
+// breakpoint. Phones keep what tells the row apart; the rest is on the detail page.
+@each $name, $width in (sm: 576px, md: 768px, lg: 992px, xl: 1200px) {
+    @media (max-width: #{$width - 0.02px}) {
+        @for $n from 1 through 8 {
+            .dt-hide-#{$name}-#{$n} > :is(thead, tbody, tfoot) > tr > :nth-child(#{$n}) { display: none; }
+        }
+    }
+}
+// Those tables wrap their cells on phones (the boilerplate keeps every cell on one line).
+@media (max-width: 767.98px) {
+    .table[class*="dt-hide-"] > tbody > tr > td { white-space: normal; }
+}
+
+// Text cut after two lines (descriptions in tables).
+.mdm-clamp-2 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }

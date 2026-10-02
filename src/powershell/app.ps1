@@ -1896,6 +1896,8 @@ function Start-ScriptProcess {
     $info.RedirectStandardError = $true
     $info.WorkingDirectory = [System.IO.Path]::GetTempPath()
     $info.EnvironmentVariables['MDM_SCRIPT_SHA256'] = Get-Sha256Hex -Bytes $Code
+    # Where the agent keeps config.json (scripts that change its settings, any -InstallPath).
+    $info.EnvironmentVariables['MDM_AGENT_DIR'] = $AgentDir
 
     $process = [System.Diagnostics.Process]::Start($info)
     if (-not $OnLinux) {
