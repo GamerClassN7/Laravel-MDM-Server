@@ -21,6 +21,10 @@ return [
     // not set); without it a lighter check of their structure is used.
     'pwsh' => env('MDM_PWSH'),
 
+    // The public address this server is reached at, for the network map; found from the address
+    // its name (APP_URL) resolves to when not set.
+    'public_address' => env('MDM_PUBLIC_ADDRESS'),
+
     // Seconds a signed message may differ from the server clock.
     'signature_max_skew' => 300,
 

@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.14.0'
+$AgentVersion = '1.15.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -146,6 +146,10 @@ function Get-MachineInfo {
         # Every adapter that is not disabled, also disconnected ones (shown as such in the portal).
         Networks        = @(Get-NetAdapter | Where-Object { $_.Status -ne 'Disabled' -and -not $_.Hidden } | ForEach-Object {
                 $address = @(Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue)
+                # The default gateway of the interface and its MAC (the network map draws it once).
+                $gateway = Get-NetRoute -InterfaceIndex $_.InterfaceIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+                    Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | Sort-Object -Property RouteMetric | Select-Object -First 1 -ExpandProperty NextHop
+                $gatewayMac = if ($gateway) { Get-NetNeighbor -InterfaceIndex $_.InterfaceIndex -IPAddress $gateway -ErrorAction SilentlyContinue | Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(00-){5}00$' } | Select-Object -First 1 -ExpandProperty LinkLayerAddress }
                 $text = "$($_.Name) $($_.InterfaceDescription)"
                 [PSCustomObject]@{
                     "Name"                 = $_.Name
@@ -162,6 +166,8 @@ function Get-MachineInfo {
                     "IPAddresses"          = @($address.IPAddress)
                     # With the prefix length, so the server knows which devices share a network (Wake-on-LAN).
                     "Addresses"            = @($address | ForEach-Object { @{ Address = "$($_.IPAddress)"; PrefixLength = [int]$_.PrefixLength } })
+                    "Gateway"              = if ($gateway) { "$gateway" } else { $null }
+                    "GatewayMac"           = if ($gatewayMac) { "$gatewayMac" } else { $null }
                 }
             })
     }
@@ -1244,6 +1250,9 @@ function Get-LinuxDrives {
 function Get-LinuxNetworks {
     # Every interface except loopback and container ends (veth), also the ones that are down.
     $interfaces = ip -j addr show 2>$null | ConvertFrom-Json
+    # Default gateways by interface, and the MACs of the neighbours (the gateway's).
+    $routes = @(try { ip -j -4 route show default 2>$null | ConvertFrom-Json } catch { })
+    $neighbours = @(try { ip -j -4 neigh show 2>$null | ConvertFrom-Json } catch { })
     foreach ($interface in $interfaces) {
         $name = "$($interface.ifname)"
         if ($name -eq 'lo' -or $name -like 'veth*') {
@@ -1258,8 +1267,12 @@ function Get-LinuxNetworks {
             elseif ($name -match '^(virbr|vnet|lxc|lxd|incus|cni|flannel|cali|podman)') { 'virtual' }
             elseif ($name -match '^(br|bond)') { 'bridge' }
             else { 'lan' }
+        $gateway = $routes | Where-Object { "$($_.dev)" -eq $name -and $_.gateway } | Select-Object -First 1 -ExpandProperty gateway
+        $gatewayMac = if ($gateway) { $neighbours | Where-Object { "$($_.dst)" -eq "$gateway" -and "$($_.dev)" -eq $name -and $_.lladdr } | Select-Object -First 1 -ExpandProperty lladdr }
         [PSCustomObject]@{
             Name        = $name
+            Gateway     = if ($gateway) { "$gateway" } else { $null }
+            GatewayMac  = if ($gatewayMac) { "$gatewayMac" } else { $null }
             Status      = if ($interface.operstate -eq 'UP') { 'Up' } else { "$($interface.operstate)" }
             # Tunnels (WireGuard, tun) report UNKNOWN: connected when they have an address.
             Connected   = $interface.operstate -eq 'UP' -or ($interface.operstate -eq 'UNKNOWN' -and $addresses.Count -gt 0)

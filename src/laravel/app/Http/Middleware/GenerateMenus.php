@@ -30,6 +30,10 @@ class GenerateMenus
                 'fas fa-desktop',
                 'devices',
             ],
+            'Networks' => [
+                'fas fa-project-diagram',
+                'networks',
+            ],
             'Notifications' => [
                 'fas fa-bell',
                 'notifications',
