@@ -132,6 +132,30 @@
                             </button>
                         </li>
                     @endforeach
+                    {{-- Scan of each of its networks (Networks page too): what answers shows as unknown devices there. --}}
+                    @foreach ($selectedDevice->scannableNetworks as $network)
+                        @php
+                            $scanning = \App\Models\Device::findActive($active, 'scanNetwork', ['cidr' => $network]);
+                            $scanRefusal = $scanning ? null : $selectedDevice->commandRefusal('scanNetwork', ['cidr' => $network]);
+                        @endphp
+                        <li>
+                            <button class="dropdown-item d-flex align-items-center" type="button" wire:click="scan(@js($network))"
+                                title="{{ $scanning ? $scanning->displayMessage ?: $scanning->statusLabel : ($scanRefusal ?? __('Ping every address of the network and show what answers on the Networks page')) }}"
+                                @disabled($scanning || $scanRefusal)>
+                                @if ($scanning)
+                                    <span aria-hidden="true" class="dropdown-ico spinner-border spinner-border-sm"></span>
+                                @else
+                                    <i class="dropdown-ico fas fa-search-location fa-fw"></i>
+                                @endif
+                                {{ __('Scan :network', ['network' => $network]) }}
+                                @if ($scanning)
+                                    <span class="small text-muted ms-2">{{ $scanning->progress !== null ? $scanning->progress.' %' : $scanning->statusLabel }}</span>
+                                @elseif ($scanRefusal)
+                                    <span class="small text-muted ms-2 text-truncate" style="max-width: 12rem">{{ $scanRefusal }}</span>
+                                @endif
+                            </button>
+                        </li>
+                    @endforeach
                 @endif
                 <li><hr class="dropdown-divider"></li>
                 <li>

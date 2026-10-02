@@ -595,8 +595,9 @@ A link that is down (a disconnected interface, an offline device) stays as a fai
 without anything online is drawn faint. A device that is the only agent in its networks is
 **isolated** (dashed orange): nothing next to it can wake it or ping the devices around it. The map is
 dragged and zoomed (wheel, two fingers, the buttons; **fit** shows all of it), a click on a device
-opens it, and it follows the agents live over Reverb. Under it every network is listed with its
-devices, gateway and the agents that can ping and wake in it.
+opens it, and it follows the agents live over Reverb. It fills the window (no page scroll); the
+**Networks** switch next to **Diagram** lists every network instead, with its devices, gateway, the
+agents that can ping and wake in it, its unknown devices and **Scan** in the top right corner.
 
 #### Network discovery
 
@@ -621,7 +622,8 @@ know show up. What an agent may do is set on the device, in `network_discovery` 
   its alerts); ignored ones are listed under the networks and can be shown again.
 - **Dynamic addresses:** a ping-only device with a MAC address follows it: when an agent sees that
   MAC at another address of the same network (DHCP), the device moves there.
-- **Scan** (in the network's card, networks up to a /22): an online agent in the network with
+- **Scan** (in the network's card, or **Scan 192.168.1.0/24** in the menu of an agent for each of
+  its networks, up to a /22): an online agent in the network with
   `network_discovery` `scan` pings every address of it (128 at once, a few seconds for a /24),
   which also fills its ARP table with every device that answers ARP, looks up the names of the
   ones that answered (reverse DNS) and reports at once. Progress and result are shown in the card

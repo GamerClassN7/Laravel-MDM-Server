@@ -429,7 +429,10 @@ class Device extends Model
             $command === 'wake' && version_compare((string) $this->agent_version, self::WAKE_VERSION, '<') => __('The agent is too old for this command'),
             $command === 'pingNow' && version_compare((string) $this->agent_version, self::PING_NOW_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::PING_NOW_VERSION]),
             $command === 'scanNetwork' && version_compare((string) $this->agent_version, self::NETWORK_DISCOVERY_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::NETWORK_DISCOVERY_VERSION]),
-            $command === 'scanNetwork' && $this->networkDiscovery !== 'scan' => __('Scans are not allowed on the device (network_discovery in its config.json)'),
+            // As of its last report: a change in config.json shows with the next one.
+            $command === 'scanNetwork' && $this->networkDiscovery !== 'scan' => __('network_discovery is ":level" in its config.json (as of its last report :time), scans need "scan"', [
+                'level' => $this->networkDiscovery ?? 'neighbours', 'time' => $this->updated_at?->diffForHumans() ?? '-',
+            ]),
             $command === 'scanNetwork' && ! NetworkNeighbour::enabled() => __('Network discovery is turned off in the portal'),
             $command === 'sync' && version_compare((string) $this->agent_version, self::SYNC_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::SYNC_VERSION]),
             $command === 'installUpdate' && ($params['kind'] ?? null) === 'pwsh' && version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') => __('The agent is too old for this command'),
@@ -526,6 +529,33 @@ class Device extends Model
         $level = $this->isPingOnly ? null : ($this->data->machine->NetworkDiscovery ?? null);
 
         return in_array($level, NetworkNeighbour::LEVELS, true) ? $level : null;
+    }
+
+    /**
+     * The networks the agent can scan (Scan in its menu): the IPv4 subnets of its connected wired,
+     * Wi-Fi and bridge interfaces, /22 and smaller.
+     *
+     * @return list<string>
+     */
+    public function getScannableNetworksAttribute(): array
+    {
+        if ($this->isPingOnly) {
+            return [];
+        }
+        $networks = [];
+        foreach ($this->networks as $interface) {
+            if (! $interface['Connected'] || ! in_array($interface['Type'], self::RELAY_INTERFACE_TYPES, true)) {
+                continue;
+            }
+            foreach ($interface['Addresses'] as $address) {
+                $cidr = \App\Support\NetworkMap::cidr($address['Address'], $address['PrefixLength']);
+                if ($cidr !== null && $address['PrefixLength'] >= DeviceCommand::MIN_SCAN_PREFIX && $address['PrefixLength'] <= 30) {
+                    $networks[] = $cidr;
+                }
+            }
+        }
+
+        return array_values(array_unique($networks));
     }
 
     public function scriptRuns(): HasMany

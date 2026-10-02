@@ -2095,6 +2095,11 @@ function Update-ScriptRun {
     catch {
         Write-AgentLog "Script result not sent: $($_.Exception.Message)" -ErrorRecord $_
     }
+    # A remediation may have changed what the report carries (e.g. network_discovery in
+    # config.json): the portal sees it right away, not with the next report in up to 5 minutes.
+    if ($null -ne $current.Exit['remediation']) {
+        $script:ReportSoon = $true
+    }
 }
 
 #endregion
@@ -4711,7 +4716,8 @@ function Start-Agent {
                 Remove-Job -Job $inventoryJob -Force
                 $inventoryJob = $null
             }
-            if (Sync-NetworkScan) {
+            if ((Sync-NetworkScan) -or $script:ReportSoon) {
+                $script:ReportSoon = $false
                 $lastReport = [DateTime]::MinValue
             }
             Sync-UpdateProgress

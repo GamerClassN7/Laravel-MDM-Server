@@ -8,6 +8,7 @@ use App\Support\NetworkMap;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Str;
 use Livewire\Attributes\On;
+use Livewire\Attributes\Url;
 use Livewire\Component;
 
 /**
@@ -18,6 +19,14 @@ use Livewire\Component;
  */
 class Page extends Component
 {
+    /** What the page shows: the map (filling the window) or the list of the networks. */
+    #[Url(except: 'map')]
+    public string $view = 'map';
+
+    public function updatedView(): void
+    {
+        $this->view = $this->view === 'list' ? 'list' : 'map';
+    }
     /** Live update (resources/js/live.js): devices changed; the map gets the new data. */
     #[On('devices-changed')]
     public function devicesChanged(): void
