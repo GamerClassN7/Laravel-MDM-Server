@@ -49,10 +49,8 @@
 .NOTES
     Everything else is in config.json next to the agent (the server cannot change it), read on
     every start: report_interval (300 s), heartbeat_interval (30 s), inventory_interval (21600 s),
-    health_interval (3600 s), realtime (true; false = HTTP only, no WebSocket) and websocket_url
-    (only when the WebSocket is not reachable where the server announces it, e.g.
-    "wss://ws.example.com:443"). Behind nginx nothing is needed: the WebSocket goes through the
-    address of -ServerUrl.
+    health_interval (3600 s) and realtime (true; false = HTTP only, no WebSocket). The WebSocket
+    is always /app at the address of -ServerUrl (nginx proxies it to Reverb).
 #>
 param (
     [string]
@@ -81,7 +79,8 @@ $ErrorActionPreference = 'Stop'
 # Options that are not parameters (not in the help): -Once (one report and exit, for testing) and
 # the options of agents before 1.16.0 still on the command line of their task / service
 # (-ReportInterval 300 -ReverbHost ... -NoRealtime). They arrive in $args; -Install moves them to
-# config.json, where everything else is.
+# config.json, where everything else is (the -Reverb* ones are dropped: the WebSocket is /app at
+# the address of -ServerUrl).
 $LegacyOptions = @{}
 for ($i = 0; $i -lt $args.Count; $i++) {
     if ("$($args[$i])" -notmatch '^-(\w+):?$') { continue }
@@ -2457,29 +2456,6 @@ $AgentIntervals = [ordered]@{
     health_interval    = @{ Variable = 'HealthInterval'; Default = 3600; Min = 300 }
 }
 
-function Get-WebSocketOverride {
-    # websocket_url in config.json (or the -Reverb* options of older installations) as
-    # @{ Host; Port; Scheme; Path }, $null when the server's announcement is used.
-    param ($Config = (Get-AgentConfig))
-
-    if ($ReverbHost -or $ReverbPort -or $ReverbScheme) {
-        return @{ Host = $ReverbHost; Port = $ReverbPort; Scheme = $ReverbScheme; Path = $null }
-    }
-    $url = "$($Config['websocket_url'])"
-    if (-not $url) { return $null }
-    $uri = $null
-    if (-not [Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$uri) -or @('ws', 'wss', 'http', 'https') -notcontains $uri.Scheme) {
-        Write-AgentLog "websocket_url '$url' in config.json is not a ws:// or wss:// address, using the server's" -IsError
-        return $null
-    }
-    return @{
-        Host   = $uri.Host
-        Port   = $uri.Port
-        Scheme = if (@('wss', 'https') -contains $uri.Scheme) { 'https' } else { 'http' }
-        Path   = if ($uri.AbsolutePath -ne '/') { $uri.AbsolutePath.TrimEnd('/') } else { $null }
-    }
-}
-
 function Initialize-AgentSettings {
     # The options from config.json, unless given on the command line (older installations):
     # intervals (at least their minimum) and realtime.
@@ -2517,13 +2493,8 @@ function Save-AgentSettings {
         $Config['realtime'] = $false
         $changed = $true
     }
-    if ($ReverbHost -or $ReverbPort -or $ReverbScheme) {
-        $server = [Uri]$ServerUrl
-        $scheme = if ($ReverbScheme) { $ReverbScheme } else { $server.Scheme }
-        $wsHost = if ($ReverbHost) { $ReverbHost } else { $server.Host }
-        $port = if ($ReverbPort) { $ReverbPort } elseif ($scheme -eq 'https') { 443 } else { 80 }
-        $Config['websocket_url'] = '{0}://{1}:{2}' -f $(if ($scheme -eq 'https') { 'wss' } else { 'ws' }), $wsHost, $port
-        $changed = $true
+    if ($ReverbHost -or $ReverbPort -or $ReverbScheme -or $ReverbKey) {
+        Write-Host 'The -Reverb* options are not used anymore: the WebSocket is /app at the address of -ServerUrl.' -ForegroundColor Yellow
     }
     if ($changed) {
         Save-AgentConfig -Config $Config
@@ -4218,24 +4189,16 @@ function Start-Realtime {
         return $null
     }
 
-    # websocket_url in config.json, for installations where the WebSocket is reachable on another
-    # address than the server announces (behind nginx it is the address of -ServerUrl).
-    $override = Get-WebSocketOverride
-    if ($override -and $override.Host) { $config.host = $override.Host }
-    if ($override -and $override.Path) { $config.path = $override.Path }
-    if ($ReverbKey) { $config.key = $ReverbKey }
-
-    # The scheme follows -ServerUrl unless set (an https portal means wss).
-    $scheme = if ($override -and $override.Scheme) { $override.Scheme } else { ([Uri]$ServerUrl).Scheme }
-    if ($override -and $override.Port) {
-        $config.port = $override.Port
-    } elseif ($scheme -ne $config.scheme) {
-        $config.port = if ($scheme -eq 'https') { 443 } else { 80 }
-    }
-    $config.scheme = $scheme
-
-    $scheme = if ($config.scheme -eq 'https') { 'wss' } else { 'ws' }
-    $uri = "{0}://{1}:{2}{3}/app/{4}?protocol=7&client=laravel-mdm-agent&version=1.0&flash=false" -f $scheme, $config.host, $config.port, $config.path, $config.key
+    # The WebSocket is /app at the address of the portal (nginx proxies it to Reverb), whatever
+    # address the server has for Reverb itself; the server only gives the key and the channel.
+    # Agents installed before 1.16.0 may still have -ReverbHost / -ReverbPort / -ReverbScheme on the
+    # command line of their task / service: they are used until -Install runs again.
+    $server = [Uri]$ServerUrl
+    $https = if ($ReverbScheme) { $ReverbScheme -eq 'https' } else { $server.Scheme -eq 'https' }
+    $wsHost = if ($ReverbHost) { $ReverbHost } else { $server.Host }
+    $port = if ($ReverbPort) { $ReverbPort } elseif (-not $ReverbScheme -and -not $server.IsDefaultPort) { $server.Port } elseif ($https) { 443 } else { 80 }
+    $key = if ($ReverbKey) { $ReverbKey } else { $config.key }
+    $uri = "{0}://{1}:{2}/app/{3}?protocol=7&client=laravel-mdm-agent&version=1.0&flash=false" -f $(if ($https) { 'wss' } else { 'ws' }), $wsHost, $port, $key
 
     $socket = New-Object System.Net.WebSockets.ClientWebSocket
     $socket.Options.KeepAliveInterval = [TimeSpan]::FromSeconds(30)

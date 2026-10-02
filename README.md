@@ -132,9 +132,9 @@ Links are `https` behind a TLS proxy (any domain name). Opened directly by an IP
 
 Only port 8000 is exposed: nginx serves the web and proxies `/app` (agent WebSockets) to Reverb
 inside the container. No Reverb settings are needed: the app publishes to Reverb directly inside the
-container, and agents connect to the address they reach the server on (e.g. `wss://mdm.example.com`
-behind a TLS proxy such as Nginx Proxy Manager with WebSocket support enabled). Set `REVERB_HOST`,
-`REVERB_PORT` and `REVERB_SCHEME` only when the WebSocket is on a different public address.
+container, and agents connect to `/app` at the address they reach the server on (e.g.
+`wss://mdm.example.com/app` behind a TLS proxy such as Nginx Proxy Manager with WebSocket support
+enabled).
 
 On start the container waits for the database and runs the migrations. `APP_KEY`, `REVERB_APP_KEY`
 and `REVERB_APP_SECRET` are generated on the first start when they are not set, and kept in
@@ -168,7 +168,9 @@ image proxies it), or to `REVERB_HOST` / `REVERB_PORT` / `REVERB_SCHEME` when th
 address.
 
 1. Set `REVERB_APP_KEY` and `REVERB_APP_SECRET` in `.env` to random strings.
-2. Point `REVERB_HOST`, `REVERB_PORT` and `REVERB_SCHEME` to the public address the agents connect to.
+2. Point `REVERB_HOST`, `REVERB_PORT` and `REVERB_SCHEME` to where the app publishes to Reverb
+   (`127.0.0.1:8080` on the same machine). Agents 1.16.0+ always connect to `/app` at the address
+   of the portal, older ones to these values when they are public.
 3. Keep the Reverb server running, e.g. with Supervisor (the Docker image already does):
 
    ```bash
@@ -703,13 +705,13 @@ it, edit the file and restart the agent):
 | `inventory_interval` | `21600` | Seconds between update checks (at least 600) |
 | `health_interval` | `3600` | Seconds between disk health (S.M.A.R.T.) checks (at least 300) |
 | `realtime` | `true` | `false`: HTTPS only, without the WebSocket |
-| `websocket_url` | | Only when the WebSocket is not reachable where the server announces it, e.g. `wss://ws.example.com:443` |
 
-The WebSocket needs no setting behind nginx (the Docker image, or `/app` proxied to Reverb): with
-`REVERB_HOST` local or unset, the server announces the address the agent reaches it on, and an
-`https` `-ServerUrl` means `wss` on port 443. Agents before 1.16.0 took these options on the command
-line (`-ReportInterval`, `-ReverbHost`, `-ReverbPort`, `-ReverbScheme`, `-NoRealtime` …); they still
-work there, and `-Install` moves them to `config.json`.
+The WebSocket is always `/app` at the address of `-ServerUrl` (`wss://mdm.example.com/app/…` for
+`https://mdm.example.com`), where nginx proxies it to Reverb (the Docker image does). The server only
+gives the agent the key and its channel, so nothing about Reverb is set on the devices. Agents before
+1.16.0 took these options on the command line (`-ReportInterval`, `-NoRealtime`, `-ReverbHost`,
+`-ReverbPort`, `-ReverbScheme` …); they still work there, and `-Install` moves the intervals and
+`-NoRealtime` to `config.json` and drops the `-Reverb*` ones.
 
 The device detail shows whether the agent is connected over the **WebSocket** (heartbeat in the last
 90 s), the **REST API** (report in the last 11 min) or both, the agent version, and the device type
