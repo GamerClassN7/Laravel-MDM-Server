@@ -680,17 +680,36 @@ Manually:
 .\app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -Install
 ```
 
-Optional parameters (stored in the scheduled task / service by `-Install`):
+Parameters:
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `-ReportInterval` | `300` | Seconds between device reports |
-| `-HeartbeatInterval` | `30` | Seconds between heartbeats (with CPU/RAM) |
-| `-InventoryInterval` | `21600` | Seconds between update checks |
-| `-HealthInterval` | `3600` | Seconds between disk health (S.M.A.R.T.) checks |
-| `-ReverbScheme` | scheme of `-ServerUrl` | `https` (wss) or `http` (ws) |
-| `-ReverbHost`, `-ReverbPort`, `-ReverbKey` | from server | Override the WebSocket address announced by the server |
-| `-NoRealtime` | | Use HTTPS only, without the WebSocket |
+| Parameter | Description |
+|-----------|-------------|
+| `-ServerUrl` | The address of the portal (the only option on the command line of the task / service) |
+| `-EnrolmentCode` | The code from **Add device** (a new device only) |
+| `-Install` | Install or update the agent and register the scheduled task / systemd service |
+| `-InstallPath` | Install directory, default `%ProgramData%\Laravel-MDM` or `/opt/laravel-mdm` |
+| `-ServerKeyFingerprint` | Pin the server key only when it matches (the install commands pass it) |
+| `-ResetServerKey` | Pin the current server key again (after it was replaced on purpose) |
+| `-DisableScripts`, `-EnableScripts` | Remediation scripts on this device ([Remediation scripts](#remediation-scripts)) |
+| `-NetworkDiscovery off\|neighbours\|scan` | [Network discovery](#network-discovery) |
+
+Everything else is in `config.json` next to the agent, read on every start (the server cannot change
+it, edit the file and restart the agent):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `report_interval` | `300` | Seconds between device reports (at least 60) |
+| `heartbeat_interval` | `30` | Seconds between heartbeats with CPU/RAM (at least 10) |
+| `inventory_interval` | `21600` | Seconds between update checks (at least 600) |
+| `health_interval` | `3600` | Seconds between disk health (S.M.A.R.T.) checks (at least 300) |
+| `realtime` | `true` | `false`: HTTPS only, without the WebSocket |
+| `websocket_url` | | Only when the WebSocket is not reachable where the server announces it, e.g. `wss://ws.example.com:443` |
+
+The WebSocket needs no setting behind nginx (the Docker image, or `/app` proxied to Reverb): with
+`REVERB_HOST` local or unset, the server announces the address the agent reaches it on, and an
+`https` `-ServerUrl` means `wss` on port 443. Agents before 1.16.0 took these options on the command
+line (`-ReportInterval`, `-ReverbHost`, `-ReverbPort`, `-ReverbScheme`, `-NoRealtime` …); they still
+work there, and `-Install` moves them to `config.json`.
 
 The device detail shows whether the agent is connected over the **WebSocket** (heartbeat in the last
 90 s), the **REST API** (report in the last 11 min) or both, the agent version, and the device type

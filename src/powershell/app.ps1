@@ -7,23 +7,19 @@
     to receive commands instantly and periodically sends a device report over HTTP. When the
     WebSocket is unavailable, commands are still delivered in the response to the HTTP report.
 
-.PARAMETER ReverbHost
-    Overrides the WebSocket host announced by the server (also -ReverbPort, -ReverbKey).
+.PARAMETER ServerUrl
+    The address of the portal (as in Add device). Stored by -Install in the scheduled task / service.
 
-.PARAMETER ReverbScheme
-    WebSocket scheme, defaults to the scheme of -ServerUrl (https => wss).
+.PARAMETER EnrolmentCode
+    With -Install on a new device: the code shown in Add device.
 
-.PARAMETER InventoryInterval
-    Seconds between the (expensive) Windows Update and winget checks, default 6 hours.
-
-.PARAMETER HealthInterval
-    Seconds between the disk health (S.M.A.R.T.) checks, default 1 hour.
+.PARAMETER Install
+    Copies the agent to its install directory, enrols the device and registers it as a scheduled
+    task running as SYSTEM (Windows) or a systemd service (Linux). On an installed device it only
+    updates the agent and keeps the device.
 
 .PARAMETER InstallPath
     Where -Install copies the agent to, default %ProgramData%\Laravel-MDM or /opt/laravel-mdm.
-
-.PARAMETER NoRealtime
-    Do not use the WebSocket, rely on HTTP only.
 
 .PARAMETER ServerKeyFingerprint
     With -Install: the fingerprint of the server key (shown in Add device). The agent pins the key
@@ -50,38 +46,21 @@
     # Linux: enrol and register the agent as a systemd service
     sudo pwsh ./app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -Install
 
-.EXAMPLE
-    # Reverb reachable on a different address than the one configured on the server
-    .\app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -ReverbHost ws.example.com -ReverbPort 443 -ReverbScheme https -Install
+.NOTES
+    Everything else is in config.json next to the agent (the server cannot change it), read on
+    every start: report_interval (300 s), heartbeat_interval (30 s), inventory_interval (21600 s),
+    health_interval (3600 s), realtime (true; false = HTTP only, no WebSocket) and websocket_url
+    (only when the WebSocket is not reachable where the server announces it, e.g.
+    "wss://ws.example.com:443"). Behind nginx nothing is needed: the WebSocket goes through the
+    address of -ServerUrl.
 #>
 param (
     [string]
-    $ServerUrl = 'https://sa-dev.cz/laravel-mdm/public/index.php',
+    $ServerUrl,
     [string]
     $EnrolmentCode,
     [switch]
     $Install,
-    [switch]
-    $Once,
-    [int]
-    $ReportInterval = 300,
-    [int]
-    $HeartbeatInterval = 30,
-    [int]
-    $InventoryInterval = 21600,
-    [int]
-    $HealthInterval = 3600,
-    [string]
-    $ReverbHost,
-    [int]
-    $ReverbPort,
-    [ValidateSet('http', 'https')]
-    [string]
-    $ReverbScheme,
-    [string]
-    $ReverbKey,
-    [switch]
-    $NoRealtime,
     [string]
     $InstallPath,
     [string]
@@ -98,6 +77,43 @@ param (
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Options that are not parameters (not in the help): -Once (one report and exit, for testing) and
+# the options of agents before 1.16.0 still on the command line of their task / service
+# (-ReportInterval 300 -ReverbHost ... -NoRealtime). They arrive in $args; -Install moves them to
+# config.json, where everything else is.
+$LegacyOptions = @{}
+for ($i = 0; $i -lt $args.Count; $i++) {
+    if ("$($args[$i])" -notmatch '^-(\w+):?$') { continue }
+    $name = $Matches[1]
+    if (@('Once', 'NoRealtime') -contains $name) {
+        $LegacyOptions[$name] = $true
+    } elseif ($i + 1 -lt $args.Count) {
+        $LegacyOptions[$name] = $args[$i + 1]
+        $i++
+    }
+}
+$Once = [bool]$LegacyOptions['Once']
+$NoRealtime = [bool]$LegacyOptions['NoRealtime']
+$ReportInterval = 300
+$HeartbeatInterval = 30
+$InventoryInterval = 21600
+$HealthInterval = 3600
+foreach ($name in 'ReportInterval', 'HeartbeatInterval', 'InventoryInterval', 'HealthInterval') {
+    $value = 0
+    if ($LegacyOptions.ContainsKey($name) -and [int]::TryParse("$($LegacyOptions[$name])", [ref]$value) -and $value -gt 0) {
+        Set-Variable -Name $name -Value $value
+    } else {
+        $LegacyOptions.Remove($name)
+    }
+}
+$ReverbHost = "$($LegacyOptions['ReverbHost'])"
+$ReverbPort = 0
+[void][int]::TryParse("$($LegacyOptions['ReverbPort'])", [ref]$ReverbPort)
+$ReverbScheme = if (@('http', 'https') -contains "$($LegacyOptions['ReverbScheme'])") { "$($LegacyOptions['ReverbScheme'])".ToLowerInvariant() } else { '' }
+$ReverbKey = "$($LegacyOptions['ReverbKey'])"
+# Not left for the functions (they would see them through dynamic scoping).
+Remove-Variable -Name i, name, value -ErrorAction SilentlyContinue
 # Reported to the server, which offers an update when it serves a newer agent.
 $AgentVersion = '1.16.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow', 'scanNetwork')
@@ -2433,15 +2449,90 @@ function Get-AgentToken {
     return $token
 }
 
+# The options in config.json: key => @{ Variable; Default; Min } (seconds).
+$AgentIntervals = [ordered]@{
+    report_interval    = @{ Variable = 'ReportInterval'; Default = 300; Min = 60 }
+    heartbeat_interval = @{ Variable = 'HeartbeatInterval'; Default = 30; Min = 10 }
+    inventory_interval = @{ Variable = 'InventoryInterval'; Default = 21600; Min = 600 }
+    health_interval    = @{ Variable = 'HealthInterval'; Default = 3600; Min = 300 }
+}
+
+function Get-WebSocketOverride {
+    # websocket_url in config.json (or the -Reverb* options of older installations) as
+    # @{ Host; Port; Scheme; Path }, $null when the server's announcement is used.
+    param ($Config = (Get-AgentConfig))
+
+    if ($ReverbHost -or $ReverbPort -or $ReverbScheme) {
+        return @{ Host = $ReverbHost; Port = $ReverbPort; Scheme = $ReverbScheme; Path = $null }
+    }
+    $url = "$($Config['websocket_url'])"
+    if (-not $url) { return $null }
+    $uri = $null
+    if (-not [Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$uri) -or @('ws', 'wss', 'http', 'https') -notcontains $uri.Scheme) {
+        Write-AgentLog "websocket_url '$url' in config.json is not a ws:// or wss:// address, using the server's" -IsError
+        return $null
+    }
+    return @{
+        Host   = $uri.Host
+        Port   = $uri.Port
+        Scheme = if (@('wss', 'https') -contains $uri.Scheme) { 'https' } else { 'http' }
+        Path   = if ($uri.AbsolutePath -ne '/') { $uri.AbsolutePath.TrimEnd('/') } else { $null }
+    }
+}
+
+function Initialize-AgentSettings {
+    # The options from config.json, unless given on the command line (older installations):
+    # intervals (at least their minimum) and realtime.
+    $config = Get-AgentConfig
+    foreach ($key in $AgentIntervals.Keys) {
+        $option = $AgentIntervals[$key]
+        if ($LegacyOptions.ContainsKey($option.Variable) -or $null -eq $config[$key]) { continue }
+        $value = 0
+        if ([int]::TryParse("$($config[$key])", [ref]$value) -and $value -ge $option.Min) {
+            Set-Variable -Scope Script -Name $option.Variable -Value $value
+        } else {
+            Write-AgentLog "$key '$($config[$key])' in config.json is not a number of seconds from $($option.Min), using $($option.Default)" -IsError
+        }
+    }
+    if (-not $NoRealtime -and $config['realtime'] -eq $false) {
+        $script:NoRealtime = $true
+    }
+}
+
+function Save-AgentSettings {
+    # -Install: the options given on the command line (of agents before 1.16.0 too) go to
+    # config.json, the task / service only gets -ServerUrl.
+    param ([Parameter(Mandatory = $true)] [hashtable] $Config)
+
+    $changed = $false
+    foreach ($key in $AgentIntervals.Keys) {
+        $option = $AgentIntervals[$key]
+        if ($LegacyOptions.ContainsKey($option.Variable)) {
+            $value = (Get-Variable -Name $option.Variable -ValueOnly)
+            if ($value -eq $option.Default) { $Config.Remove($key) } else { $Config[$key] = [Math]::Max($option.Min, $value) }
+            $changed = $true
+        }
+    }
+    if ($NoRealtime) {
+        $Config['realtime'] = $false
+        $changed = $true
+    }
+    if ($ReverbHost -or $ReverbPort -or $ReverbScheme) {
+        $server = [Uri]$ServerUrl
+        $scheme = if ($ReverbScheme) { $ReverbScheme } else { $server.Scheme }
+        $wsHost = if ($ReverbHost) { $ReverbHost } else { $server.Host }
+        $port = if ($ReverbPort) { $ReverbPort } elseif ($scheme -eq 'https') { 443 } else { 80 }
+        $Config['websocket_url'] = '{0}://{1}:{2}' -f $(if ($scheme -eq 'https') { 'wss' } else { 'ws' }), $wsHost, $port
+        $changed = $true
+    }
+    if ($changed) {
+        Save-AgentConfig -Config $Config
+    }
+}
+
 function Get-AgentArguments {
-    # Agent options persisted by -Install.
-    $arguments = '-ServerUrl "{0}" -ReportInterval {1} -HeartbeatInterval {2} -InventoryInterval {3} -HealthInterval {4}' -f $ServerUrl, $ReportInterval, $HeartbeatInterval, $InventoryInterval, $HealthInterval
-    if ($ReverbHost) { $arguments += ' -ReverbHost "{0}"' -f $ReverbHost }
-    if ($ReverbPort) { $arguments += ' -ReverbPort {0}' -f $ReverbPort }
-    if ($ReverbScheme) { $arguments += ' -ReverbScheme {0}' -f $ReverbScheme }
-    if ($ReverbKey) { $arguments += ' -ReverbKey "{0}"' -f $ReverbKey }
-    if ($NoRealtime) { $arguments += ' -NoRealtime' }
-    return $arguments
+    # The command line of the task / service: only the portal, the options are in config.json.
+    return '-ServerUrl "{0}"' -f $ServerUrl
 }
 
 function Remove-TemporaryInstaller {
@@ -4127,14 +4218,17 @@ function Start-Realtime {
         return $null
     }
 
-    # Local overrides for installations where the WebSocket is reachable on a different address.
-    if ($ReverbHost) { $config.host = $ReverbHost }
+    # websocket_url in config.json, for installations where the WebSocket is reachable on another
+    # address than the server announces (behind nginx it is the address of -ServerUrl).
+    $override = Get-WebSocketOverride
+    if ($override -and $override.Host) { $config.host = $override.Host }
+    if ($override -and $override.Path) { $config.path = $override.Path }
     if ($ReverbKey) { $config.key = $ReverbKey }
 
-    # The scheme follows -ServerUrl unless given explicitly (an https portal means wss).
-    $scheme = if ($ReverbScheme) { $ReverbScheme } else { ([Uri]$ServerUrl).Scheme }
-    if ($ReverbPort) {
-        $config.port = $ReverbPort
+    # The scheme follows -ServerUrl unless set (an https portal means wss).
+    $scheme = if ($override -and $override.Scheme) { $override.Scheme } else { ([Uri]$ServerUrl).Scheme }
+    if ($override -and $override.Port) {
+        $config.port = $override.Port
     } elseif ($scheme -ne $config.scheme) {
         $config.port = if ($scheme -eq 'https') { 443 } else { 80 }
     }
@@ -4579,6 +4673,7 @@ function Send-Heartbeat {
 
 function Start-Agent {
     Initialize-AgentErrors
+    Initialize-AgentSettings
     # Keep the agent in the background, user applications take precedence.
     try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
 
@@ -4786,6 +4881,11 @@ if ($env:MDM_AGENT_NO_START) {
     return
 }
 
+if (-not $ServerUrl) {
+    Write-Host 'The address of the portal is needed: -ServerUrl https://mdm.example.com (see Add device in the portal).' -ForegroundColor Red
+    exit 1
+}
+
 if ($Install) {
     # Check privileges before anything else, so a failed install does not use up the enrolment code.
     if (-not (Test-AgentAdmin)) {
@@ -4824,6 +4924,7 @@ if ($Install) {
         $config['network_discovery'] = $NetworkDiscovery
         Save-AgentConfig -Config $config
     }
+    Save-AgentSettings -Config $config
     Write-Host "Server key: $($config['server_key'].fingerprint)" -ForegroundColor Yellow
     Write-Host "Remediation scripts: $(if ($config['scripts_enabled']) { 'enabled' } else { 'disabled' }) (config.json)" -ForegroundColor Yellow
     Write-Host "Network discovery: $(Get-NetworkDiscovery -Config $config) (config.json)" -ForegroundColor Yellow
