@@ -39,7 +39,7 @@ class AlertEvaluator
         foreach (AlertRule::query()->with('user')->get() as $rule) {
             if (AlertRule::isEvent($rule->type)) {
                 try {
-                    $counts['triggered'] += $this->announceNewDevices($rule);
+                    $counts['triggered'] += $rule->type === 'unknown_device' ? $this->announceUnknownDevices($rule) : $this->announceNewDevices($rule);
                 } catch (Throwable $e) {
                     Log::warning("Alert rule {$rule->id} failed: {$e->getMessage()}");
                 }
@@ -258,6 +258,43 @@ class AlertEvaluator
             ]);
             LiveUpdates::device($device->id, 'alert');
             Notifier::notify($rule->user, "🆕 {$device->displayName}: ".__('New device'), $message."\n".url('/devices?selectedDeviceId='.$device->id), $rule->channels);
+            $sent++;
+        }
+
+        return $sent;
+    }
+
+    /**
+     * Unknown devices that appeared in a network since the rule exists (at most a day back), once
+     * each: the event is of the agent that saw it, its value the neighbour.
+     */
+    private function announceUnknownDevices(AlertRule $rule): int
+    {
+        if (! $rule->enabled) {
+            return 0;
+        }
+        $since = $rule->created_at->max(now()->subDay());
+        $known = $rule->events()->where('triggered_at', '>=', $since->copy()->subMinute())->pluck('value')->map(fn ($value) => (int) $value)->all();
+        $sent = 0;
+        foreach (\App\Models\NetworkNeighbour::unknown($this->devices) as $neighbour) {
+            $agent = $this->devices->firstWhere('id', $neighbour->seen_by);
+            if ($agent === null || $neighbour->first_seen_at->lt($since) || in_array($neighbour->id, $known, true)) {
+                continue;
+            }
+            $message = __(':device appeared in :network (:details), seen by :agent.', [
+                'device' => $neighbour->displayName,
+                'network' => $neighbour->network,
+                'details' => collect([$neighbour->hostname ? $neighbour->ip : null, $neighbour->mac])->filter()->implode(', '),
+                'agent' => $agent->displayName,
+            ]);
+            $rule->events()->create([
+                'device_id' => $agent->id,
+                'message' => mb_strimwidth($message, 0, 1000),
+                'value' => $neighbour->id,
+                'triggered_at' => now(),
+                'resolved_at' => now(),
+            ]);
+            Notifier::notify($rule->user, "❔ {$neighbour->displayName}: ".__('Unknown device'), $message."\n".url('/networks#'.NetworkMap::anchor('net:'.$neighbour->site.'|'.$neighbour->network)), $rule->channels);
             $sent++;
         }
 

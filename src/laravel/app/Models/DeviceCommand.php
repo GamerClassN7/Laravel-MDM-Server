@@ -19,7 +19,7 @@ class DeviceCommand extends Model
     /** Finished commands are kept this many days (the device history). */
     public const KEEP_DAYS = 90;
 
-    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow'];
+    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow', 'scanNetwork'];
 
     public const STATUSES = ['queued', 'sent', 'running', 'succeeded', 'failed', 'delivered', 'expired', 'cancelled'];
 
@@ -50,7 +50,11 @@ class DeviceCommand extends Model
         // booting and starting the agent takes a while.
         'wake' => 600,
         'pingNow' => 120,
+        'scanNetwork' => 300,
     ];
+
+    /** The largest network an agent scans (a /22: 1022 addresses). */
+    public const MIN_SCAN_PREFIX = 22;
 
     /** A MAC address as the agents report it (Windows AA-BB-..., Linux aa:bb:...). */
     public const MAC_PATTERN = '/^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$/';
@@ -116,6 +120,16 @@ class DeviceCommand extends Model
             }
 
             return ['device' => $device] + (isset($params['title']) && is_string($params['title']) ? ['title' => mb_substr($params['title'], 0, 200)] : []);
+        }
+        if ($command === 'scanNetwork') {
+            // A network of the agent's own interfaces (it checks that too), not larger than a /22.
+            $cidr = $params['cidr'] ?? null;
+            if (! is_string($cidr) || ! preg_match('#^(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})$#', $cidr, $matches)
+                || (int) $matches[2] < self::MIN_SCAN_PREFIX || (int) $matches[2] > 30 || \App\Support\NetworkMap::cidr($matches[1], (int) $matches[2]) !== $cidr) {
+                return null;
+            }
+
+            return ['cidr' => $cidr];
         }
         if ($command !== 'installUpdate') {
             return $params === [] ? [] : null;
@@ -190,6 +204,9 @@ class DeviceCommand extends Model
         }
         if ($command === 'pingNow') {
             return 'ping:'.$params['device'];
+        }
+        if ($command === 'scanNetwork') {
+            return 'scan:'.$params['cidr'];
         }
         if ($command !== 'installUpdate') {
             return null;
@@ -286,6 +303,7 @@ class DeviceCommand extends Model
             'sync' => __('Sync'),
             'wake' => __('Wake :name', ['name' => $this->params['title'] ?? '?']),
             'pingNow' => __('Ping :name', ['name' => $this->params['title'] ?? '?']),
+            'scanNetwork' => __('Scan :network', ['network' => $this->params['cidr'] ?? '?']),
             default => $this->command,
         };
     }
@@ -301,6 +319,7 @@ class DeviceCommand extends Model
             'sync' => 'fas fa-cloud-download-alt',
             'wake' => 'fas fa-sun',
             'pingNow' => 'fas fa-network-wired',
+            'scanNetwork' => 'fas fa-satellite-dish',
             default => 'fas fa-terminal',
         };
     }

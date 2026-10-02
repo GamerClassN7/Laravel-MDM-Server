@@ -38,6 +38,8 @@ Route::middleware(['device.signature', 'auth:api'])->post('/device', function (R
     // The commands column is not written here: queued commands are taken atomically below.
     $device->save();
     App\Models\DeviceCommand::completeWakes($device->id);
+    // What the agent sees in its networks (agents 1.16.0+, unless network_discovery is off).
+    rescue(fn () => App\Models\NetworkNeighbour::record($device, $data['neighbours'] ?? null));
     App\Support\LiveUpdates::device($device->id, 'report');
 
     return response()->json([

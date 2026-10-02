@@ -48,9 +48,13 @@ A ping-only device (a printer, a NAS without the agent): an agent in its network
 
 ![Ping-only device](docs/screenshots/ping.png)
 
-Networks: a map of the fleet from what the agents report, top down the internet, the public addresses, their gateways, the networks (LAN, Wi-Fi, VPN) and the devices, with this server where it is:
+Networks: a map of the fleet from what the agents report, top down the internet, the public addresses, their gateways, the networks (LAN, Wi-Fi, VPN) and the devices, with this server where it is. Devices the agents see that the portal does not know are dashed:
 
 ![Networks](docs/screenshots/networks.png)
+
+Every network lists its unknown devices (add one as ping-only or ignore it) and scans through an agent that allows it:
+
+![Network discovery](docs/screenshots/network-discovery.png)
 
 Notifications: firing alerts, rules and channels (ntfy, Discord, Telegram, e-mail, …):
 
@@ -128,9 +132,9 @@ Links are `https` behind a TLS proxy (any domain name). Opened directly by an IP
 
 Only port 8000 is exposed: nginx serves the web and proxies `/app` (agent WebSockets) to Reverb
 inside the container. No Reverb settings are needed: the app publishes to Reverb directly inside the
-container, and agents connect to the address they reach the server on (e.g. `wss://mdm.example.com`
-behind a TLS proxy such as Nginx Proxy Manager with WebSocket support enabled). Set `REVERB_HOST`,
-`REVERB_PORT` and `REVERB_SCHEME` only when the WebSocket is on a different public address.
+container, and agents connect to `/app` at the address they reach the server on (e.g.
+`wss://mdm.example.com/app` behind a TLS proxy such as Nginx Proxy Manager with WebSocket support
+enabled).
 
 On start the container waits for the database and runs the migrations. `APP_KEY`, `REVERB_APP_KEY`
 and `REVERB_APP_SECRET` are generated on the first start when they are not set, and kept in
@@ -164,7 +168,9 @@ image proxies it), or to `REVERB_HOST` / `REVERB_PORT` / `REVERB_SCHEME` when th
 address.
 
 1. Set `REVERB_APP_KEY` and `REVERB_APP_SECRET` in `.env` to random strings.
-2. Point `REVERB_HOST`, `REVERB_PORT` and `REVERB_SCHEME` to the public address the agents connect to.
+2. Point `REVERB_HOST`, `REVERB_PORT` and `REVERB_SCHEME` to where the app publishes to Reverb
+   (`127.0.0.1:8080` on the same machine). Agents 1.16.0+ always connect to `/app` at the address
+   of the portal, older ones to these values when they are public.
 3. Keep the Reverb server running, e.g. with Supervisor (the Docker image already does):
 
    ```bash
@@ -433,7 +439,8 @@ Security:
     Windows go through the DNS Client service. The signature is what keeps foreign code out.
     The isolation keeps scripts from downloading or sending anything.
 - **Local switch:** `-DisableScripts` (`-EnableScripts` to allow them again, or `scripts_enabled`
-  in `config.json`) turns scripts off on the device. The server cannot change it.
+  in `config.json`) turns scripts off on the device. The server cannot change it. Likewise
+  `-NetworkDiscovery off|neighbours|scan` ([Network discovery](#network-discovery)).
 - **Audit:** creating, changing, removing and running a script (with its fingerprint and devices)
   is written to the audit log.
 
@@ -480,6 +487,7 @@ open the portal with (remembered in `storage/app/portal-url`; not localhost, and
   | Services | a service failed, or a container is unhealthy, dead or restarting |
   | Remediations | the latest run of a remediation script failed |
   | New device | a device is enrolled with the agent or added as ping-only (once each, nothing to resolve; sent with its name, system and agent version after its first report, at the latest 10 minutes after enrolment) |
+  | Unknown device | an agent sees a device the portal does not know in its network (once each, see [Network discovery](#network-discovery)) |
 
   Disk and memory switch between **%** and **GB**: a percentage suits drives of the same size, a
   size suits the big ones (10 % of 4 TB are still 400 GB) and memory of different machines. GB are
@@ -564,8 +572,7 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
 
 ### Networks
 
-**Networks** in the main menu draws the fleet as a map, built from what the agents report (no
-scanning). Top down:
+**Networks** in the main menu draws the fleet as a map, built from what the agents report. Top down:
 
 1. **Internet**.
 2. **Public addresses** (sites): the address each agent reaches the server from. An agent that
@@ -590,6 +597,45 @@ without anything online is drawn faint. A device that is the only agent in its n
 dragged and zoomed (wheel, two fingers, the buttons; **fit** shows all of it), a click on a device
 opens it, and it follows the agents live over Reverb. Under it every network is listed with its
 devices, gateway and the agents that can ping and wake in it.
+
+#### Network discovery
+
+Agents 1.16.0+ also report the devices they see in their networks, so the ones the portal does not
+know show up. What an agent may do is set on the device, in `network_discovery` in its
+`config.json` (`-NetworkDiscovery` at install); the server cannot change it:
+
+| `network_discovery` | The agent |
+|---|---|
+| `off` | reports nothing and refuses scans |
+| `neighbours` (default) | sends its ARP table with every report (passive, nothing is sent into the network) |
+| `scan` | also scans a network of its interfaces when asked in the portal |
+
+- **Unknown devices:** a neighbour in the network of one of the agent's interfaces (Docker, VMs and
+  VPNs left out) whose MAC address no device of the portal has (their interfaces, gateways,
+  ping-only and Wake-on-LAN settings). It is kept per MAC address and public address, so a device
+  with a dynamic address is still one entry. It is drawn dashed under its network (at most 8,
+  the rest as **+n unknown**) and listed in the network's card with its address, name and MAC
+  (**random MAC**: a private address a phone or laptop made up for that Wi-Fi). Neighbours seen in
+  the last 24 hours are shown; ones not seen for 30 days are forgotten (ignored ones after 180).
+- **Add** makes it a ping-only device with its address, prefix and MAC. **Ignore** hides it (and
+  its alerts); ignored ones are listed under the networks and can be shown again.
+- **Dynamic addresses:** a ping-only device with a MAC address follows it: when an agent sees that
+  MAC at another address of the same network (DHCP), the device moves there.
+- **Scan** (in the network's card, networks up to a /22): an online agent in the network with
+  `network_discovery` `scan` pings every address of it (128 at once, a few seconds for a /24),
+  which also fills its ARP table with every device that answers ARP, looks up the names of the
+  ones that answered (reverse DNS) and reports at once. Progress and result are shown in the card
+  and in the agent's commands. The agent scans only networks of its own interfaces, one at a time.
+- **Alert:** the **Unknown device** rule notifies once about every unknown device that appears.
+- **Portal switch:** system admins turn **Network discovery** off on the Networks page; the server
+  then takes no neighbours and sends no scans, whatever the agents allow.
+
+The level of each agent is shown in its **Agent** tab. To allow scans on many devices, every
+installation comes with the remediation script **Allow network scans** (all platforms, manual
+remediation): run it on the devices that should scan, it detects which ones do not allow scans yet,
+and **Remediate** sets `network_discovery` to `scan` in their `config.json` (a backup is kept as
+`config.json.bak`). The agent reads it with its next report. Scripts find the agent's directory in
+`MDM_AGENT_DIR` (also with `-InstallPath`).
 
 ### Dashboard
 
@@ -636,17 +682,36 @@ Manually:
 .\app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -Install
 ```
 
-Optional parameters (stored in the scheduled task / service by `-Install`):
+Parameters:
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `-ReportInterval` | `300` | Seconds between device reports |
-| `-HeartbeatInterval` | `30` | Seconds between heartbeats (with CPU/RAM) |
-| `-InventoryInterval` | `21600` | Seconds between update checks |
-| `-HealthInterval` | `3600` | Seconds between disk health (S.M.A.R.T.) checks |
-| `-ReverbScheme` | scheme of `-ServerUrl` | `https` (wss) or `http` (ws) |
-| `-ReverbHost`, `-ReverbPort`, `-ReverbKey` | from server | Override the WebSocket address announced by the server |
-| `-NoRealtime` | | Use HTTPS only, without the WebSocket |
+| Parameter | Description |
+|-----------|-------------|
+| `-ServerUrl` | The address of the portal (the only option on the command line of the task / service) |
+| `-EnrolmentCode` | The code from **Add device** (a new device only) |
+| `-Install` | Install or update the agent and register the scheduled task / systemd service |
+| `-InstallPath` | Install directory, default `%ProgramData%\Laravel-MDM` or `/opt/laravel-mdm` |
+| `-ServerKeyFingerprint` | Pin the server key only when it matches (the install commands pass it) |
+| `-ResetServerKey` | Pin the current server key again (after it was replaced on purpose) |
+| `-DisableScripts`, `-EnableScripts` | Remediation scripts on this device ([Remediation scripts](#remediation-scripts)) |
+| `-NetworkDiscovery off\|neighbours\|scan` | [Network discovery](#network-discovery) |
+
+Everything else is in `config.json` next to the agent, read on every start (the server cannot change
+it, edit the file and restart the agent):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `report_interval` | `300` | Seconds between device reports (at least 60) |
+| `heartbeat_interval` | `30` | Seconds between heartbeats with CPU/RAM (at least 10) |
+| `inventory_interval` | `21600` | Seconds between update checks (at least 600) |
+| `health_interval` | `3600` | Seconds between disk health (S.M.A.R.T.) checks (at least 300) |
+| `realtime` | `true` | `false`: HTTPS only, without the WebSocket |
+
+The WebSocket is always `/app` at the address of `-ServerUrl` (`wss://mdm.example.com/app/…` for
+`https://mdm.example.com`), where nginx proxies it to Reverb (the Docker image does). The server only
+gives the agent the key and its channel, so nothing about Reverb is set on the devices. Agents before
+1.16.0 took these options on the command line (`-ReportInterval`, `-NoRealtime`, `-ReverbHost`,
+`-ReverbPort`, `-ReverbScheme` …); they still work there, and `-Install` moves the intervals and
+`-NoRealtime` to `config.json` and drops the `-Reverb*` ones.
 
 The device detail shows whether the agent is connected over the **WebSocket** (heartbeat in the last
 90 s), the **REST API** (report in the last 11 min) or both, the agent version, and the device type

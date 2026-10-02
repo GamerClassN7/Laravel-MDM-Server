@@ -12,7 +12,7 @@ const esc = (text) => String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&am
 
 function nodeHtml(node) {
     const badges = (node.badges || []).map((badge) => `<span class="nm-badge${badge === 'isolated' ? ' is-warning' : ''}">${esc(badge)}</span>`).join('');
-    const dot = node.kind === 'device' ? `<span class="nm-dot is-${esc(node.state)}"></span>` : '';
+    const dot = node.kind === 'device' || (node.kind === 'unknown' && !node.more) ? `<span class="nm-dot is-${esc(node.state)}"></span>` : '';
     return `<span class="nm-icon"><i class="${esc(node.icon)}"></i></span>`
         + `<span class="nm-text"><span class="nm-label">${esc(node.label)}${badges}</span>`
         + (node.sub ? `<span class="nm-sub">${dot}${esc(node.sub)}</span>` : '')

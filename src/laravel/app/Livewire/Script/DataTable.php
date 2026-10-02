@@ -12,6 +12,9 @@ class DataTable extends DataTableComponent
 {
     use UseDatabaseEloquent;
 
+    /** Columns hidden on narrow screens (dt-hide-*, resources/sass/app.scss). */
+    public string $tableClass = 'table align-middle dt-hide-md-2 dt-hide-md-3 dt-hide-lg-4';
+
     public $listeners = ['scriptSaved' => '$refresh'];
 
     public bool $searchable = true;
@@ -48,7 +51,8 @@ class DataTable extends DataTableComponent
     {
         $html = '<a class="fw-semibold" href="'.e(route('script.show', $row->id)).'">'.e($value).'</a>';
         if ($row->description) {
-            $html .= '<div class="small text-muted">'.e($row->description).'</div>';
+            // Wraps (at most two lines) instead of widening the table.
+            $html .= '<div class="small text-muted text-wrap mdm-clamp-2" style="max-width: 40rem">'.e($row->description).'</div>';
         }
 
         return $html;

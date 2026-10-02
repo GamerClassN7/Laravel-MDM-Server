@@ -35,6 +35,9 @@ class Device extends Model
     /** Agents that ping a ping-only device on demand (Sync of the device). */
     public const PING_NOW_VERSION = '1.12.0';
 
+    /** Agents from this version report their neighbours (ARP table) and scan networks (network_discovery). */
+    public const NETWORK_DISCOVERY_VERSION = '1.16.0';
+
     /** At most this many ping-only devices per agent. */
     public const MAX_PING_TARGETS = 32;
 
@@ -425,6 +428,9 @@ class Device extends Model
             $command === 'installUpdate' && ! $this->commandTracking => __('The agent is too old for this command'),
             $command === 'wake' && version_compare((string) $this->agent_version, self::WAKE_VERSION, '<') => __('The agent is too old for this command'),
             $command === 'pingNow' && version_compare((string) $this->agent_version, self::PING_NOW_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::PING_NOW_VERSION]),
+            $command === 'scanNetwork' && version_compare((string) $this->agent_version, self::NETWORK_DISCOVERY_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::NETWORK_DISCOVERY_VERSION]),
+            $command === 'scanNetwork' && $this->networkDiscovery !== 'scan' => __('Scans are not allowed on the device (network_discovery in its config.json)'),
+            $command === 'scanNetwork' && ! NetworkNeighbour::enabled() => __('Network discovery is turned off in the portal'),
             $command === 'sync' && version_compare((string) $this->agent_version, self::SYNC_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::SYNC_VERSION]),
             $command === 'installUpdate' && ($params['kind'] ?? null) === 'pwsh' && version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') => __('The agent is too old for this command'),
             default => null,
@@ -508,6 +514,18 @@ class Device extends Model
     public function getScriptsEnabledAttribute(): bool
     {
         return ($this->data->machine->ScriptsEnabled ?? false) === true;
+    }
+
+    /**
+     * What the agent may do to find devices in its networks (config.json on the device, agents
+     * 1.16.0+): off, neighbours (reports its ARP table) or scan (also scans on request); null for
+     * older agents.
+     */
+    public function getNetworkDiscoveryAttribute(): ?string
+    {
+        $level = $this->isPingOnly ? null : ($this->data->machine->NetworkDiscovery ?? null);
+
+        return in_array($level, NetworkNeighbour::LEVELS, true) ? $level : null;
     }
 
     public function scriptRuns(): HasMany

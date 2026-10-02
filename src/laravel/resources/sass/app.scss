@@ -269,6 +269,9 @@ label.mdm-tag {
     &.is-network.state-down { opacity: .5; border-style: dashed; }
     &.state-offline, &.state-warning { opacity: .6; box-shadow: none; }
     &.is-isolated { border: 2px dashed rgba(255, 159, 67, .85); }
+    // Seen by an agent, not in the portal.
+    &.is-unknown { border: 1px dashed var(--bs-secondary-color); box-shadow: none; background: var(--bs-tertiary-bg); }
+    &.is-unknown .nm-badge { background: var(--bs-warning-bg-subtle); color: var(--bs-warning-text-emphasis); }
 }
 
 .nm-dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; margin-right: .3rem; vertical-align: middle; background: #28c76f; }
@@ -284,5 +287,24 @@ label.mdm-tag {
     &.is-wifi { stroke: rgba(150, 120, 255, .95); stroke-width: 2.5; stroke-dasharray: 2 5; stroke-linecap: round; }
     &.is-vpn { stroke: #17a2b8; stroke-dasharray: 7 5; }
     &.is-tunnel { stroke: rgba(23, 162, 184, .55); stroke-dasharray: 2 4; }
+    &.is-unknown { stroke: rgba(160, 170, 190, .6); stroke-width: 1.5; stroke-dasharray: 4 4; }
     &.is-down { opacity: .15; }
 }
+
+// Data tables (steelants/livewire-datatable): columns a table hides on narrow screens, set in its
+// $tableClass: dt-hide-{sm|md|lg|xl}-{n} hides the n-th column (headers, filters, cells) below that
+// breakpoint. Phones keep what tells the row apart; the rest is on the detail page.
+@each $name, $width in (sm: 576px, md: 768px, lg: 992px, xl: 1200px) {
+    @media (max-width: #{$width - 0.02px}) {
+        @for $n from 1 through 8 {
+            .dt-hide-#{$name}-#{$n} > :is(thead, tbody, tfoot) > tr > :nth-child(#{$n}) { display: none; }
+        }
+    }
+}
+// Those tables wrap their cells on phones (the boilerplate keeps every cell on one line).
+@media (max-width: 767.98px) {
+    .table[class*="dt-hide-"] > tbody > tr > td { white-space: normal; }
+}
+
+// Text cut after two lines (descriptions in tables).
+.mdm-clamp-2 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
