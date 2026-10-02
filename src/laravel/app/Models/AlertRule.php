@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * tags, picked devices). Status: offline for minutes; CPU / memory: the average over minutes
  * above the threshold (memory also: free GB below limit_gb); disk: a drive fuller than the
  * threshold, or with less than limit_gb free; disk health, services and
- * scripts: a problem reported by the device.
+ * scripts: a problem reported by the device. New device: one is enrolled or added (an event).
  */
 class AlertRule extends Model
 {
@@ -24,7 +24,15 @@ class AlertRule extends Model
         'disk_health' => ['label' => 'Disk health', 'icon' => 'fas fa-heartbeat', 'threshold' => null, 'minutes' => null, 'description' => 'A disk reports a S.M.A.R.T. warning or failure'],
         'services' => ['label' => 'Services', 'icon' => 'fas fa-cogs', 'threshold' => null, 'minutes' => null, 'description' => 'A service failed or a container is unhealthy'],
         'scripts' => ['label' => 'Remediations', 'icon' => 'fas fa-scroll', 'threshold' => null, 'minutes' => null, 'description' => 'The latest run of a remediation script failed'],
+        // An event, not a state: sent once per device, nothing is resolved.
+        'new_device' => ['label' => 'New device', 'icon' => 'fas fa-plus-circle', 'threshold' => null, 'minutes' => null, 'description' => 'A device is enrolled or added', 'event' => true],
     ];
+
+    /** Types about the fleet, not about one device's state (no per-device switch, no target). */
+    public static function isEvent(string $type): bool
+    {
+        return (bool) (self::TYPES[$type]['event'] ?? false);
+    }
 
     public const MAX_MINUTES = 1440;
 

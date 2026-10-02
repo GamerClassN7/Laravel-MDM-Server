@@ -73,7 +73,8 @@ class DeviceRules extends Component
     /** A ping-only device only has a status (it reports nothing else). */
     private function types(): array
     {
-        return Device::find($this->deviceId)?->isPingOnly ? ['status' => AlertRule::TYPES['status']] : AlertRule::TYPES;
+        // A device's own switches: its states, not fleet events (new device).
+        return Device::find($this->deviceId)?->isPingOnly ? ['status' => AlertRule::TYPES['status']] : array_filter(AlertRule::TYPES, fn ($definition) => ! ($definition['event'] ?? false));
     }
 
     /** The user's rule of this type for exactly this device. */

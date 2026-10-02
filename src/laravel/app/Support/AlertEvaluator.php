@@ -37,6 +37,15 @@ class AlertEvaluator
         $counts = ['triggered' => 0, 'resolved' => 0];
 
         foreach (AlertRule::query()->with('user')->get() as $rule) {
+            if (AlertRule::isEvent($rule->type)) {
+                try {
+                    $counts['triggered'] += $this->announceNewDevices($rule);
+                } catch (Throwable $e) {
+                    Log::warning("Alert rule {$rule->id} failed: {$e->getMessage()}");
+                }
+
+                continue;
+            }
             try {
                 $open = $rule->events()->whereNull('resolved_at')->get()->keyBy('device_id');
                 $targeted = $rule->enabled ? $this->devices->filter->matchesTarget($rule->target ?? []) : collect();
@@ -208,6 +217,51 @@ class AlertEvaluator
             'value' => (float) $failed->count(),
             'message' => __('Remediations failed on :device: :scripts.', ['device' => $device->displayName, 'scripts' => $failed->map(fn ($run) => $run->script?->name)->filter()->implode(', ')]),
         ];
+    }
+
+    /** Minutes an enrolled agent has to send its first report (its name and system) before the message goes anyway. */
+    private const NEW_DEVICE_GRACE_MINUTES = 10;
+
+    /**
+     * New device: each device added since the rule exists (within the last day) is announced once,
+     * as soon as its name is known (the agent's first report, a ping-only device right away). The
+     * event is recorded resolved: nothing stays open.
+     */
+    private function announceNewDevices(AlertRule $rule): int
+    {
+        if (! $rule->enabled) {
+            return 0;
+        }
+        $since = $rule->created_at->max(now()->subDay());
+        $known = $rule->events()->where('triggered_at', '>=', $since->copy()->subMinute())->pluck('device_id')->all();
+        $sent = 0;
+        foreach ($this->devices as $device) {
+            if ($device->created_at === null || $device->created_at->lt($since) || in_array($device->id, $known, true)) {
+                continue;
+            }
+            $named = $device->isPingOnly || ! empty($device->data) || $device->created_at->lt(now()->subMinutes(self::NEW_DEVICE_GRACE_MINUTES));
+            if (! $named) {
+                continue;
+            }
+            $what = $device->isPingOnly
+                ? __('ping-only, :address', ['address' => $device->ping_address])
+                : collect([$device->os ?: null, $device->agentVersion ? __('agent :version', ['version' => $device->agentVersion]) : null, $device->public_ip])->filter()->implode(', ');
+            $message = $device->isPingOnly
+                ? __(':device was added (:what).', ['device' => $device->displayName, 'what' => $what])
+                : __(':device was enrolled (:what).', ['device' => $device->displayName, 'what' => $what ?: __('no report yet')]);
+            $rule->events()->create([
+                'device_id' => $device->id,
+                'message' => mb_strimwidth($message, 0, 1000),
+                'value' => null,
+                'triggered_at' => now(),
+                'resolved_at' => now(),
+            ]);
+            LiveUpdates::device($device->id, 'alert');
+            Notifier::notify($rule->user, "🆕 {$device->displayName}: ".__('New device'), $message."\n".url('/devices?selectedDeviceId='.$device->id), $rule->channels);
+            $sent++;
+        }
+
+        return $sent;
     }
 
     private function trigger(AlertRule $rule, Device $device, array $result): void

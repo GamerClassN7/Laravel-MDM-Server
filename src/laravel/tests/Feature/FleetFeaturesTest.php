@@ -202,6 +202,39 @@ class FleetFeaturesTest extends TestCase
         $this->assertSame('discord://…@123', Notifier::redact('discord://tok@123'));
     }
 
+    public function test_new_device_alert_is_sent_once_per_added_device(): void
+    {
+        Http::fake();
+        $user = User::factory()->create();
+        NotificationSetting::create(['user_id' => $user->id, 'urls' => ['ntfy://ntfy.sh/topic']]);
+        $before = $this->device('old');
+        $this->travel(1)->minutes();
+        $this->actingAs($user);
+        Livewire::test(RuleForm::class)->set('type', 'new_device')->call('save')->assertHasNoErrors();
+        $rule = AlertRule::where('type', 'new_device')->sole();
+        $this->assertSame(['all' => true], $rule->target);
+        $this->travel(1)->minutes();
+
+        // An agent that has not reported yet waits for its name; a ping-only device goes right away.
+        $enrolled = new Device;
+        $enrolled->forceFill(['token' => hash('sha256', 'new'), 'name' => '', 'os' => ''])->save();
+        $printer = new Device;
+        $printer->forceFill(['kind' => 'ping', 'name' => 'Printer', 'os' => '', 'token' => hash('sha256', 'p'), 'ping_address' => '192.168.1.50', 'ping_prefix' => 24])->save();
+        $this->assertSame(['triggered' => 1, 'resolved' => 0], AlertEvaluator::run());
+        Http::assertSent(fn (Request $request) => str_contains($request->body(), 'Printer was added (ping-only, 192.168.1.50)'));
+
+        $enrolled->forceFill(['name' => 'LAPTOP-NEW', 'os' => 'Windows 11 Pro', 'data' => json_encode(['machine' => ['Hostname' => 'LAPTOP-NEW', 'AgentVersion' => '1.14.0', 'Platform' => 'windows', 'Drives' => []]])])->save();
+        $this->assertSame(['triggered' => 1, 'resolved' => 0], AlertEvaluator::run());
+        Http::assertSent(fn (Request $request) => str_contains($request->body(), 'LAPTOP-NEW was enrolled (Windows 11 Pro, agent 1.14.0)'));
+        // Once each; the device that was there before the rule is not new; nothing stays open.
+        $this->assertSame(['triggered' => 0, 'resolved' => 0], AlertEvaluator::run());
+        Http::assertSentCount(2);
+        $this->assertSame(0, $rule->events()->whereNull('resolved_at')->count());
+        $this->assertNotContains($before->id, $rule->events()->pluck('device_id')->all());
+        // Not a switch of a single device.
+        Livewire::test(DeviceRules::class, ['deviceId' => $before->id])->assertViewHas('types', fn ($types) => ! isset($types['new_device']));
+    }
+
     public function test_status_alert_triggers_once_and_resolves(): void
     {
         Http::fake();
