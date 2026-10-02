@@ -352,6 +352,8 @@ class NetworkMap
         $refusal = (int) explode('/', $network['cidr'])[1] < DeviceCommand::MIN_SCAN_PREFIX
             ? __('Too large to scan (at most /:prefix)', ['prefix' => DeviceCommand::MIN_SCAN_PREFIX])
             : null;
+        // Off for the whole portal: that is the reason, whatever the agents allow.
+        $refusal ??= NetworkNeighbour::enabled() ? null : __('Network discovery is turned off in the portal');
         $agent = null;
         if ($refusal === null) {
             // Why each agent of the network cannot scan (too old, not allowed, offline): the first

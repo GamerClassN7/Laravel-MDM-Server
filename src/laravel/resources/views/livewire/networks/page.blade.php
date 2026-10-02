@@ -28,9 +28,9 @@
                 </div>
             </div>
             {{-- Discovery: the agents' ARP tables and scans (each agent allows it in its config.json). --}}
-            <div class="d-flex align-items-center flex-wrap gap-3">
+            <div class="nm-header-tools d-flex align-items-center flex-wrap gap-3">
                 {{-- The map or the list, one at a time (the map fills the window, no page scroll). --}}
-                <div class="btn-group btn-group-sm" role="group" aria-label="{{ __('View') }}">
+                <div class="btn-group btn-group-sm nm-view-toggle" role="group" aria-label="{{ __('View') }}">
                     <button class="btn {{ $view === 'map' ? 'btn-primary' : 'btn-light' }}" type="button" wire:click="$set('view', 'map')" aria-pressed="{{ $view === 'map' ? 'true' : 'false' }}">
                         <i class="fas fa-project-diagram me-1"></i>{{ __('Diagram') }}
                     </button>
@@ -49,6 +49,18 @@
                 @endif
             </div>
         </div>
+
+        @unless ($discovery)
+            {{-- Off for the whole portal: no neighbours are taken and no scans sent, the unknown devices go stale. --}}
+            <div class="alert alert-warning d-flex align-items-start gap-2 py-2 small mb-3" role="status">
+                <i class="fas fa-eye-slash mt-1"></i>
+                <div>
+                    <strong>{{ __('Network discovery is off.') }}</strong>
+                    {{ __('The portal takes no ARP tables from the agents and sends no scans, so unknown devices are not updated.') }}
+                    @if ($admin) {{ __('Turn it on with the Network discovery switch above.') }} @endif
+                </div>
+            </div>
+        @endunless
 
         @if (($counts['device'] ?? 0) === 0)
             <div class="card card-body text-center text-body-secondary py-5">
@@ -149,18 +161,19 @@
                                         <div class="small fw-medium text-muted mt-3 mb-1">{{ trans_choice(':count unknown device|:count unknown devices', count($network['unknown'])) }}</div>
                                         <ul class="list-unstyled mb-0 nm-unknown-list">
                                             @foreach ($network['unknown'] as $neighbour)
-                                                <li class="d-flex align-items-center gap-2 py-1 border-top" wire:key="neighbour-{{ $neighbour['id'] }}">
-                                                    <span class="nm-dot {{ $neighbour['fresh'] ? 'is-up' : 'is-offline' }}" title="{{ $neighbour['fresh'] ? __('seen now') : __('not seen for a while') }}"></span>
+                                                <li class="d-flex align-items-start gap-2 py-2 border-top" wire:key="neighbour-{{ $neighbour['id'] }}">
+                                                    <span class="nm-dot mt-2 {{ $neighbour['fresh'] ? 'is-up' : 'is-offline' }}" title="{{ $neighbour['fresh'] ? __('seen now') : __('not seen for a while') }}"></span>
                                                     <div class="min-w-0 flex-grow-1" title="{{ $neighbour['title'] }}">
                                                         {{-- Its name (or address) first, as on the map; the address and MAC under it. --}}
                                                         <div class="text-truncate fw-medium">{{ $neighbour['hostname'] ?: $neighbour['ip'] }}</div>
-                                                        <div class="text-body-secondary text-truncate" style="font-size: .75rem">
+                                                        {{-- Wraps on phones instead of cutting the MAC address. --}}
+                                                        <div class="text-body-secondary text-break" style="font-size: .75rem">
                                                             @if ($neighbour['hostname'])<span>{{ $neighbour['ip'] }}</span> · @endif<span class="font-monospace">{{ $neighbour['mac'] }}</span>
                                                             @if ($neighbour['random']) · <span title="{{ __('A private address the device made up for this network: it may change.') }}">{{ __('random MAC') }}</span>@endif
                                                         </div>
                                                     </div>
-                                                    <button class="btn btn-sm btn-outline-primary text-nowrap" type="button" wire:click="add({{ $neighbour['id'] }})" aria-label="{{ __('Add') }}" title="{{ __('Add as a ping-only device (it follows its MAC address to a new IP)') }}"><i class="fas fa-plus"></i></button>
-                                                    <button class="btn btn-sm btn-outline-secondary" type="button" wire:click="ignore({{ $neighbour['id'] }})" title="{{ __('Ignore') }}"><i class="fas fa-eye-slash"></i></button>
+                                                    <button class="btn btn-sm btn-outline-primary nm-icon-btn" type="button" wire:click="add({{ $neighbour['id'] }})" aria-label="{{ __('Add') }}" title="{{ __('Add as a ping-only device (it follows its MAC address to a new IP)') }}"><i class="fas fa-plus"></i></button>
+                                                    <button class="btn btn-sm btn-outline-secondary nm-icon-btn" type="button" wire:click="ignore({{ $neighbour['id'] }})" title="{{ __('Ignore') }}" aria-label="{{ __('Ignore') }}"><i class="fas fa-eye-slash"></i></button>
                                                 </li>
                                             @endforeach
                                         </ul>
@@ -168,7 +181,7 @@
 
                                 </div>
                                 @if ($scan)
-                                    <button class="btn btn-sm btn-outline-primary text-nowrap flex-shrink-0" type="button" wire:click="scan(@js($network['id']))" aria-label="{{ __('Scan') }}" wire:loading.attr="disabled"
+                                    <button class="btn btn-sm btn-outline-primary text-nowrap flex-shrink-0 nm-scan-btn" type="button" wire:click="scan(@js($network['id']))" aria-label="{{ __('Scan') }}" wire:loading.attr="disabled"
                                         @disabled(! $scan['agent'] || $command?->active)
                                         title="{{ $scan['agent'] ? __('Ping every address of the network from :agent and take what answers', ['agent' => $scan['name']]) : $scan['refusal'] }}">
                                         @if ($command?->active)
