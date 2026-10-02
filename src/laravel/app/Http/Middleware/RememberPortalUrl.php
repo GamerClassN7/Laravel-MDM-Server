@@ -8,7 +8,7 @@ use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Remembers the address signed-in users open the portal with, for the links of notifications the
+ * Remembers the address system admins open the portal with, for the links of notifications the
  * scheduler sends (App\Support\PortalUrl). Not needed when APP_URL is set.
  */
 class RememberPortalUrl
@@ -16,7 +16,9 @@ class RememberPortalUrl
     public function handle(Request $request, Closure $next): Response
     {
         $response = $next($request);
-        if ($request->isMethod('GET') && ! $request->ajax() && $request->user() !== null && ! PortalUrl::configured()) {
+        // Only system admins: any signed-in user could send another Host header with their session
+        // and point the links of everyone's notifications elsewhere.
+        if ($request->isMethod('GET') && ! $request->ajax() && $request->user()?->can('is-system-admin') && ! PortalUrl::configured()) {
             PortalUrl::remember(url('/'));
         }
 

@@ -229,7 +229,12 @@ class FleetFeaturesTest extends TestCase
         // Only a signed-in user's page is taken, not any request's Host header.
         $this->get('http://evil.example/login');
         $this->assertNull(\App\Support\PortalUrl::remembered());
-        $this->actingAs(User::factory()->create())->get('https://mdm.example.com/devices')->assertOk();
+        // Nor a user who is not a system admin (they could send any Host header with their session).
+        $admin = User::factory()->create();
+        config(['boilerplate.system_admins' => [(string) $admin->id]]);
+        $this->actingAs(User::factory()->create())->get('https://evil.example/devices')->assertOk();
+        $this->assertNull(\App\Support\PortalUrl::remembered());
+        $this->actingAs($admin)->get('https://mdm.example.com/devices')->assertOk();
         $this->assertSame('https://mdm.example.com', \App\Support\PortalUrl::remembered());
 
         // The scheduler (no request) links there.
@@ -239,7 +244,7 @@ class FleetFeaturesTest extends TestCase
         // APP_URL set to a real address wins.
         config(['app.url' => 'https://portal.example.org']);
         $this->assertTrue(\App\Support\PortalUrl::configured());
-        $this->actingAs(User::factory()->create())->get('https://other.example.com/devices');
+        $this->actingAs($admin)->get('https://other.example.com/devices');
         $this->assertSame('https://mdm.example.com', \App\Support\PortalUrl::remembered());
     }
 

@@ -315,6 +315,8 @@ function Invoke-WingetInUserSession {
             if ($OnWait -and -not $exit) { try { & $OnWait $lines } catch { } }
         } while (-not $exit -and $busy -and (Get-Date) -lt $deadline)
         $lines = @(Get-Content -Path $log -Encoding UTF8 -ErrorAction SilentlyContinue)
+        # cmd may have written MDMEXIT= between the last read and the task state check.
+        if (-not $exit) { $exit = $lines | Where-Object { $_ -match '^MDMEXIT=(-?\d+)' } | Select-Object -Last 1 }
         if ($exit -match '^MDMEXIT=(-?\d+)') {
             $code = [int]$Matches[1]
         } elseif ($busy) {
@@ -2090,14 +2092,19 @@ function Test-NetworkError {
 
     $exception = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
     if ($exception -and $null -ne $exception.Data['MdmStatus']) { return $false }
+    # By name: Windows PowerShell has no System.Net.Http before the first request loads it (a type
+    # literal would throw). An IOException only under one of them (a broken connection), not a
+    # file the agent could not write.
+    $network = @('System.Net.Http.HttpRequestException', 'System.Net.Sockets.SocketException', 'System.Net.WebSockets.WebSocketException',
+        'System.Net.WebException', 'System.TimeoutException', 'System.Threading.Tasks.TaskCanceledException') |
+        ForEach-Object { $_ -as [type] } | Where-Object { $_ }
+    $inner = $false
     while ($exception) {
-        if ($exception -is [System.Net.Http.HttpRequestException] -or $exception -is [System.Net.Sockets.SocketException] -or
-            $exception -is [System.Net.WebSockets.WebSocketException] -or $exception -is [System.Net.WebException] -or
-            $exception -is [System.TimeoutException] -or $exception -is [System.Threading.Tasks.TaskCanceledException] -or
-            $exception -is [System.IO.IOException]) {
+        if (@($network | Where-Object { $_.IsInstanceOfType($exception) }).Count -gt 0 -or ($inner -and $exception -is [System.IO.IOException])) {
             return $true
         }
         $exception = $exception.InnerException
+        $inner = $true
     }
     return $false
 }
@@ -2707,6 +2714,8 @@ function Invoke-Pings {
     if ($null -eq $script:PingCommand) {
         $script:PingCommand = if ($OnLinux) { (Get-Command -Name ping -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source } else { "$env:SystemRoot\System32\ping.exe" }
         if (-not $script:PingCommand -or -not (Test-Path -Path $script:PingCommand)) { $script:PingCommand = '' }
+        # BusyBox ping (Alpine) knows no -n (it does not resolve names anyway).
+        $script:PingNumeric = $OnLinux -and $script:PingCommand -and "$((Get-Item -Path $script:PingCommand -ErrorAction SilentlyContinue).ResolvedTarget)" -notmatch 'busybox'
     }
     $networks = if ($script:PingCommand) { @(Get-LocalNetworks) } else { @() }
     $seconds = [Math]::Max(1, [int][Math]::Ceiling($TimeoutMs / 1000))
@@ -2716,7 +2725,7 @@ function Invoke-Pings {
                 $info = New-Object System.Diagnostics.ProcessStartInfo
                 $info.FileName = $script:PingCommand
                 # The address comes from Set-PingTargets (a parsed IPv4 address), the name from the system.
-                $info.Arguments = if ($OnLinux) { "-n -c 1 -W $seconds -I `"$($network.Name)`" $($target.Address)" } else { "-n 1 -w $TimeoutMs -S $($network.Address) $($target.Address)" }
+                $info.Arguments = if ($OnLinux) { "$(if ($script:PingNumeric) { '-n ' })-c 1 -W $seconds -I `"$($network.Name)`" $($target.Address)" } else { "-n 1 -w $TimeoutMs -S $($network.Address) $($target.Address)" }
                 $info.UseShellExecute = $false
                 $info.RedirectStandardOutput = $true
                 $info.RedirectStandardError = $true
@@ -2883,9 +2892,15 @@ function Send-CommandStatus {
         return $true
     }
     catch {
-        Write-AgentLog "Command ${Id}: status '$Status' not reported: $($_.Exception.Message)" -ErrorRecord $_
-        # The server gave the command up meanwhile (not_running) or does not know it.
-        return $_.Exception.Data['MdmError'] -in 'not_running', 'Not Found'
+        # The server gave the command up meanwhile (not_running) or does not know it: expected
+        # (cancelled, given up, a wake finished by the woken device), not an error of the agent.
+        $gone = $_.Exception.Data['MdmError'] -in 'not_running', 'Not Found'
+        if ($gone) {
+            Write-AgentLog "Command ${Id}: status '$Status' not reported: $($_.Exception.Message)"
+        } else {
+            Write-AgentLog "Command ${Id}: status '$Status' not reported: $($_.Exception.Message)" -ErrorRecord $_
+        }
+        return $gone
     }
 }
 
@@ -2988,7 +3003,8 @@ function Get-LocalNetworks {
             if ($interface.OperationalStatus -ne 'Up') { continue }
             foreach ($unicast in $interface.GetIPProperties().UnicastAddresses) {
                 $address = $unicast.Address
-                if ($address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or -not $unicast.IPv4Mask -or [System.Net.IPAddress]::IsLoopback($address)) { continue }
+                # A mask of 0.0.0.0 would be a network of every address.
+                if ($address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or -not $unicast.IPv4Mask -or "$($unicast.IPv4Mask)" -eq '0.0.0.0' -or [System.Net.IPAddress]::IsLoopback($address)) { continue }
                 $ip = $address.GetAddressBytes()
                 $mask = $unicast.IPv4Mask.GetAddressBytes()
                 $networks += @{
@@ -3279,13 +3295,15 @@ function Start-UpdateJob {
             $global:LASTEXITCODE = $code
             return , $output
         }
-        function Invoke-WingetUpgradeAsUser ([string]$Id) {
+        function Invoke-WingetUpgradeAsUser ([string]$Id, [string]$Source = 'winget') {
             # In the session of the logged-on user, the way they would run it; $null when nobody
-            # is logged on. The id is of the checked form (Test-UpdateParams).
-            "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id (in the session of the logged-on user)" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
+            # is logged on. The id is of the checked form (Test-UpdateParams); the source is the
+            # one the inventory listed (Store apps are installed per user: msstore).
+            $Source = if ($Source -eq 'msstore') { 'msstore' } else { 'winget' }
+            "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id ($Source, in the session of the logged-on user)" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
             $started = Get-Date
             try {
-                $session = Invoke-WingetInUserSession -Arguments "upgrade --id `"$Id`" --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity --source winget" `
+                $session = Invoke-WingetInUserSession -Arguments "upgrade --id `"$Id`" --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity --source $Source" `
                     -Title "updating $Id" -TimeoutSeconds $wingetTimeout -OnWait { param ($lines) Set-WingetProgress -Status "$(Get-WingetStatus -Lines $lines), in the session of the user" -Started $started }
             }
             catch {
@@ -3366,7 +3384,7 @@ function Start-UpdateJob {
                     $state.WingetLabel = "winget upgrade $id"
                     if ($Params.scope -eq 'user') {
                         # Installed only for the user: SYSTEM does not see it.
-                        $output = Invoke-WingetUpgradeAsUser -Id $id
+                        $output = Invoke-WingetUpgradeAsUser -Id $id -Source $Params.source
                         if ($null -eq $output) { $output = @('Installed only for a user, who is not logged on now: it is updated when they are'); $global:LASTEXITCODE = -1 }
                     } else {
                         $output = Invoke-WingetUpgrade -Winget $winget -Id $id -Source $Params.source
@@ -3477,7 +3495,7 @@ function Start-UpdateJob {
                     $state.WingetPercent = [int](40 * $done / [Math]::Max(1, $packages.Count))
                     $state.WingetLabel = "winget upgrade $($package.Id) ($($done + 1)/$($packages.Count))"
                     Set-Progress $state.WingetPercent $state.WingetLabel
-                    $output = if ($package.Scope -eq 'user') { Invoke-WingetUpgradeAsUser -Id $package.Id } else { Invoke-WingetUpgrade -Winget $winget -Id $package.Id -Source $package.Source }
+                    $output = if ($package.Scope -eq 'user') { Invoke-WingetUpgradeAsUser -Id $package.Id -Source $package.Source } else { Invoke-WingetUpgrade -Winget $winget -Id $package.Id -Source $package.Source }
                     if ($null -eq $output) { $output = @('Installed only for a user, who is not logged on now'); $global:LASTEXITCODE = -1 }
                     "winget upgrade $($package.Id): exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
                     Add-Result "winget upgrade $($package.Id)" $LASTEXITCODE $output $wingetOk

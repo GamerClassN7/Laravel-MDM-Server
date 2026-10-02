@@ -7,8 +7,8 @@ use Throwable;
 
 /**
  * The address of the portal for links made outside a web request (notifications of the scheduler):
- * APP_URL when it is set to a real address, otherwise the one the signed-in users open the portal
- * with (a request's Host header alone could be anything, so only theirs is taken).
+ * APP_URL when it is set to a real address, otherwise the one the system admins open the portal
+ * with (a request's Host header could be anything, so only theirs is taken).
  */
 class PortalUrl
 {
