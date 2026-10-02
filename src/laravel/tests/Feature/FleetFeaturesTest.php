@@ -488,6 +488,11 @@ class FleetFeaturesTest extends TestCase
             ->assertSee('waiting for the device to come online')
             ->assertSeeHtml('progress-bar');
 
+        // In the history of the woken device too, through the relay.
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $sleeping->id])
+            ->assertViewHas('history', fn ($history) => $history->pluck('id')->contains($command->id))
+            ->assertSee('through pc-relay');
+
         // The device reports: done.
         $this->signedJson('POST', '/api/device/heartbeat', [], 'sleep')->assertNoContent();
         $this->assertSame('succeeded', $command->fresh()->status);
@@ -515,6 +520,21 @@ class FleetFeaturesTest extends TestCase
         $this->actingAs(User::factory()->create());
         Livewire::test(\App\Livewire\DeviceAlerts::class, ['selectedDeviceId' => $sleeping->id])->call('runAlert', 'wake')->assertHasNoErrors();
         $this->assertSame(1, $relay->commands()->where('command', 'wake')->active()->count());
+    }
+
+    public function test_a_wake_of_an_older_relay_shows_a_progress_bar_until_the_device_is_back(): void
+    {
+        $sleeping = $this->device('sleep', ['Networks' => [$this->network('192.168.1.20')]], online: false);
+        $this->device('relay', ['Networks' => [$this->network('192.168.1.5', 24, 'AA-BB-CC-DD-EE-02')]], version: '1.12.0');
+        $this->actingAs(User::factory()->create());
+        $command = $sleeping->fresh()->wake();
+        $this->signedJson('POST', '/api/device/commands/take', [], 'relay');
+        $this->signedJson('POST', "/api/device/commands/{$command->id}", ['status' => 'succeeded', 'message' => 'Magic packet sent to AA:BB:CC:DD:EE:01'], 'relay')->assertOk();
+
+        $this->actingAs(User::factory()->create());
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $sleeping->id])
+            ->assertSeeHtml('progress-bar')
+            ->assertSee('Magic packet sent by pc-relay, waiting for the device to come online');
     }
 
     public function test_errors_from_the_agent_log_are_an_alert_of_the_device(): void

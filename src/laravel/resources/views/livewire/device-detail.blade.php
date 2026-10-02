@@ -588,10 +588,15 @@
                             <tbody>
                                 @foreach ($history as $command)
                                     <tr wire:key="history-{{ $command->id }}">
-                                        <td class="text-break"><i class="{{ $command->icon }} fa-fw text-body-secondary me-1"></i>{{ $command->label }}</td>
+                                        <td class="text-break" style="min-width: 9rem;">
+                                            <i class="{{ $command->icon }} fa-fw text-body-secondary me-1"></i>{{ $command->label }}
+                                            @if ($command->device_id !== $selectedDevice->id)
+                                                <div class="small text-body-secondary">{{ __('through :relay', ['relay' => $command->device?->displayName ?? '?']) }}</div>
+                                            @endif
+                                        </td>
                                         <td>
                                             @if ($command->active)
-                                                <div style="min-width: 10rem;">@include('partials.device.command-progress', ['command' => $command, 'compact' => true])</div>
+                                                <div style="min-width: 10rem; max-width: 22rem;" title="{{ $command->displayMessage }}">@include('partials.device.command-progress', ['command' => $command, 'compact' => true])</div>
                                             @else
                                                 <x-badge :color="$command->statusColor" size="sm" variant="subtle" :title="$command->statusHint">{{ $command->statusLabel }}</x-badge>
                                                 @if ($command->resultNote)
