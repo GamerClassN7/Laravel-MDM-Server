@@ -342,7 +342,9 @@ function Get-WingetUpdates {
         $known[$item.Id] = $true
         $item
     }
-    if ($env:OS -ne 'Windows_NT') { return }
+    # Without conhost --headless (before Windows 10 1809) the check would open a window on the
+    # user's desktop at every inventory: only an update the user asked for does that.
+    if ($env:OS -ne 'Windows_NT' -or [Environment]::OSVersion.Version.Build -lt 17763 -or -not (Test-Path "$env:SystemRoot\System32\conhost.exe")) { return }
     try {
         $session = Invoke-WingetInUserSession -Arguments 'upgrade --accept-source-agreements --disable-interactivity' -Title 'checking for updates' -TimeoutSeconds 180
     }
@@ -2129,7 +2131,8 @@ function Initialize-AgentErrors {
     $script:AgentErrors = New-Object System.Collections.ArrayList
     try {
         if (Test-Path -Path "$AgentDir/pending-errors.json") {
-            foreach ($item in @(Get-Content -Path "$AgentDir/pending-errors.json" -Raw | ConvertFrom-Json)) {
+            # ForEach-Object: Windows PowerShell's ConvertFrom-Json passes the array on as one object.
+            foreach ($item in @(Get-Content -Path "$AgentDir/pending-errors.json" -Raw -Encoding UTF8 | ConvertFrom-Json | ForEach-Object { $_ })) {
                 if ($item.message) {
                     [void]$script:AgentErrors.Add([ordered]@{ message = "$($item.message)"; count = [int]$item.count; first = [long]$item.first; last = [long]$item.last })
                 }

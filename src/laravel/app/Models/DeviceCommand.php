@@ -233,12 +233,17 @@ class DeviceCommand extends Model
         return $expired;
     }
 
-    /** Tells the open pages of the device and of the device a wake or ping is for. */
-    public static function announce(int $deviceId, ?string $target): void
+    /** Tells the open pages of the device and of the devices the wakes or pings are for (once each). */
+    public static function announce(int $deviceId, ?string ...$targets): void
     {
-        \App\Support\LiveUpdates::device($deviceId, 'command');
-        if ($target !== null && preg_match('/^(device|ping):(\d+)$/', $target, $matches) && (int) $matches[2] !== $deviceId) {
-            \App\Support\LiveUpdates::device((int) $matches[2], 'command');
+        $ids = [$deviceId];
+        foreach ($targets as $target) {
+            if ($target !== null && preg_match('/^(device|ping):(\d+)$/', $target, $matches)) {
+                $ids[] = (int) $matches[2];
+            }
+        }
+        foreach (array_unique($ids) as $id) {
+            \App\Support\LiveUpdates::device($id, 'command');
         }
     }
 

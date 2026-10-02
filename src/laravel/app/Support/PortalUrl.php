@@ -23,9 +23,16 @@ class PortalUrl
     /** APP_URL is set to a real address (not the http://localhost default). */
     public static function configured(): bool
     {
-        $host = strtolower((string) parse_url((string) config('app.url'), PHP_URL_HOST));
+        return self::isReal((string) config('app.url'));
+    }
 
-        return $host !== '' && ! in_array($host, ['localhost', '127.0.0.1', '::1', '[::1]'], true);
+    /** An http(s) root URL (also under a path, /mdm) whose host is not this machine's loopback. */
+    private static function isReal(string $url): bool
+    {
+        $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+
+        return preg_match('#^https?://[^/\s?\#]+(/[^\s?\#]*)?$#i', $url) === 1
+            && $host !== '' && ! in_array($host, ['localhost', '127.0.0.1', '::1', '[::1]'], true);
     }
 
     public static function remembered(): ?string
@@ -36,14 +43,17 @@ class PortalUrl
             return null;
         }
 
-        return preg_match('#^https?://[^/\s]+$#i', $url) ? $url : null;
+        return self::isReal($url) ? $url : null;
     }
 
-    /** Keeps the root URL of this web request (a signed-in user's page). */
+    /**
+     * Keeps the root URL of this web request (a signed-in user's page); not localhost (a tunnel
+     * or the server itself), which would be no address for the others.
+     */
     public static function remember(string $url): void
     {
         $url = rtrim($url, '/');
-        if (! preg_match('#^https?://[^/\s]+$#i', $url) || self::remembered() === $url) {
+        if (! self::isReal($url) || self::remembered() === $url) {
             return;
         }
         try {

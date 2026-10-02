@@ -249,10 +249,9 @@ class SmartAlerts
                     default => $script->unavailableReason($device),
                 };
             } elseif (($alert['action']['command'] ?? null) === 'wake') {
-                // Sent by another agent: its command, the refusal of the wake itself.
+                // Sent by another agent; the alert is only there while its last wake failed (nothing
+                // on its way), so only the refusal of the wake itself.
                 $alert['action'] += ['params' => [], 'confirm' => null];
-                $last = self::lastWake($device);
-                $alert['active'] = $last?->active ? $last : null;
                 $alert['refusal'] = $device->wakeRefusal();
             } elseif ($alert['action']) {
                 $alert['action'] += ['params' => [], 'confirm' => null];

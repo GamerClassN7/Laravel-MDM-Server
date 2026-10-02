@@ -132,7 +132,8 @@ class DataTable extends DataTableComponent
             return;
         }
         if (($reason = $run->script->unavailableReason($run->device)) !== null) {
-            $this->addError('remediate', $reason);
+            // The table shows no validation errors: a snackbar says why.
+            $this->dispatch('snackbar', ['message' => e($reason), 'type' => 'danger', 'icon' => 'fas fa-exclamation-triangle']);
 
             return;
         }

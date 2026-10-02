@@ -77,8 +77,8 @@ class Form extends Component
                 $failed = true;
             }
         }
-        $missing = array_values(array_filter([0, 1], fn ($exit) => ! PowerShellCheck::exits($this->detection, $exit)));
-        if (! $failed && $missing !== []) {
+        $missing = $failed ? [] : array_values(array_filter([0, 1], fn ($exit) => ! PowerShellCheck::exits($this->detection, $exit)));
+        if ($missing !== []) {
             $this->addError('detection', __('The detection has to end with exit 0 (compliant) and exit 1 (needs remediation), :missing is missing.', ['missing' => implode(', ', array_map(fn ($exit) => "exit $exit", $missing))]));
             $failed = true;
         }

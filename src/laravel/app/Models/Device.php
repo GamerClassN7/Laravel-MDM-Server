@@ -305,11 +305,8 @@ class Device extends Model
             }
         }
         if ($taken->isNotEmpty()) {
-            \App\Support\LiveUpdates::device($id, 'command');
             // A wake taken by the relay shows on the device it wakes too.
-            foreach ($taken->whereNotNull('target')->pluck('target')->unique() as $target) {
-                DeviceCommand::announce($id, $target);
-            }
+            DeviceCommand::announce($id, ...$taken->pluck('target')->all());
         }
 
         return $taken;
@@ -1317,11 +1314,15 @@ class Device extends Model
             ->where('created_at', '>=', now()->subMinutes(10))->latest('id')->first();
     }
 
-    /** The latest wake of this device in the last 10 minutes (sent through another agent). */
+    /**
+     * The latest wake of this device of the last 10 minutes, or one still on its way (sent through
+     * another agent; a wake runs until the device reports, up to its timeout after it was taken).
+     */
     public function recentWake(): ?DeviceCommand
     {
         return DeviceCommand::query()->with('device')->where('command', 'wake')->where('target', 'device:'.$this->id)
-            ->where('created_at', '>=', now()->subMinutes(10))->latest('id')->first();
+            ->where(fn ($query) => $query->where('created_at', '>=', now()->subMinutes(10))->orWhereIn('status', DeviceCommand::ACTIVE))
+            ->latest('id')->first();
     }
 
     /** The interface type from its name and description (agents before 1.8.0 do not report it). */
