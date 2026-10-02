@@ -249,7 +249,7 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
                 continue;
             }
             // The script changed after the run was issued: that version cannot be sent anymore.
-            if ($run->script->fingerprint !== $run->fingerprint) {
+            if ($run->currentFingerprint() !== $run->fingerprint) {
                 $run->update(['status' => 'superseded']);
                 continue;
             }
@@ -285,6 +285,10 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         }
 
         $scriptRun->status = in_array($status, ScriptRun::RESULTS, true) ? $status : 'error';
+        // Only detected (manual remediation): exit 1 is "needs remediation", not a failure.
+        if ($scriptRun->detectsOnly && $scriptRun->status === 'failed' && $exit('detection_exit') === 1 && $exit('remediation_exit') === null) {
+            $scriptRun->status = 'noncompliant';
+        }
         $scriptRun->detection_exit = $exit('detection_exit');
         $scriptRun->remediation_exit = $exit('remediation_exit');
         $scriptRun->post_detection_exit = $exit('post_detection_exit');

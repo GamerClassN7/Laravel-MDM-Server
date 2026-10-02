@@ -199,3 +199,8 @@ label.mdm-tag {
         &.has-plug { padding-right: 8.5rem; }
     }
 }
+
+// Stat tile of "Needs remediation" (script detail), next to the boilerplate's green / red / purple.
+.stat-ico.is-orange {
+    background: rgba(255, 159, 67, .7);
+}

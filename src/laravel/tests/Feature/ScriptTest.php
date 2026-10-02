@@ -113,6 +113,61 @@ class ScriptTest extends TestCase
         $this->signedJson('GET', '/api/device/scripts', [], 'secret-token')->assertExactJson(['runs' => []]);
     }
 
+    public function test_manual_remediation_only_detects_until_remediate(): void
+    {
+        $device = $this->device();
+        $script = $this->script(['manual_remediation' => true]);
+        $admin = $this->admin();
+        $run = $script->runOn([$device->id], $admin)->first();
+        $this->assertSame('detect', $run->mode);
+        $this->assertSame($script->detectionFingerprint(), $run->fingerprint);
+
+        // The device gets no remediation: no agent can remediate with this run.
+        $payload = $this->signedJson('GET', '/api/device/scripts', [], 'secret-token')->assertOk()->json('runs.0');
+        $manifest = json_decode($payload['manifest'], true);
+        $this->assertNull($payload['remediation']);
+        $this->assertNull($manifest['remediation_sha256']);
+        $this->assertTrue($manifest['detect_only']);
+        $this->assertSame(Script::fingerprintOf('all', 60, $script->detection, null), $manifest['fingerprint']);
+
+        // Detection exits 1: needs remediation (agents report it as failed, there was nothing to run).
+        $this->signedJson('POST', "/api/device/scripts/runs/{$run->id}", ['status' => 'failed', 'fingerprint' => $manifest['fingerprint'], 'detection_exit' => 1], 'secret-token')
+            ->assertOk()->assertExactJson(['status' => 'noncompliant']);
+
+        $alert = collect(\App\Support\SmartAlerts::for($device->fresh()))->firstWhere('key', 'remediate:'.$script->id);
+        $this->assertSame('Check needs remediation', $alert['title']);
+        $this->assertSame('remediate', $alert['action']['command']);
+
+        // Remediate in the device's runs: a full run, then the alert is gone.
+        $this->actingAs($admin);
+        Livewire::test(RunDataTable::class, ['deviceId' => $device->id])
+            ->assertSee('Needs remediation')
+            ->assertSeeHtml('remediate('.$run->id.')')
+            ->call('remediate', $run->id);
+        $full = $script->runs()->latest('id')->first();
+        $this->assertNotSame($run->id, $full->id);
+        $this->assertNull($full->mode);
+        $this->assertSame($script->fingerprint, $full->fingerprint);
+        $this->assertNull(collect(\App\Support\SmartAlerts::for($device->fresh()))->firstWhere('key', 'remediate:'.$script->id));
+        $payload = $this->signedJson('GET', '/api/device/scripts', [], 'secret-token')->json('runs.0');
+        $this->assertSame(hash('sha256', $script->remediation), json_decode($payload['manifest'], true)['remediation_sha256']);
+        $this->signedJson('POST', "/api/device/scripts/runs/{$full->id}", ['status' => 'remediated', 'fingerprint' => $script->fingerprint, 'detection_exit' => 1, 'remediation_exit' => 0, 'post_detection_exit' => 0], 'secret-token')->assertOk();
+
+        // From the alert: the next detect-only run found it again.
+        $again = $script->runOn([$device->id])->first();
+        $this->signedJson('GET', '/api/device/scripts', [], 'secret-token');
+        $this->signedJson('POST', "/api/device/scripts/runs/{$again->id}", ['status' => 'failed', 'fingerprint' => $again->fingerprint, 'detection_exit' => 1], 'secret-token');
+        // Users who are not system admins do not run scripts.
+        $this->actingAs(User::factory()->create());
+        $this->assertSame('Only system admins run scripts', collect(\App\Support\SmartAlerts::for($device->fresh()))->firstWhere('key', 'remediate:'.$script->id)['refusal']);
+        $this->actingAs($admin);
+        Livewire::test(\App\Livewire\DeviceAlerts::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('Check needs remediation')
+            ->call('runAlert', 'remediate:'.$script->id)
+            ->assertHasNoErrors();
+        $this->assertNull($script->runs()->latest('id')->first()->mode);
+    }
+
     public function test_expired_and_changed_runs_are_not_sent(): void
     {
         $device = $this->device();

@@ -8,15 +8,18 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class ScriptRun extends Model
 {
-    /** pending: waits for the agent, sent: the agent took it, then the result. */
-    public const STATUSES = ['pending', 'sent', 'compliant', 'remediated', 'failed', 'error', 'rejected', 'expired', 'superseded'];
+    /**
+     * pending: waits for the agent, sent: the agent took it, then the result; noncompliant: a run
+     * that only detected (manual remediation) found something to remediate.
+     */
+    public const STATUSES = ['pending', 'sent', 'compliant', 'noncompliant', 'remediated', 'failed', 'error', 'rejected', 'expired', 'superseded'];
 
     /** What the agent may report. */
     public const RESULTS = ['compliant', 'remediated', 'failed', 'error', 'rejected'];
 
     public const MAX_OUTPUT = 16384;
 
-    protected $fillable = ['device_id', 'version', 'fingerprint', 'status', 'issued_by', 'issued_at', 'expires_at'];
+    protected $fillable = ['device_id', 'version', 'mode', 'fingerprint', 'status', 'issued_by', 'issued_at', 'expires_at'];
 
     protected $casts = [
         'issued_at' => 'datetime',
@@ -35,6 +38,23 @@ class ScriptRun extends Model
         return $this->belongsTo(Device::class);
     }
 
+    /** Only the detection runs (manual remediation): the device gets no remediation script. */
+    public function getDetectsOnlyAttribute(): bool
+    {
+        return $this->mode === 'detect';
+    }
+
+    /** The fingerprint this run must have to still be sent: the script's as it is now. */
+    public function currentFingerprint(): string
+    {
+        return $this->detectsOnly ? $this->script->detectionFingerprint() : $this->script->fingerprint;
+    }
+
+    public static function statusLabel(string $status): string
+    {
+        return $status === 'noncompliant' ? __('Needs remediation') : __(ucfirst($status));
+    }
+
     public function getFinishedAttribute(): bool
     {
         return ! in_array($this->status, ['pending', 'sent'], true);
@@ -47,6 +67,9 @@ class ScriptRun extends Model
     public function toSignedPayload(): array
     {
         $script = $this->script;
+        // A run that only detects carries no remediation (its fingerprint is without it): no agent
+        // can remediate with it, also one that does not know detect_only.
+        $remediation = $this->detectsOnly ? null : $script->remediation;
         $manifest = json_encode([
             'run_id' => $this->id,
             'device_id' => $this->device_id,
@@ -57,7 +80,8 @@ class ScriptRun extends Model
             'platform' => $script->platform,
             'timeout' => $script->timeout,
             'detection_sha256' => hash('sha256', $script->detection),
-            'remediation_sha256' => $script->remediation === null ? null : hash('sha256', $script->remediation),
+            'remediation_sha256' => $remediation === null ? null : hash('sha256', $remediation),
+            'detect_only' => $this->detectsOnly,
             'issued_at' => $this->issued_at->getTimestamp(),
             'expires_at' => $this->expires_at->getTimestamp(),
         ]);
@@ -66,7 +90,7 @@ class ScriptRun extends Model
             'manifest' => $manifest,
             'signature' => Signing::sign('MDM1-SCRIPT', $manifest),
             'detection' => base64_encode($script->detection),
-            'remediation' => $script->remediation === null ? null : base64_encode($script->remediation),
+            'remediation' => $remediation === null ? null : base64_encode($remediation),
         ];
     }
 
@@ -79,6 +103,7 @@ class ScriptRun extends Model
     {
         return match ($status) {
             'compliant', 'remediated' => 'success',
+            'noncompliant' => 'warning',
             'failed', 'error', 'rejected' => 'danger',
             'pending', 'sent' => 'info',
             default => 'secondary',

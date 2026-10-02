@@ -25,6 +25,9 @@ class Form extends Component
 
     public string $remediation = '';
 
+    /** Runs only detect; the remediation is started per device (an alert with Remediate). */
+    public bool $manualRemediation = false;
+
     public function mount(?int $scriptId = null): void
     {
         Gate::authorize('is-system-admin');
@@ -33,6 +36,7 @@ class Form extends Component
             $this->fill($script->only(['name', 'platform', 'timeout', 'detection']));
             $this->description = (string) $script->description;
             $this->remediation = (string) $script->remediation;
+            $this->manualRemediation = (bool) $script->manual_remediation;
         }
     }
 
@@ -45,6 +49,7 @@ class Form extends Component
             'timeout' => 'required|integer|min:5|max:'.Script::MAX_TIMEOUT,
             'detection' => 'required|string|max:200000',
             'remediation' => 'nullable|string|max:200000',
+            'manualRemediation' => 'boolean',
         ];
     }
 
@@ -62,6 +67,7 @@ class Form extends Component
             // Byte for byte as entered: the fingerprint and the device check these bytes.
             'detection' => $this->detection,
             'remediation' => $this->remediation,
+            'manual_remediation' => $this->manualRemediation,
         ]);
         $script->exists ? $script->updated_by = auth()->id() : $script->created_by = auth()->id();
         $script->save();

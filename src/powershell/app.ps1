@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.13.4'
+$AgentVersion = '1.13.5'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -1910,7 +1910,10 @@ function Update-ScriptRun {
     $manifest = $current.Run.Manifest
     $output = $current.Output.ToString()
     if ($output.Length -gt 16000) { $output = $output.Substring(0, 16000) }
-    Write-AgentLog "Script '$($manifest.name)' ($($manifest.fingerprint)): $status$(if ($current.Error) { ", $($current.Error)" })"
+    # A run that only detects (manual remediation): exit 1 is "needs remediation", started from the
+    # portal; reported as failed (nothing ran), the server tells it apart.
+    $logged = if ($manifest.detect_only -and $status -eq 'failed' -and $current.Exit['detection'] -eq 1) { 'needs remediation (started from the portal)' } else { $status }
+    Write-AgentLog "Script '$($manifest.name)' ($($manifest.fingerprint)): $logged$(if ($current.Error) { ", $($current.Error)" })"
     try {
         Invoke-MdmApi -Method Post -Path "device/scripts/runs/$($manifest.run_id)" -Token $Token -Body @{
         status              = $status

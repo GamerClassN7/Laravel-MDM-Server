@@ -365,6 +365,12 @@ they then have to be reinstalled.
 - **Remediation script** (optional): runs after a detection that exited with 1, then the detection
   runs again. Without a remediation, exit 1 means failed.
 - Each script targets **All**, **Windows** or **Linux** and has a timeout (up to 1 hour).
+- **Remediate manually** (a switch in the script): runs and schedules only detect. The device gets
+  the run without the remediation script (its manifest and fingerprint leave it out, so no agent
+  can remediate with it). Exit 1 is **Needs remediation**: the device shows an alert with
+  **Remediate**, and its latest run has a **Remediate** button in the runs table (output column).
+  Remediate starts a full run on that device (detection, remediation, detection again). The script
+  page counts the devices that need it.
 
 The code is entered as text and stored byte for byte. Its **fingerprint** (SHA-256 over the
 platform, the timeout and the hashes of both scripts) changes with every code change, and a new

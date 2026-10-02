@@ -78,7 +78,7 @@ class DataTable extends DataTableComponent
     public function headerFilters(): array
     {
         return [
-            'status' => ['type' => 'select', 'values' => collect(ScriptRun::STATUSES)->mapWithKeys(fn ($status) => [$status => __(ucfirst($status))])->all()],
+            'status' => ['type' => 'select', 'values' => collect(ScriptRun::STATUSES)->mapWithKeys(fn ($status) => [$status => ScriptRun::statusLabel($status)])->all()],
         ];
     }
 
@@ -99,7 +99,7 @@ class DataTable extends DataTableComponent
 
     public function renderColumnStatus($value, $row): string
     {
-        $html = '<span class="badge border border-'.$row->statusColor.'-subtle bg-'.$row->statusColor.'-subtle text-'.$row->statusColor.'-emphasis">'.e(__(ucfirst($value))).'</span>';
+        $html = '<span class="badge border border-'.$row->statusColor.'-subtle bg-'.$row->statusColor.'-subtle text-'.$row->statusColor.'-emphasis">'.e(ScriptRun::statusLabel($value)).'</span>';
         if ($row->error) {
             $html .= '<div class="small text-danger">'.e($row->error).'</div>';
         }
@@ -117,11 +117,46 @@ class DataTable extends DataTableComponent
         return $value ? '<span title="'.e($value).'">'.e($value->diffForHumans()).'</span>' : '';
     }
 
-    /** A button opening the output in a modal (script-run.output). */
+    /**
+     * Remediate on the device a run that only detected found needs it (manual remediation): the
+     * whole script runs there, detection, remediation and the detection again.
+     */
+    public function remediate(int $runId): void
+    {
+        Gate::authorize('is-system-admin');
+        $run = ScriptRun::query()->with(['script', 'device'])->whereKey($runId)
+            ->when($this->deviceId !== null, fn ($query) => $query->where('device_id', $this->deviceId))
+            ->when($this->scriptId !== null, fn ($query) => $query->where('script_id', $this->scriptId))
+            ->first();
+        if ($run === null || ! $this->canRemediate($run)) {
+            return;
+        }
+        if (($reason = $run->script->unavailableReason($run->device)) !== null) {
+            $this->addError('remediate', $reason);
+
+            return;
+        }
+        $run->script->runOn([$run->device_id], auth()->user(), false, true);
+        \App\Support\LiveUpdates::device($run->device_id, 'script');
+    }
+
+    /** The latest run of the script on the device needs a remediation and the script has one. */
+    private function canRemediate(ScriptRun $run): bool
+    {
+        return $run->status === 'noncompliant' && $run->script?->remediation !== null && $run->device !== null
+            && $run->id === ScriptRun::query()->where('script_id', $run->script_id)->where('device_id', $run->device_id)->max('id');
+    }
+
+    /** A button opening the output in a modal (script-run.output); Remediate where it needs it. */
     public function renderColumnOutput($value, $row): string
     {
+        $remediate = $this->canRemediate($row) && Gate::allows('is-system-admin')
+            ? '<button class="btn btn-sm btn-warning text-nowrap" type="button" wire:click="remediate('.(int) $row->id.')" wire:loading.attr="disabled"'
+                .' wire:confirm="'.e(__('Run the remediation of :script on :device now?', ['script' => $row->script->name, 'device' => $row->device->displayName])).'">'
+                .'<i class="fas fa-magic me-1"></i>'.e(__('Remediate')).'</button>'
+            : '';
         if (! $value && ! $row->error) {
-            return '';
+            return $remediate;
         }
         $modal = json_encode([
             'livewireComponents' => 'script-run.output',
@@ -130,6 +165,7 @@ class DataTable extends DataTableComponent
         ]);
 
         return '<button class="btn btn-sm btn-light text-nowrap" type="button" x-on:click="Livewire.dispatch(\'openModal\', '.e($modal).')">'
-            .'<i class="fas fa-terminal me-1"></i>'.e(__('Output')).'</button>';
+            .'<i class="fas fa-terminal me-1"></i>'.e(__('Output')).'</button>'
+            .($remediate ? ' '.$remediate : '');
     }
 }

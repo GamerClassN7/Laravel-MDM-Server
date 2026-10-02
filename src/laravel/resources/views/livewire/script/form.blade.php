@@ -32,6 +32,13 @@
             <x-form::ace id="script-remediation" label="{{ __('Remediation script') }} ({{ __('optional') }})" language="powershell" theme="tomorrow_night" wire:model="remediation"
                 help="{{ __('Runs when the detection exits with 1, then the detection runs again. Scripts run as SYSTEM / root, without network access, output is kept up to 16 kB.') }}" />
         </div>
+        <div class="col-12">
+            <div class="form-check form-switch">
+                <input class="form-check-input" id="script-manual" type="checkbox" wire:model="manualRemediation">
+                <label class="form-check-label" for="script-manual">{{ __('Remediate manually') }}</label>
+            </div>
+            <div class="form-text">{{ __('Runs and schedules only detect (the device does not get the remediation script). A device that needs it shows an alert with Remediate, also in its runs.') }}</div>
+        </div>
     </div>
 
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mt-4">

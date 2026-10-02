@@ -4,6 +4,7 @@ namespace App\Support;
 
 use App\Models\Device;
 use App\Models\DeviceCommand;
+use App\Models\Script;
 use App\Models\ScriptRun;
 use App\Models\User;
 use Illuminate\Support\Collection;
@@ -180,6 +181,24 @@ class SmartAlerts
             ];
         }
 
+        // Scripts with manual remediation whose latest run here found something to remediate.
+        $toRemediate = $device->scriptRuns()->with('script')
+            ->whereIn('id', ScriptRun::query()->selectRaw('max(id)')->where('device_id', $device->id)->groupBy('script_id'))
+            ->where('status', 'noncompliant')->get()
+            ->filter(fn ($run) => $run->script?->remediation !== null);
+        foreach ($toRemediate as $run) {
+            $alerts[] = [
+                'key' => 'remediate:'.$run->script_id,
+                'severity' => 'warning',
+                'icon' => 'fas fa-magic',
+                'title' => __(':script needs remediation', ['script' => $run->script->name]),
+                'message' => __('Detected :time, the remediation runs when you start it.', ['time' => ($run->finished_at ?? $run->updated_at)->diffForHumans()]),
+                'action' => ['command' => 'remediate', 'params' => ['script' => $run->script_id], 'label' => __('Remediate'), 'icon' => 'fas fa-magic',
+                    'confirm' => __('Run the remediation of :script on :device now?', ['script' => $run->script->name, 'device' => $device->displayName])],
+                'tab' => 'scripts',
+            ];
+        }
+
         // The last run of each command (and target) that failed, unless it ran again since.
         foreach ($commands->groupBy(fn ($command) => $command->command.'|'.$command->target) as $runs) {
             $last = $runs->sortByDesc('id')->first();
@@ -220,6 +239,15 @@ class SmartAlerts
             if (($alert['action']['command'] ?? null) === 'clearAgentErrors') {
                 // Not a command for the device: done right away.
                 $alert['action'] += ['params' => [], 'confirm' => null];
+            } elseif (($alert['action']['command'] ?? null) === 'remediate') {
+                // A full run of the script (remediation scripts are for system admins).
+                $alert['action'] += ['params' => [], 'confirm' => null];
+                $script = Script::find($alert['action']['params']['script'] ?? null);
+                $alert['refusal'] = match (true) {
+                    $script === null => __('Nothing to do anymore.'),
+                    ! \Illuminate\Support\Facades\Gate::allows('is-system-admin') => __('Only system admins run scripts'),
+                    default => $script->unavailableReason($device),
+                };
             } elseif (($alert['action']['command'] ?? null) === 'wake') {
                 // Sent by another agent: its command, the refusal of the wake itself.
                 $alert['action'] += ['params' => [], 'confirm' => null];
@@ -316,6 +344,14 @@ class SmartAlerts
         }
         if ($alert['refusal']) {
             return $alert['refusal'];
+        }
+        if ($alert['action']['command'] === 'remediate') {
+            $script = Script::find($alert['action']['params']['script'] ?? null);
+            if ($script === null || ! $user?->can('is-system-admin')) {
+                return __('Only system admins run scripts');
+            }
+
+            return $script->runOn([$device->id], $user, false, true)->isNotEmpty() ? null : __('Already on its way.');
         }
         if ($alert['action']['command'] === 'clearAgentErrors') {
             $device->clearAgentErrors();

@@ -53,6 +53,7 @@ class Detail extends Component
         $groups = [
             'compliant' => ['compliant'],
             'remediated' => ['remediated'],
+            'noncompliant' => ['noncompliant'],
             'failed' => ['failed', 'error', 'rejected'],
             'waiting' => ['pending', 'sent'],
         ];
