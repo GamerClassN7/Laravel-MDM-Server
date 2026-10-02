@@ -5,6 +5,7 @@ namespace App\Livewire;
 use App\Models\Device;
 use App\Models\PingResult;
 use Livewire\Attributes\On;
+use Livewire\Attributes\Url;
 use Livewire\Component;
 
 /**
@@ -15,9 +16,19 @@ class PingMonitor extends Component
 {
     public int $deviceId;
 
-    public string $range = '24h';
+    /** Chart range, kept in the URL (?range=30d) as for the devices with the agent (DeviceMetrics). */
+    #[Url(except: '1h')]
+    public string $range = '1h';
 
     public const RANGES = ['1h' => 1, '24h' => 24, '7d' => 168, '30d' => 720];
+
+    public function mount(): void
+    {
+        // A value from the URL that is not a known range.
+        if (! isset(self::RANGES[$this->range])) {
+            $this->range = '1h';
+        }
+    }
 
     /** Checks in the bar of <x-ping-status> (every 30 s: the last 25 minutes). */
     public const BEATS = 50;

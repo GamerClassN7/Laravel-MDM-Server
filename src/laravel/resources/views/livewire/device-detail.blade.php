@@ -322,6 +322,9 @@
                                         @if (! empty($appUpdate['Source']))
                                             <span class="small text-muted ms-1">{{ $appUpdate['Source'] }}</span>
                                         @endif
+                                        @if (($appUpdate['Scope'] ?? null) === 'user')
+                                            <span class="small text-muted ms-1" title="{{ __('Installed only for the logged-on user: updated in their session') }}"><i class="fas fa-user me-1"></i>{{ __('user') }}</span>
+                                        @endif
                                         {{-- On phones the versions go under the name, the button keeps its place. --}}
                                         <span class="d-block d-sm-none small text-primary-emphasis">{{ $versions }}</span>
                                     </span>

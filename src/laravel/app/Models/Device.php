@@ -753,7 +753,8 @@ class Device extends Model
                 ($row['Source'] ?? null) === 'snap' => ['kind' => 'snap', 'id' => (string) ($row['Id'] ?? '')],
                 // Installed from the GitHub release, the agent installs the newer one from there.
                 ($row['Source'] ?? null) === 'github.com/PowerShell' => version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') ? null : ['kind' => 'pwsh', 'id' => (string) ($row['Avaliable'] ?? ''), 'title' => 'PowerShell '.($row['Avaliable'] ?? '')],
-                $this->platform === 'windows' => ['kind' => 'winget', 'id' => (string) ($row['Id'] ?? ''), 'source' => in_array($row['Source'] ?? null, ['winget', 'msstore'], true) ? $row['Source'] : null],
+                // Scope user: installed only for the logged-on user (agents 1.14.0+ update it in their session).
+                $this->platform === 'windows' => ['kind' => 'winget', 'id' => (string) ($row['Id'] ?? ''), 'source' => in_array($row['Source'] ?? null, ['winget', 'msstore'], true) ? $row['Source'] : null, 'scope' => ($row['Scope'] ?? null) === 'user' ? 'user' : null],
                 default => null,
             },
             'module' => $this->platform === 'windows' && ! empty($row['User'])

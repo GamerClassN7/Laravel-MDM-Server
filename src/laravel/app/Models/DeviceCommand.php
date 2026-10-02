@@ -148,6 +148,9 @@ class DeviceCommand extends Model
         if ($kind === 'winget' && in_array($params['source'] ?? null, ['winget', 'msstore'], true)) {
             $clean['source'] = $params['source'];
         }
+        if ($kind === 'winget' && ($params['scope'] ?? null) === 'user') {
+            $clean['scope'] = 'user';
+        }
         // Only shown in the portal, never used by the agent.
         if (isset($params['title']) && is_string($params['title'])) {
             $clean['title'] = mb_substr($params['title'], 0, 200);

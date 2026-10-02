@@ -600,6 +600,9 @@ class FleetFeaturesTest extends TestCase
             ->assertSee('50 %')
             ->assertSee('192.168.1.50')
             ->call('setRange', '7d')->assertSet('range', '7d');
+        // The range from the URL (?range=30d), as for devices with the agent.
+        Livewire::withQueryParams(['range' => '30d'])->test(\App\Livewire\PingMonitor::class, ['deviceId' => $printer->id])->assertSet('range', '30d');
+        Livewire::withQueryParams(['range' => 'nope'])->test(\App\Livewire\PingMonitor::class, ['deviceId' => $printer->id])->assertSet('range', '1h');
         Livewire::test(\App\Livewire\PingSettings::class, ['deviceId' => $printer->id])
             ->set('address', 'nope')->call('save')->assertHasErrors('address')
             ->set('address', '192.168.1.51')->set('mac', '')->call('save')->assertHasNoErrors()->assertDispatched('ping-settings-saved');
@@ -858,6 +861,10 @@ class FleetFeaturesTest extends TestCase
         // Unknown: the agent tries the Microsoft Store, then the winget repository.
         $this->assertArrayNotHasKey('source', $device->updateTarget('app', ['Id' => 'Git.Git', 'Source' => '']));
         $this->assertArrayNotHasKey('source', DeviceCommand::sanitizeParams('installUpdate', ['kind' => 'winget', 'id' => 'Git.Git', 'source' => 'evil; rm']));
+        // Installed only for the logged-on user (agents 1.14.0+ update it in their session).
+        $this->assertSame('user', $device->updateTarget('app', ['Id' => 'Discord.Discord', 'Source' => 'winget', 'Scope' => 'user'])['scope']);
+        $this->assertArrayNotHasKey('scope', $device->updateTarget('app', ['Id' => 'Git.Git', 'Source' => 'winget', 'Scope' => 'machine']));
+        $this->assertArrayNotHasKey('scope', DeviceCommand::sanitizeParams('installUpdate', ['kind' => 'winget', 'id' => 'Git.Git', 'scope' => 'root']));
     }
 
     public function test_winget_exit_codes_are_explained(): void

@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.13.5'
+$AgentVersion = '1.14.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -259,6 +259,135 @@ function Get-WingetSoftware {
 }
 
 
+function Invoke-WingetInUserSession {
+    # Runs "winget <Arguments>" as the logged-on user (a one-off task: interactive, highest
+    # privileges, no password needed; conhost --headless keeps it without a window on Windows 10
+    # 1809+). Returns @{ User; Code; Lines }, $null when nobody is logged on. -OnWait gets the
+    # lines so far every 2 s. The arguments must be of a checked form (ids, fixed options).
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Arguments,
+        [string]
+        $Title = 'winget',
+        [int]
+        $TimeoutSeconds = 900,
+        [scriptblock]
+        $OnWait
+    )
+
+    $user = try { (Get-CimInstance -ClassName Win32_ComputerSystem -Property UserName).UserName } catch { $null }
+    if (-not $user) { return $null }
+    $tag = [guid]::NewGuid().ToString('N')
+    $name = "Laravel-MDM-Winget-$($tag.Substring(0, 12))"
+    # Windows\Temp: the user can create the file, SYSTEM reads it.
+    $log = Join-Path $env:SystemRoot "Temp\mdm-winget-$tag.log"
+    # cmd writes winget's exit code into the log itself (MDMEXIT=; the redirection goes first,
+    # "=0>>" would redirect handle 0), so the result does not depend on when Task Scheduler
+    # updates LastTaskResult (267009 = still running).
+    $command = "title Laravel MDM - $Title & echo Laravel MDM: $Title. This window closes by itself. & winget $Arguments > `"$log`" 2>&1 & >>`"$log`" echo MDMEXIT=!errorlevel!"
+    if ([Environment]::OSVersion.Version.Build -ge 17763 -and (Test-Path "$env:SystemRoot\System32\conhost.exe")) {
+        $execute = "$env:SystemRoot\System32\conhost.exe"
+        $taskArguments = "--headless `"$env:SystemRoot\System32\cmd.exe`" /v:on /c `"$command`""
+    } else {
+        $execute = "$env:SystemRoot\System32\cmd.exe"
+        $taskArguments = "/v:on /c `"$command`""
+    }
+    # No $state here: -OnWait runs in this scope and reads the update job's $state.
+    $code = -1
+    $lines = @()
+    try {
+        $action = New-ScheduledTaskAction -Execute $execute -Argument $taskArguments
+        $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds $TimeoutSeconds) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $name -ErrorAction Stop
+        $deadline = (Get-Date).AddSeconds($TimeoutSeconds + 60)
+        $exit = $null
+        do {
+            Start-Sleep -Seconds 2
+            $lines = @(Get-Content -Path $log -Encoding UTF8 -ErrorAction SilentlyContinue)
+            $exit = $lines | Where-Object { $_ -match '^MDMEXIT=(-?\d+)' } | Select-Object -Last 1
+            $info = Get-ScheduledTaskInfo -TaskName $name -ErrorAction Stop
+            $taskState = (Get-ScheduledTask -TaskName $name -ErrorAction Stop).State
+            # 267009 = still running, 267011 = not started yet.
+            $busy = "$taskState" -eq 'Running' -or $info.LastTaskResult -in 267009, 267011
+            if ($OnWait -and -not $exit) { try { & $OnWait $lines } catch { } }
+        } while (-not $exit -and $busy -and (Get-Date) -lt $deadline)
+        $lines = @(Get-Content -Path $log -Encoding UTF8 -ErrorAction SilentlyContinue)
+        if ($exit -match '^MDMEXIT=(-?\d+)') {
+            $code = [int]$Matches[1]
+        } elseif ($busy) {
+            Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+            $code = -1
+        } else {
+            $code = [BitConverter]::ToInt32([BitConverter]::GetBytes([uint32]$info.LastTaskResult), 0)
+        }
+    }
+    finally {
+        Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -Path $log -Force -ErrorAction SilentlyContinue
+    }
+    return @{ User = $user; Code = $code; Lines = @($lines | Where-Object { $_ -notmatch '^MDMEXIT=' }) }
+}
+
+function Get-WingetUpdates {
+    # The updates winget offers, as SYSTEM (machine-wide installs) and in the session of the
+    # logged-on user (installs only for them, which SYSTEM does not see; the user's own
+    # "winget upgrade" shows both). Scope: machine, or user for the ones only the user sees.
+    $system = @(Get-WingetSoftware -Updatable)
+    $known = @{}
+    foreach ($item in $system) {
+        $item | Add-Member -Name 'Scope' -Value 'machine' -MemberType NoteProperty -Force
+        $known[$item.Id] = $true
+        $item
+    }
+    if ($env:OS -ne 'Windows_NT') { return }
+    try {
+        $session = Invoke-WingetInUserSession -Arguments 'upgrade --accept-source-agreements --disable-interactivity' -Title 'checking for updates' -TimeoutSeconds 180
+    }
+    catch {
+        return
+    }
+    if (-not $session -or $session.Code -notin 0, -1978335189) { return }
+    foreach ($values in @(ConvertFrom-WingetTable -Lines $session.Lines)) {
+        $id = $values[1]
+        if ($known.ContainsKey($id) -or $values.Count -lt 5 -or $id -notmatch '^[A-Za-z0-9][A-Za-z0-9._+\-]*$') { continue }
+        $known[$id] = $true
+        [PSCustomObject]@{
+            Name      = $values[0]
+            Id        = $id
+            Version   = $values[2]
+            Avaliable = $values[3]
+            Source    = $values[$values.Count - 1]
+            Scope     = 'user'
+        }
+    }
+}
+
+function Get-WingetStatus {
+    # What a running winget is doing, from its output so far (any language): the download in
+    # MB / percent, else that the installer runs. Lines are split at the carriage returns of its
+    # progress bar.
+    param ([string[]]$Lines)
+
+    $segments = @($Lines | ForEach-Object { "$_" -split "`r" } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    for ($i = $segments.Count - 1; $i -ge 0; $i--) {
+        $text = $segments[$i]
+        if ($text -match '([0-9]+(?:[.,][0-9]+)?)\s*(KB|MB|GB)\s*/\s*([0-9]+(?:[.,][0-9]+)?)\s*(KB|MB|GB)') {
+            # A text line after the bar: the download is done, the next step runs.
+            if ($i -lt $segments.Count - 1) { return 'running the installer' }
+            return "downloading $($Matches[1]) $($Matches[2]) / $($Matches[3]) $($Matches[4])"
+        }
+        if ($text -match '^[^0-9]*?([0-9]{1,3})\s*%$') {
+            if ($i -lt $segments.Count - 1) { return 'running the installer' }
+            return "downloading $($Matches[1]) %"
+        }
+    }
+    if ($segments.Count -gt 0) { return 'preparing' }
+    return 'starting'
+}
+
 function Get-WindowsUpdate {
     $UpdateSession = New-Object -ComObject Microsoft.Update.Session
     $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
@@ -320,13 +449,9 @@ function Install-WindowsUpdate {
             $waiting += $update.Title
             continue
         }
-        # Drivers (Type 2) are flagged so (graphics drivers) but install without a window, as Windows
-        # Update itself installs them as SYSTEM.
-        if ($update.InstallationBehavior.CanRequestUserInput -and [int]$update.Type -ne 2) {
-            # Would wait for a window nobody sees (SYSTEM has no desktop).
-            [void]$State.Failures.Add("$($update.Title): asks for user input, install it on the device")
-            continue
-        }
+        # CanRequestUserInput is set for many drivers and vendor packages (NVIDIA, Intel, firmware):
+        # with ForceQuiet they install without a window, as Windows Update itself installs them as
+        # SYSTEM. One that really needs a person fails and says so in its result.
         if (-not $update.EulaAccepted) { $update.AcceptEula() }
         $Updates.Add($update) | Out-Null
     }
@@ -2435,7 +2560,7 @@ function Start-AgentJob {
 
 function Start-InventoryCollection {
     # Windows Update search and winget are expensive, run them rarely in a separate idle-priority process.
-    return Start-AgentJob -Name 'inventory' -Functions 'Get-WingetSoftware', 'Get-WindowsUpdate', 'Get-AptUpdates', 'Get-UserCommand', 'Get-FlatpakUpdates', 'Get-SnapUpdates', 'Get-PowerShellReleaseUpdate', 'Get-PowerShellManager', 'ConvertFrom-WingetTable', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules' -ArgumentList $OnLinux -ScriptBlock {
+    return Start-AgentJob -Name 'inventory' -Functions 'Get-WingetSoftware', 'Get-WingetUpdates', 'Invoke-WingetInUserSession', 'Get-WindowsUpdate', 'Get-AptUpdates', 'Get-UserCommand', 'Get-FlatpakUpdates', 'Get-SnapUpdates', 'Get-PowerShellReleaseUpdate', 'Get-PowerShellManager', 'ConvertFrom-WingetTable', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules' -ArgumentList $OnLinux -ScriptBlock {
         param ($OnLinux)
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
         $data = @{}
@@ -2447,7 +2572,7 @@ function Start-InventoryCollection {
             try { $packages += @(Get-SnapUpdates) } catch { }
         } else {
             try { $data['os_updates'] = @(Get-WindowsUpdate) } catch { }
-            try { $packages += @(Get-WingetSoftware -Updatable | Select-Object -Property Id, Version, Avaliable, Source) } catch { }
+            try { $packages += @(Get-WingetUpdates | Select-Object -Property Id, Version, Avaliable, Source, Scope) } catch { }
         }
         try { $packages += @(Get-PowerShellReleaseUpdate -OnLinux $OnLinux -Known (@($data['os_updates']) + $packages)) } catch { }
         $data['packages_updates'] = $packages
@@ -2827,10 +2952,12 @@ function Test-UpdateParams {
         throw "'$kind' updates are not available on this platform"
     }
 
-    # winget: the source of the package in the inventory (servers before 1.12.3 do not send it).
+    # winget: the source of the package in the inventory (servers before 1.12.3 do not send it), and
+    # whether it is installed only for the logged-on user (SYSTEM does not see it).
     $source = if ($kind -eq 'winget' -and "$($Params.source)" -in 'winget', 'msstore') { "$($Params.source)" } else { '' }
+    $scope = if ($kind -eq 'winget' -and "$($Params.scope)" -eq 'user') { 'user' } else { '' }
 
-    return @{ kind = $kind; id = "$($Params.id)"; user = "$($Params.user)"; edition = "$($Params.edition)"; version = "$($Params.version)"; source = $source }
+    return @{ kind = $kind; id = "$($Params.id)"; user = "$($Params.user)"; edition = "$($Params.edition)"; version = "$($Params.version)"; source = $source; scope = $scope }
 }
 
 function Test-WakeParams {
@@ -3056,7 +3183,7 @@ function Start-UpdateJob {
     $progressFile = "$AgentDir/update-progress.json"
     Remove-Item -Path $progressFile -Force -ErrorAction SilentlyContinue
     [void](Send-CommandStatus -Id $CommandId -Status running -Progress 0 -Message 'Starting')
-    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Install-PowerShellRelease', 'Get-PowerShellReleaseUpdate', 'Get-PowerShellManager', 'Get-WingetPath', 'Get-WingetSoftware', 'ConvertFrom-WingetTable', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log", $progressFile, $Params, $CommandId, "$AgentDir/update-result.json" -ScriptBlock {
+    $script:UpdateJob = Start-AgentJob -Name 'updates' -Functions 'Install-WindowsUpdate', 'Invoke-WingetInUserSession', 'Get-WingetUpdates', 'Get-WingetStatus', 'Install-PowerShellRelease', 'Get-PowerShellReleaseUpdate', 'Get-PowerShellManager', 'Get-WingetPath', 'Get-WingetSoftware', 'ConvertFrom-WingetTable', 'Get-PowerShellHosts', 'Invoke-PowerShellModules', 'Get-UserCommand' -ArgumentList $OnLinux, "$AgentDir/updates.log", $progressFile, $Params, $CommandId, "$AgentDir/update-result.json" -ScriptBlock {
         param ($OnLinux, $OutputLog, $ProgressFile, $Params, $CommandId, $ResultFile)
 
         # When an update replaces the PowerShell the agent runs in (apt, a GitHub release, snap,
@@ -3067,7 +3194,7 @@ function Start-UpdateJob {
         if ((Test-Path -Path $OutputLog) -and (Get-Item -Path $OutputLog).Length -gt 2MB) {
             Move-Item -Path $OutputLog -Destination "$OutputLog.1" -Force
         }
-        $state = @{ Failures = [System.Collections.ArrayList]@(); Base = 0; Span = 100; Last = $null }
+        $state = @{ Failures = [System.Collections.ArrayList]@(); Base = 0; Span = 100; Last = $null; WingetPercent = 0; WingetLabel = 'winget upgrade' }
         function Set-Progress ([int]$Percent, [string]$Message) {
             # Percent within the current step (Base .. Base + Span), written for the agent loop.
             $total = [Math]::Min(100, [Math]::Max(0, $state.Base + [int]($state.Span * $Percent / 100)))
@@ -3150,75 +3277,34 @@ function Start-UpdateJob {
             return , $output
         }
         function Invoke-WingetUpgradeAsUser ([string]$Id) {
-            # A one-off task of the logged-on user (interactive, highest privileges, no password
-            # needed), the way the user would run it; $null when nobody is logged on. The id is of
-            # the checked form (Test-UpdateParams), so it is safe in the command line.
-            $user = try { (Get-CimInstance -ClassName Win32_ComputerSystem -Property UserName).UserName } catch { $null }
-            if (-not $user) {
+            # In the session of the logged-on user, the way they would run it; $null when nobody
+            # is logged on. The id is of the checked form (Test-UpdateParams).
+            "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id (in the session of the logged-on user)" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
+            $started = Get-Date
+            try {
+                $session = Invoke-WingetInUserSession -Arguments "upgrade --id `"$Id`" --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity --source winget" `
+                    -Title "updating $Id" -TimeoutSeconds $wingetTimeout -OnWait { param ($lines) Set-WingetProgress -Status "$(Get-WingetStatus -Lines $lines), in the session of the user" -Started $started }
+            }
+            catch {
+                $output = @("Not run in the session of the logged-on user: $($_.Exception.Message)")
+                $output | Add-Content -Path $OutputLog -Encoding UTF8
+                $global:LASTEXITCODE = -1
+                return , $output
+            }
+            if ($null -eq $session) {
                 "winget upgrade ${Id}: nobody is logged on, not tried in a user session" | Add-Content -Path $OutputLog -Encoding UTF8
                 return $null
             }
-            "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id (in the session of $user)" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
-            $tag = [guid]::NewGuid().ToString('N')
-            $name = "Laravel-MDM-Winget-$($tag.Substring(0, 12))"
-            # Windows\Temp: the user can create the file, SYSTEM reads it.
-            $log = Join-Path $env:SystemRoot "Temp\mdm-winget-$tag.log"
-            # cmd writes winget's exit code into the log itself (MDMEXIT=; the redirection goes first,
-            # "=0>>" would redirect handle 0), so the result does not
-            # depend on when Task Scheduler updates LastTaskResult (267009 = still running).
-            $winget = "winget upgrade --id `"$Id`" --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity --source winget > `"$log`" 2>&1"
-            $command = "title Laravel MDM - updating $Id & echo Laravel MDM is updating $Id. This window closes by itself. & $winget & >>`"$log`" echo MDMEXIT=!errorlevel!"
-            # conhost --headless (Windows 10 1809+) runs cmd without a window; older systems show
-            # the window, with the text above saying what it is.
-            if ([Environment]::OSVersion.Version.Build -ge 17763 -and (Test-Path "$env:SystemRoot\System32\conhost.exe")) {
-                $execute = "$env:SystemRoot\System32\conhost.exe"
-                $arguments = "--headless `"$env:SystemRoot\System32\cmd.exe`" /v:on /c `"$command`""
-            } else {
-                $execute = "$env:SystemRoot\System32\cmd.exe"
-                $arguments = "/v:on /c `"$command`""
-            }
-            $code = -1
-            $output = @()
-            try {
-                $action = New-ScheduledTaskAction -Execute $execute -Argument $arguments
-                $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
-                $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds $wingetTimeout) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-                Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
-                Start-ScheduledTask -TaskName $name -ErrorAction Stop
-                $deadline = (Get-Date).AddSeconds($wingetTimeout + 60)
-                $exit = $null
-                do {
-                    Start-Sleep -Seconds 3
-                    $lines = @(Get-Content -Path $log -ErrorAction SilentlyContinue)
-                    $exit = $lines | Where-Object { $_ -match '^MDMEXIT=(-?\d+)' } | Select-Object -Last 1
-                    $info = Get-ScheduledTaskInfo -TaskName $name -ErrorAction Stop
-                    $state = (Get-ScheduledTask -TaskName $name -ErrorAction Stop).State
-                    # 267009 = still running, 267011 = not started yet.
-                    $busy = "$state" -eq 'Running' -or $info.LastTaskResult -in 267009, 267011
-                } while (-not $exit -and $busy -and (Get-Date) -lt $deadline)
-                $lines = @(Get-Content -Path $log -ErrorAction SilentlyContinue)
-                if ($exit -match '^MDMEXIT=(-?\d+)') {
-                    $code = [int]$Matches[1]
-                } elseif ($busy) {
-                    Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
-                    $code = -1
-                } else {
-                    # The exit code of the task as a signed number.
-                    $code = [BitConverter]::ToInt32([BitConverter]::GetBytes([uint32]$info.LastTaskResult), 0)
-                }
-                $output = @($lines | Where-Object { $_ -match '\S' -and $_ -notmatch '^MDMEXIT=' -and $_ -notmatch '^[\s\-\\|/\u2588\u2592]*$' })
-            }
-            catch {
-                $output = @("Not run in the session of ${user}: $($_.Exception.Message)")
-            }
-            finally {
-                Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
-                Remove-Item -Path $log -Force -ErrorAction SilentlyContinue
-            }
-            $output | Add-Content -Path $OutputLog -Encoding UTF8
-            "exit code $code" | Add-Content -Path $OutputLog -Encoding UTF8
-            $global:LASTEXITCODE = $code
+            $output = @($session.Lines | Where-Object { $_ -match '\S' -and $_ -notmatch '^[\s\-\\|/\u2588\u2592]*$' })
+            @("(in the session of $($session.User))") + $output | Add-Content -Path $OutputLog -Encoding UTF8
+            "exit code $($session.Code)" | Add-Content -Path $OutputLog -Encoding UTF8
+            $global:LASTEXITCODE = $session.Code
             return , $output
+        }
+        function Set-WingetProgress ([string]$Status, [datetime]$Started) {
+            # The step's message ("winget upgrade X (2/5)") with what winget does and for how long.
+            $elapsed = (Get-Date) - $Started
+            Set-Progress $state.WingetPercent ("{0}: {1} ({2}:{3:00})" -f $state.WingetLabel, $Status, [int][Math]::Floor($elapsed.TotalMinutes), $elapsed.Seconds)
         }
         function Invoke-WingetUpgradeOnce ([string]$Winget, [string]$Id, [string]$Source, [string[]]$Extra = @()) {
             "===== {0:yyyy-MM-dd HH:mm:ss} winget upgrade $Id ($Source $($Extra -join ' '))" -f (Get-Date) | Add-Content -Path $OutputLog -Encoding UTF8
@@ -3229,7 +3315,17 @@ function Start-UpdateJob {
             try {
                 $process = Start-Process -FilePath $Winget -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
                 $null = $process.Handle # without it ExitCode stays empty in Windows PowerShell
-                if ($process.WaitForExit($wingetTimeout * 1000)) {
+                # What winget does (download, installer) every 2 s in the progress.
+                $started = Get-Date
+                $deadline = $started.AddSeconds($wingetTimeout)
+                while (-not $process.WaitForExit(2000) -and (Get-Date) -lt $deadline) {
+                    $text = try {
+                        $stream = [System.IO.File]::Open($out, 'Open', 'Read', 'ReadWrite')
+                        try { if ($stream.Length -gt 8192) { [void]$stream.Seek(-8192, 'End') }; (New-Object System.IO.StreamReader($stream)).ReadToEnd() } finally { $stream.Dispose() }
+                    } catch { '' }
+                    Set-WingetProgress -Status "$(Get-WingetStatus -Lines @($text -split "`n"))$(if ($Source) { ", $Source" })" -Started $started
+                }
+                if ($process.HasExited) {
                     $code = $process.ExitCode
                 } else {
                     # The installer is a child of winget: end the whole tree.
@@ -3263,7 +3359,15 @@ function Start-UpdateJob {
                     $winget = Get-WingetPath
                     if (-not $winget) { [void]$state.Failures.Add('winget not found'); break }
                     Set-Progress 10 "winget upgrade $id"
-                    $output = Invoke-WingetUpgrade -Winget $winget -Id $id -Source $Params.source
+                    $state.WingetPercent = 10
+                    $state.WingetLabel = "winget upgrade $id"
+                    if ($Params.scope -eq 'user') {
+                        # Installed only for the user: SYSTEM does not see it.
+                        $output = Invoke-WingetUpgradeAsUser -Id $id
+                        if ($null -eq $output) { $output = @('Installed only for a user, who is not logged on now: it is updated when they are'); $global:LASTEXITCODE = -1 }
+                    } else {
+                        $output = Invoke-WingetUpgrade -Winget $winget -Id $id -Source $Params.source
+                    }
                     "winget upgrade ${id}: exit $LASTEXITCODE"
                     Add-Result "winget upgrade $id" $LASTEXITCODE $output $wingetOk
                 }
@@ -3361,14 +3465,17 @@ function Start-UpdateJob {
                 # One package at a time instead of "upgrade --all": each has a timeout, one that
                 # hangs or fails does not stop the others. winget also updates PowerShell 7
                 # (Microsoft.PowerShell). App Installer is winget itself: replacing it ends winget.
-                $listed = try { @(Get-WingetSoftware -Updatable) } catch { [void]$state.Failures.Add("winget: $($_.Exception.Message)"); @() }
+                $listed = try { @(Get-WingetUpdates) } catch { [void]$state.Failures.Add("winget: $($_.Exception.Message)"); @() }
                 # Frameworks of Store apps (VCLibs, UI.Xaml, Windows App Runtime) are updated by the Store,
                 # winget fails on them as SYSTEM (0x8A15005C).
                 $packages = @($listed | Where-Object { $_.Id -and $_.Id -notmatch '^Microsoft\.(AppInstaller|VCLibs|UI\.Xaml|WindowsAppRuntime)' -and "$($_.Avaliable)" -ne '' })
                 $done = 0
                 foreach ($package in $packages) {
-                    Set-Progress ([int](40 * $done / [Math]::Max(1, $packages.Count))) "winget upgrade $($package.Id) ($($done + 1)/$($packages.Count))"
-                    $output = Invoke-WingetUpgrade -Winget $winget -Id $package.Id -Source $package.Source
+                    $state.WingetPercent = [int](40 * $done / [Math]::Max(1, $packages.Count))
+                    $state.WingetLabel = "winget upgrade $($package.Id) ($($done + 1)/$($packages.Count))"
+                    Set-Progress $state.WingetPercent $state.WingetLabel
+                    $output = if ($package.Scope -eq 'user') { Invoke-WingetUpgradeAsUser -Id $package.Id } else { Invoke-WingetUpgrade -Winget $winget -Id $package.Id -Source $package.Source }
+                    if ($null -eq $output) { $output = @('Installed only for a user, who is not logged on now'); $global:LASTEXITCODE = -1 }
                     "winget upgrade $($package.Id): exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
                     Add-Result "winget upgrade $($package.Id)" $LASTEXITCODE $output $wingetOk
                     $done++

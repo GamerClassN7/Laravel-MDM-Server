@@ -314,6 +314,19 @@ no desktop) or for an application to close is ended with its process tree, repor
 the next package goes on (agents 1.10.1+; before, one such installer stopped `winget upgrade --all`
 for good). App Installer, which is winget itself, is left out. Every step with its result is written to `agent.log`, the full
 output of apt / winget to `updates.log`, and the update list is collected again right after.
+
+On Windows (agents 1.14.0+):
+
+- **The same list as the user's `winget upgrade`:** `SYSTEM` does not see applications installed
+  only for a user (into their profile). The agent therefore also asks winget in the session of the
+  logged-on user (a hidden one-off task) and adds what only they see, marked **user**. Those are
+  updated in that session; nobody logged on means they wait.
+- **What winget is doing** is shown in the progress: the download (MB or percent), that the
+  installer runs, or that it runs in the user's session, with the time so far. For example
+  `winget upgrade ONLYOFFICE.DesktopEditors (5/5): running the installer (3:12)`.
+- **Windows Update** installs the updates it marks as "may ask for user input" too: drivers and
+  vendor packages (NVIDIA, Intel, firmware) carry that flag but install quietly (`ForceQuiet`), as
+  Windows Update installs them itself. One that really needs a person fails with its result.
 On Linux the update list tells what apt would install now (a simulated `apt-get upgrade`, no
 network): updates deferred by phasing and held back ones (pinned, held, or needing other packages
 to change) are shown with an icon and do not count as available updates. The list is also
