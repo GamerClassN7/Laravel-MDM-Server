@@ -28,6 +28,10 @@ class AppServiceProvider extends ServiceProvider
         if (config('app.env') != 'local' && !$this->openedDirectly()) {
             URL::forceScheme('https');
         }
+        // The scheduler (notifications) links to the address the portal is opened with.
+        if ($this->app->runningInConsole() && ! $this->app->runningUnitTests()) {
+            \App\Support\PortalUrl::apply();
+        }
     }
 
     /**

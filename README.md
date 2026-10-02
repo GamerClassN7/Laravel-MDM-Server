@@ -372,6 +372,11 @@ they then have to be reinstalled.
   Remediate starts a full run on that device (detection, remediation, detection again). The script
   page counts the devices that need it.
 
+Before saving, both scripts are checked: up to 200 kB each, valid PowerShell (with the PowerShell
+parser when `pwsh` is on the server, `MDM_PWSH` or `PATH`; otherwise unterminated strings,
+here-strings and comments and unbalanced brackets are found), and the detection has an `exit 0` and
+an `exit 1` outside comments and strings.
+
 The code is entered as text and stored byte for byte. Its **fingerprint** (SHA-256 over the
 platform, the timeout and the hashes of both scripts) changes with every code change, and a new
 version is created. **Run** opens a list of the devices with checkboxes. Devices on another
@@ -421,6 +426,11 @@ device list shows them and filters by a tag with one click. Scheduled scripts an
 tags, so a newly tagged device is included without changing them.
 
 ### Notifications and alerts
+
+Notifications link to the device. The scheduler that sends them has no request to take the address
+from, so it uses `APP_URL` when that is set to a real address, otherwise the address the signed-in
+users open the portal with (remembered in `storage/app/portal-url`; any request's `Host` header alone
+is not taken).
 
 **Notifications** in the main menu, per user and in the style of
 [Beszel](https://beszel.dev/guide/notifications/):

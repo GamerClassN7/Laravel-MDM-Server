@@ -24,6 +24,9 @@ class Script extends Model
 
     public const MAX_TIMEOUT = 3600;
 
+    /** The most a detection or remediation script may have, in bytes (as in Intune: 200 kB). */
+    public const MAX_CODE_BYTES = 204800;
+
     /** Runs not taken by the agent within this time expire (the signed manifest does too). */
     public const RUN_TTL = 86400;
 

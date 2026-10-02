@@ -222,6 +222,27 @@ class FleetFeaturesTest extends TestCase
         $this->assertSame(0, AlertRule::first()->events()->whereNull('resolved_at')->count());
     }
 
+    public function test_notification_links_use_the_address_the_portal_is_opened_with(): void
+    {
+        $this->withoutVite();
+        config(['app.url' => 'http://localhost']);
+        // Only a signed-in user's page is taken, not any request's Host header.
+        $this->get('http://evil.example/login');
+        $this->assertNull(\App\Support\PortalUrl::remembered());
+        $this->actingAs(User::factory()->create())->get('https://mdm.example.com/devices')->assertOk();
+        $this->assertSame('https://mdm.example.com', \App\Support\PortalUrl::remembered());
+
+        // The scheduler (no request) links there.
+        \App\Support\PortalUrl::apply();
+        $this->assertSame('https://mdm.example.com/devices?selectedDeviceId=5', url('/devices?selectedDeviceId=5'));
+
+        // APP_URL set to a real address wins.
+        config(['app.url' => 'https://portal.example.org']);
+        $this->assertTrue(\App\Support\PortalUrl::configured());
+        $this->actingAs(User::factory()->create())->get('https://other.example.com/devices');
+        $this->assertSame('https://mdm.example.com', \App\Support\PortalUrl::remembered());
+    }
+
     public function test_metric_disk_and_scope_alerts(): void
     {
         Http::fake();

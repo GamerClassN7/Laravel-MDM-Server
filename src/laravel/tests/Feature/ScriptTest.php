@@ -256,10 +256,13 @@ class ScriptTest extends TestCase
             ->set('platform', 'linux')
             ->set('detection', "\$free = 10\r\nif (\$free -lt 5) { exit 1 }\r\n")
             ->call('save')
+            ->assertHasErrors('detection')
+            ->set('detection', "\$free = 10\r\nif (\$free -lt 5) { exit 1 }\r\nexit 0\r\n")
+            ->call('save')
             ->assertHasNoErrors()
             ->assertDispatched('scriptSaved');
         $script = Script::firstOrFail();
-        $this->assertSame("\$free = 10\r\nif (\$free -lt 5) { exit 1 }\r\n", $script->detection);
+        $this->assertSame("\$free = 10\r\nif (\$free -lt 5) { exit 1 }\r\nexit 0\r\n", $script->detection);
         $this->assertNull($script->remediation);
 
         Livewire::test(Run::class, ['scriptId' => $script->id])
@@ -276,6 +279,31 @@ class ScriptTest extends TestCase
         Livewire::test(Detail::class, ['script' => $script])->assertSee('Disk space')->assertSee('v1');
         Livewire::test(RunDataTable::class, ['scriptId' => $script->id])->assertSee('srv-secret-token')->assertSee('Pending');
         Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])->assertSee('Scripts')->assertSee('Disk space');
+    }
+
+    public function test_scripts_are_checked_as_powershell_before_saving(): void
+    {
+        // The light check (no pwsh on the server).
+        config(['mdm.pwsh' => '/nonexistent/pwsh']);
+        $this->actingAs($this->admin());
+        $form = fn (string $detection, string $remediation = '') => Livewire::test(Form::class)
+            ->set('name', 'Check')->set('detection', $detection)->set('remediation', $remediation)->call('save');
+
+        $error = fn ($component, string $field) => $component->errors()->first($field);
+        $this->assertSame('Not valid PowerShell: line 1: { is not closed', $error($form("if (\$true) {\n  exit 1\n"), 'detection'));
+        // Only in a comment or a string does not count.
+        $this->assertSame('The detection has to end with exit 0 (compliant) and exit 1 (needs remediation), exit 0 is missing.', $error($form("# exit 0\nWrite-Host 'exit 0'\nexit 1"), 'detection'));
+        $form("Write-Host \"x\"\nexit 0")->assertHasErrors('detection');
+        $form("if (Test-Path /x) { exit 0 }\nexit 1", "Write-Host \"fix")->assertHasErrors(['remediation'])->assertHasNoErrors('detection');
+        $big = "if (Test-Path /x) { exit 0 }\nexit 1\n# ".str_repeat('x', Script::MAX_CODE_BYTES);
+        $this->assertSame('The script has 200.0 kB, at most 200 kB.', $error($form($big), 'detection'));
+        $this->assertSame(0, Script::count());
+
+        $form("\$a = @\"\nmultiline \"text\" exit 5\n\"@\nif (Test-Path /x) { exit 0 }\nexit 1", "New-Item /x")->assertHasNoErrors();
+        $this->assertSame(1, Script::count());
+
+        // The whole agent passes the light check.
+        $this->assertSame([], \App\Support\PowerShellCheck::lex(file_get_contents(base_path('../powershell/app.ps1')))['errors']);
     }
 
     public function test_script_code_is_required(): void
