@@ -505,7 +505,10 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
 
 - An online agent 1.10.0+ in the same network (an interface in that IPv4 network, a report from
   the last 11 minutes) pings it with every heartbeat (30 s, 1 s timeout). Agents on a battery never
-  ping: in another network the same address may answer for another machine.
+  ping: in another network the same address may answer for another machine. Agents 1.13.4+ ping
+  from the interface in the device's network (the system `ping` with `-I` on Linux, `-S` with its
+  address on Windows), not over the default route (Docker, VPN, a second card); **Sync** says which
+  interface answered.
 - The ping-only devices of a network are spread over all agents that can ping them: each goes to
   the one with the fewest so far, and stays with its agent while that is as good. When an agent goes
   offline, the others take its devices with their next ping (32 per agent at most).

@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.13.3'
+$AgentVersion = '1.13.4'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -2566,6 +2566,67 @@ function Set-PingTargets {
         } | Select-Object -First 32)
 }
 
+function Invoke-Pings {
+    # Pings the targets (@{ Id; Address }) at once and returns id => @{ Up; Rtt; Via }. A target in
+    # the network of a local interface is pinged from that interface (the system ping: -I on Linux,
+    # -S with its address on Windows), not over whatever the default route picks (Docker, VPN, a
+    # second card); the others, or without a ping command, with .NET Ping.
+    param ($Targets, [int]$TimeoutMs = 1000)
+
+    if ($null -eq $script:PingCommand) {
+        $script:PingCommand = if ($OnLinux) { (Get-Command -Name ping -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source } else { "$env:SystemRoot\System32\ping.exe" }
+        if (-not $script:PingCommand -or -not (Test-Path -Path $script:PingCommand)) { $script:PingCommand = '' }
+    }
+    $networks = if ($script:PingCommand) { @(Get-LocalNetworks) } else { @() }
+    $seconds = [Math]::Max(1, [int][Math]::Ceiling($TimeoutMs / 1000))
+    $runs = @(foreach ($target in $Targets) {
+            $network = if ($networks.Count -gt 0) { Find-LocalNetwork -Networks $networks -Address $target.Address } else { $null }
+            if ($network) {
+                $info = New-Object System.Diagnostics.ProcessStartInfo
+                $info.FileName = $script:PingCommand
+                # The address comes from Set-PingTargets (a parsed IPv4 address), the name from the system.
+                $info.Arguments = if ($OnLinux) { "-n -c 1 -W $seconds -I `"$($network.Name)`" $($target.Address)" } else { "-n 1 -w $TimeoutMs -S $($network.Address) $($target.Address)" }
+                $info.UseShellExecute = $false
+                $info.RedirectStandardOutput = $true
+                $info.RedirectStandardError = $true
+                $info.CreateNoWindow = $true
+                $process = try { [System.Diagnostics.Process]::Start($info) } catch { $null }
+                if ($process) {
+                    @{ Id = $target.Id; Process = $process; Output = $process.StandardOutput.ReadToEndAsync(); Via = $network.Name }
+                    continue
+                }
+            }
+            $ping = New-Object System.Net.NetworkInformation.Ping
+            @{ Id = $target.Id; Ping = $ping; Task = $ping.SendPingAsync($target.Address, $TimeoutMs); Via = $null }
+        })
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMs + 2000)
+    $results = @{}
+    foreach ($run in $runs) {
+        $left = [Math]::Max(0, [int]($deadline - (Get-Date)).TotalMilliseconds)
+        $up = $false
+        $rtt = $null
+        if ($run.Process) {
+            if ($run.Process.WaitForExit($left)) {
+                $text = try { $run.Output.Result } catch { '' }
+                # Windows answers 0 also for "destination unreachable": only a reply carries TTL=.
+                $up = $run.Process.ExitCode -eq 0 -and ($OnLinux -or $text -match 'TTL=')
+                if ($up -and $text -match '[=<]\s*([0-9]+(?:[.,][0-9]+)?)\s*ms') { $rtt = [double]($Matches[1].Replace(',', '.')) }
+            } else {
+                try { $run.Process.Kill() } catch { }
+            }
+            $run.Process.Dispose()
+        } else {
+            try { [void]$run.Task.Wait($left) } catch { }
+            $reply = if ($run.Task.Status -eq 'RanToCompletion') { $run.Task.Result } else { $null }
+            $up = $reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
+            if ($up) { $rtt = [double]$reply.RoundtripTime }
+            $run.Ping.Dispose()
+        }
+        $results[$run.Id] = @{ Up = [bool]$up; Rtt = $rtt; Via = $run.Via }
+    }
+    return $results
+}
+
 function Send-PingResults {
     # Pings the ping-only devices (all at once, 1 s timeout) and reports which answered: the
     # answer is their online status in the portal.
@@ -2578,17 +2639,11 @@ function Send-PingResults {
     if (-not $script:PingTargets -or $script:PingTargets.Count -eq 0) {
         return
     }
-    $pings = @($script:PingTargets | ForEach-Object {
-            $ping = New-Object System.Net.NetworkInformation.Ping
-            @{ Id = $_.Id; Ping = $ping; Task = $ping.SendPingAsync($_.Address, 1000) }
-        })
-    try { [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($pings | ForEach-Object { $_.Task }), 3000) } catch { }
+    $pings = Invoke-Pings -Targets $script:PingTargets -TimeoutMs 1000
     $at = Get-UnixTime
-    $results = @($pings | ForEach-Object {
-            $reply = if ($_.Task.Status -eq 'RanToCompletion') { $_.Task.Result } else { $null }
-            $up = $reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
-            $_.Ping.Dispose()
-            @{ id = $_.Id; up = [bool]$up; rtt = $(if ($up) { [double]$reply.RoundtripTime } else { $null }); at = $at }
+    $results = @($script:PingTargets | ForEach-Object {
+            $reply = $pings[$_.Id]
+            @{ id = $_.Id; up = [bool]$reply.Up; rtt = $(if ($reply.Up) { $reply.Rtt } else { $null }); at = $at }
         })
     try {
         $response = Invoke-MdmApi -Method Post -Path 'device/pings' -Token $Token -Body @{ results = $results }
@@ -2791,29 +2846,64 @@ function Test-WakeParams {
     return @{ Macs = $macs; Broadcasts = $broadcasts }
 }
 
+function Get-LocalNetworks {
+    # The IPv4 addresses of the interfaces that are up, with their network: name, address, mask and
+    # broadcast (bytes), so a packet can leave on the interface of its network.
+    $networks = @()
+    try {
+        foreach ($interface in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+            if ($interface.OperationalStatus -ne 'Up') { continue }
+            foreach ($unicast in $interface.GetIPProperties().UnicastAddresses) {
+                $address = $unicast.Address
+                if ($address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or -not $unicast.IPv4Mask -or [System.Net.IPAddress]::IsLoopback($address)) { continue }
+                $ip = $address.GetAddressBytes()
+                $mask = $unicast.IPv4Mask.GetAddressBytes()
+                $networks += @{
+                    Name      = $interface.Name
+                    Address   = $address
+                    Mask      = $mask
+                    Network   = [byte[]](0..3 | ForEach-Object { $ip[$_] -band $mask[$_] })
+                    Broadcast = [System.Net.IPAddress]::new([byte[]](0..3 | ForEach-Object { ($ip[$_] -band $mask[$_]) -bor (255 -bxor $mask[$_]) }))
+                }
+            }
+        }
+    }
+    catch {
+        Write-AgentLog "Network interfaces not read ($($_.Exception.Message)), using the default route"
+    }
+    return $networks
+}
+
+function Find-LocalNetwork {
+    # The local interface whose network contains the address (the longest prefix), or $null.
+    param ($Networks, [System.Net.IPAddress]$Address)
+
+    $bytes = $Address.GetAddressBytes()
+    $best = $null
+    $bestBits = -1
+    foreach ($network in $Networks) {
+        $inside = $true
+        foreach ($i in 0..3) {
+            if (($bytes[$i] -band $network.Mask[$i]) -ne $network.Network[$i]) { $inside = $false; break }
+        }
+        if (-not $inside) { continue }
+        $bits = 0
+        foreach ($b in $network.Mask) { $bits += [Convert]::ToString($b, 2).Replace('0', '').Length }
+        if ($bits -gt $bestBits) { $best = $network; $bestBits = $bits }
+    }
+    return $best
+}
+
 function Get-WakeInterfaces {
     # The local interfaces in the networks of the broadcast addresses (network broadcast => name and
     # address), so each packet leaves on the interface of its network, not the default route's.
     param ([System.Net.IPAddress[]]$Broadcasts)
 
     $found = @{}
-    try {
-        foreach ($interface in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
-            if ($interface.OperationalStatus -ne 'Up') { continue }
-            foreach ($unicast in $interface.GetIPProperties().UnicastAddresses) {
-                $address = $unicast.Address
-                if ($address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or -not $unicast.IPv4Mask) { continue }
-                $ip = $address.GetAddressBytes()
-                $mask = $unicast.IPv4Mask.GetAddressBytes()
-                $broadcast = [System.Net.IPAddress]::new([byte[]](0..3 | ForEach-Object { ($ip[$_] -band $mask[$_]) -bor (255 -bxor $mask[$_]) }))
-                if ($Broadcasts -contains $broadcast -and -not $found.ContainsKey("$broadcast")) {
-                    $found["$broadcast"] = @{ Name = $interface.Name; Address = $address }
-                }
-            }
+    foreach ($network in Get-LocalNetworks) {
+        if ($Broadcasts -contains $network.Broadcast -and -not $found.ContainsKey("$($network.Broadcast)")) {
+            $found["$($network.Broadcast)"] = @{ Name = $network.Name; Address = $network.Address }
         }
-    }
-    catch {
-        Write-AgentLog "Wake-on-LAN: interfaces not read ($($_.Exception.Message)), sending through the default route"
     }
     return $found
 }
@@ -3544,20 +3634,15 @@ function Invoke-DeviceCommand {
                 [void](Send-CommandStatus -Id $Id -Status failed -Message 'It is not one of the devices this agent pings')
                 return
             }
-            $ping = New-Object System.Net.NetworkInformation.Ping
-            try {
-                $reply = try { $ping.Send($target.Address, 2000) } catch { $null }
-            }
-            finally {
-                $ping.Dispose()
-            }
-            $up = $reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
-            $result = @{ id = $target.Id; up = [bool]$up; rtt = $(if ($up) { [double]$reply.RoundtripTime } else { $null }); at = Get-UnixTime }
+            $reply = (Invoke-Pings -Targets @($target) -TimeoutMs 2000)[$target.Id]
+            $up = [bool]$reply.Up
+            $via = if ($reply.Via) { " via $($reply.Via)" } else { '' }
+            $result = @{ id = $target.Id; up = $up; rtt = $(if ($up) { $reply.Rtt } else { $null }); at = Get-UnixTime }
             try { Invoke-MdmApi -Method Post -Path 'device/pings' -Token $script:AgentToken -Body @{ results = @($result) } | Out-Null } catch { Write-AgentLog "Ping result not sent: $($_.Exception.Message)" -ErrorRecord $_ }
             if ($up) {
-                [void](Send-CommandStatus -Id $Id -Status succeeded -Message "$($target.Address) answered in $($reply.RoundtripTime) ms")
+                [void](Send-CommandStatus -Id $Id -Status succeeded -Message "$($target.Address) answered in $($reply.Rtt) ms$via")
             } else {
-                [void](Send-CommandStatus -Id $Id -Status failed -Message "$($target.Address) did not answer within 2 s")
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "$($target.Address) did not answer within 2 s$via")
             }
         }
         'turnOff' {
