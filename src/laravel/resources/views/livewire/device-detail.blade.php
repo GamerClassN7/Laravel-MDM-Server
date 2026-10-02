@@ -376,18 +376,15 @@
                                 </div>
                             </li>
                         @endif
-                        @foreach ($selectedDevice->networks as $network)
+                        @foreach (\App\Models\Device::sortNetworks($selectedDevice->networks) as $network)
                             @php $type = \App\Models\Device::NETWORK_TYPES[$network['Type']]; @endphp
                             <li class="list-group-item d-flex align-items-start gap-3 {{ $network['Connected'] ? '' : 'text-body-secondary' }}" wire:key="network-{{ $loop->index }}">
                                 <span class="icon-tile {{ $network['Connected'] ? 'bg-primary-subtle text-primary-emphasis' : '' }}" title="{{ __($type['label']) }}"><i class="{{ $type['icon'] }}"></i></span>
                                 <div class="flex-grow-1 min-w-0">
-                                    {{-- Name, type and state in one line that wraps; the state on the right when there is room. --}}
+                                    {{-- Name and type in one line that wraps; the state is on the right of the row. --}}
                                     <div class="d-flex flex-wrap align-items-center column-gap-2 row-gap-1">
                                         <span class="fw-semibold text-break">{{ $network['Name'] }}</span>
                                         <x-badge color="secondary" size="sm" variant="subtle">{{ __($type['label']) }}</x-badge>
-                                        <span class="ms-sm-auto small text-nowrap {{ $network['Connected'] ? 'text-success' : 'text-body-secondary' }}" title="{{ $network['Status'] }}">
-                                            <i class="fas {{ $network['Connected'] ? 'fa-check-circle' : 'fa-times-circle' }} me-1"></i>{{ $network['Connected'] ? __('Connected') : __('Disconnected') }}
-                                        </span>
                                     </div>
                                     @if ($network['Description'] && $network['Description'] !== $network['Name'])
                                         <div class="small text-muted text-break">{{ $network['Description'] }}</div>
@@ -404,6 +401,10 @@
                                         <div class="small text-body-tertiary font-monospace" title="{{ __('MAC address') }}">{{ $network['Mac'] }}</div>
                                     @endif
                                 </div>
+                                {{-- On phones only the icon (its text in the tooltip). --}}
+                                <span class="flex-shrink-0 small text-nowrap {{ $network['Connected'] ? 'text-success' : 'text-body-secondary' }}" title="{{ $network['Connected'] ? __('Connected') : __('Disconnected') }}{{ $network['Status'] ? ' · ' . $network['Status'] : '' }}">
+                                    <i class="fas {{ $network['Connected'] ? 'fa-check-circle' : 'fa-times-circle' }}"></i><span class="d-none d-sm-inline ms-1">{{ $network['Connected'] ? __('Connected') : __('Disconnected') }}</span>
+                                </span>
                             </li>
                         @endforeach
                     </ul>

@@ -853,6 +853,20 @@ class FleetFeaturesTest extends TestCase
         $this->assertSame(['58:11:22:A1:59:F0'], $device->wakeMacs);
     }
 
+    public function test_networks_are_listed_public_physical_virtual_online_first(): void
+    {
+        $net = fn ($name, $type, $connected, $ip = '10.0.0.1') => ['Name' => $name, 'Type' => $type, 'Connected' => $connected, 'IPAddresses' => [$ip]];
+        $sorted = Device::sortNetworks([
+            $net('docker-off', 'docker', false),
+            $net('wifi-off', 'wifi', false),
+            $net('vpn-on', 'vpn', true),
+            $net('lan-on', 'lan', true),
+            $net('wan', 'lan', true, '31.30.4.122'),
+            $net('lan2-on', 'lan', true),
+        ]);
+        $this->assertSame(['wan', 'lan-on', 'lan2-on', 'vpn-on', 'wifi-off', 'docker-off'], array_column($sorted, 'Name'));
+    }
+
     public function test_a_winget_update_carries_its_source(): void
     {
         $device = $this->device('pc', ['Platform' => 'windows'], version: '1.12.3');

@@ -1325,6 +1325,26 @@ class Device extends Model
             ->latest('id')->first();
     }
 
+    /** Interface types of the hardware; the others (Docker, VPN, bridges, virtual) are virtual. */
+    public const PHYSICAL_NETWORK_TYPES = ['lan', 'wifi', 'cellular', 'bluetooth'];
+
+    /**
+     * The interfaces as the Networks tab lists them: the ones with a public address, then the
+     * physical connected ones, virtual connected, physical disconnected, virtual disconnected; in
+     * the reported order within each.
+     */
+    public static function sortNetworks(array $networks): array
+    {
+        $rank = fn (array $network) => match (true) {
+            collect($network['IPAddresses'] ?? [])->contains(fn ($address) => self::isPublicIp($address)) => 0,
+            default => 1 + ($network['Connected'] ? 0 : 2) + (in_array($network['Type'] ?? null, self::PHYSICAL_NETWORK_TYPES, true) ? 0 : 1),
+        };
+        $ranked = array_map(fn ($network, $index) => [$rank($network), $index, $network], $networks, array_keys($networks));
+        usort($ranked, fn ($a, $b) => [$a[0], $a[1]] <=> [$b[0], $b[1]]);
+
+        return array_column($ranked, 2);
+    }
+
     /** The interface type from its name and description (agents before 1.8.0 do not report it). */
     public static function guessNetworkType(string $name, string $description = ''): string
     {
