@@ -129,7 +129,7 @@ class ShowDevices extends Component
     private function selectFirstDevice(): void
     {
         if (! $this->devices->contains('id', (int) $this->selectedDeviceId)) {
-            $this->selectedDeviceId = $this->devices->sortBy(fn (Device $device) => mb_strtolower($device->displayName))->first()?->id;
+            $this->selectedDeviceId = $this->devices->sortBy(fn (Device $device) => self::listOrder($device))->first()?->id;
         }
     }
 
@@ -170,6 +170,12 @@ class ShowDevices extends Component
     #[On('devices-changed')]
     public function devicesChanged(): void {}
 
+    /** Devices with the agent first, then the ping-only ones, each by name. */
+    private static function listOrder(Device $device): string
+    {
+        return ($device->isPingOnly ? '1' : '0').mb_strtolower($device->displayName);
+    }
+
     public function render()
     {
         $selectedDevice = $this->selectedDeviceId ? Device::find($this->selectedDeviceId) : null;
@@ -186,7 +192,7 @@ class ShowDevices extends Component
             ->whereIn('alert_rule_id', AlertRule::query()->where('user_id', auth()->id())->select('id'))
             ->get()->groupBy('device_id');
 
-        $rows = $this->devices->sortBy(fn (Device $device) => mb_strtolower($device->displayName))->map(fn (Device $device) => $this->row($device, $firing))->values();
+        $rows = $this->devices->sortBy(fn (Device $device) => self::listOrder($device))->map(fn (Device $device) => $this->row($device, $firing))->values();
         $search = mb_strtolower(trim($this->search));
 
         return view('livewire.show-devices', $view + [

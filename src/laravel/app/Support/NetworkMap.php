@@ -355,6 +355,7 @@ class NetworkMap
         // Off for the whole portal: that is the reason, whatever the agents allow.
         $refusal ??= NetworkNeighbour::enabled() ? null : __('Network discovery is turned off in the portal');
         $agent = null;
+        $quiet = false;
         if ($refusal === null) {
             // Why each agent of the network cannot scan (too old, not allowed, offline): the first
             // that can scans, otherwise their reasons are shown.
@@ -375,6 +376,8 @@ class NetworkMap
                 };
                 $reasons[$short][] = $device->displayName;
             }
+            // Only offline agents: the card already says nothing here is online.
+            $quiet = $agent === null && array_keys($reasons) === [__('offline')];
             if ($agent === null) {
                 $refusal = $reasons === [] ? __('No agent in this network')
                     : collect($reasons)->map(fn ($names, $reason) => implode(', ', array_slice($names, 0, 4)).(count($names) > 4 ? ' …' : '').': '.$reason)->implode(' · ');
@@ -384,7 +387,7 @@ class NetworkMap
             ->where(fn ($query) => $query->where('created_at', '>=', now()->subMinutes(10))->orWhereIn('status', DeviceCommand::ACTIVE))
             ->latest('id')->first();
 
-        return ['agent' => $agent?->id, 'name' => $agent?->displayName, 'refusal' => $refusal, 'command' => $command ? [
+        return ['agent' => $agent?->id, 'name' => $agent?->displayName, 'refusal' => $refusal, 'quiet' => $quiet ?? false, 'command' => $command ? [
             'id' => $command->id, 'status' => $command->status, 'progress' => $command->progress, 'message' => $command->message,
             'active' => in_array($command->status, DeviceCommand::ACTIVE, true), 'by' => $byId[$command->device_id]->displayName ?? null,
         ] : null];

@@ -117,6 +117,19 @@
                                         @if ($network['site'] && $network['site'] !== '?')
                                             <x-badge color="success" size="sm" variant="subtle">{{ $network['site'] }}</x-badge>
                                         @endif
+                                        {{-- In the title row: the rest of the card has its whole width. --}}
+                                        @if ($scan)
+                                            <button class="btn btn-sm btn-outline-primary text-nowrap flex-shrink-0 ms-auto nm-scan-btn" type="button" wire:click="scan(@js($network['id']))" aria-label="{{ __('Scan') }}" wire:loading.attr="disabled"
+                                                @disabled(! $scan['agent'] || $command?->active)
+                                                title="{{ $scan['agent'] ? __('Ping every address of the network from :agent and take what answers', ['agent' => $scan['name']]) : $scan['refusal'] }}">
+                                                @if ($command?->active)
+                                                    <span aria-hidden="true" class="spinner-border spinner-border-sm me-sm-1"></span>
+                                                @else
+                                                    <i class="fas fa-search-location me-sm-1"></i>
+                                                @endif
+                                                <span class="d-none d-sm-inline">{{ __('Scan') }}</span>
+                                            </button>
+                                        @endif
                                     </div>
                                     <div class="small text-muted">
                                         {{ trans_choice(':count device|:count devices', count($network['devices'])) }} · {{ __(':count online', ['count' => $network['online']]) }}
@@ -131,7 +144,7 @@
                                                 @include('partials.device.command-progress', ['command' => $command, 'compact' => true, 'note' => $command->displayMessage ?: __('Scanning through :agent', ['agent' => $scan['command']['by']])])
                                             @elseif ($command)
                                                 <span class="{{ $command->status === 'succeeded' ? 'text-body-secondary' : 'text-danger' }}"><i class="fas fa-search-location me-1"></i>{{ $command->displayMessage ?: $command->statusLabel }} · {{ $command->updated_at->diffForHumans() }}</span>
-                                            @elseif (! $scan['agent'])
+                                            @elseif (! $scan['agent'] && ! $scan['quiet'])
                                                 <span class="text-body-secondary"><i class="fas fa-search-location me-1"></i>{{ $scan['refusal'] }}</span>
                                             @endif
                                             @error('scan.'.$network['anchor']) <div class="text-danger">{{ $message }}</div> @enderror
@@ -143,7 +156,7 @@
                                             @if ($network['relays'])
                                                 {{ __('Can ping and wake: :agents', ['agents' => implode(', ', array_slice($network['relays'], 0, 3))]) }}
                                             @else
-                                                <span class="text-warning-emphasis">{{ __('No online agent: nothing here can be pinged or woken') }}</span>
+                                                <span class="text-warning-emphasis">{{ __('No online agent: no ping or wake here') }}</span>
                                             @endif
                                         </div>
                                     @endif
@@ -178,20 +191,7 @@
                                             @endforeach
                                         </ul>
                                     @endif
-
                                 </div>
-                                @if ($scan)
-                                    <button class="btn btn-sm btn-outline-primary text-nowrap flex-shrink-0 nm-scan-btn" type="button" wire:click="scan(@js($network['id']))" aria-label="{{ __('Scan') }}" wire:loading.attr="disabled"
-                                        @disabled(! $scan['agent'] || $command?->active)
-                                        title="{{ $scan['agent'] ? __('Ping every address of the network from :agent and take what answers', ['agent' => $scan['name']]) : $scan['refusal'] }}">
-                                        @if ($command?->active)
-                                            <span aria-hidden="true" class="spinner-border spinner-border-sm me-sm-1"></span>
-                                        @else
-                                            <i class="fas fa-search-location me-sm-1"></i>
-                                        @endif
-                                        <span class="d-none d-sm-inline">{{ __('Scan') }}</span>
-                                    </button>
-                                @endif
                             </div>
                         </div>
                     </div>
