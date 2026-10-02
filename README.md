@@ -441,9 +441,9 @@ tags, so a newly tagged device is included without changing them.
 ### Notifications and alerts
 
 Notifications link to the device. The scheduler that sends them has no request to take the address
-from, so it uses `APP_URL` when that is set to a real address, otherwise the address the signed-in
-users open the portal with (remembered in `storage/app/portal-url`; any request's `Host` header alone
-is not taken).
+from, so it uses `APP_URL` when that is set to a real address, otherwise the address system admins
+open the portal with (remembered in `storage/app/portal-url`; not localhost, and not any request's
+`Host` header).
 
 **Notifications** in the main menu, per user and in the style of
 [Beszel](https://beszel.dev/guide/notifications/):
