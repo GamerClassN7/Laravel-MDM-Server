@@ -346,11 +346,22 @@ class NetworkMap
         $refusal = (int) explode('/', $network['cidr'])[1] < DeviceCommand::MIN_SCAN_PREFIX
             ? __('Too large to scan (at most /:prefix)', ['prefix' => DeviceCommand::MIN_SCAN_PREFIX])
             : null;
-        $agent = $refusal ? null : $agents->map(fn ($id) => $byId[$id])->first(fn (Device $device) => $device->commandRefusal('scanNetwork', ['cidr' => $network['cidr']]) === null);
-        if ($refusal === null && $agent === null) {
-            $refusal = $agents->contains(fn ($id) => $byId[$id]->networkDiscovery === 'scan')
-                ? __('The agents that allow scans here are offline')
-                : __('No agent here allows scans (network_discovery "scan" in its config.json)');
+        $agent = null;
+        if ($refusal === null) {
+            // Why each agent of the network cannot scan (too old, not allowed, offline): the first
+            // that can scans, otherwise their reasons are shown.
+            $reasons = [];
+            foreach ($agents as $id) {
+                $reason = $byId[$id]->commandRefusal('scanNetwork', ['cidr' => $network['cidr']]);
+                if ($reason === null) {
+                    $agent = $byId[$id];
+                    break;
+                }
+                $reasons[] = $byId[$id]->displayName.': '.$reason;
+            }
+            if ($agent === null) {
+                $refusal = $reasons === [] ? __('No agent in this network') : implode(' · ', array_slice($reasons, 0, 3));
+            }
         }
         $command = DeviceCommand::query()->where('command', 'scanNetwork')->where('target', 'scan:'.$network['cidr'])->whereIn('device_id', $agents->all())
             ->where(fn ($query) => $query->where('created_at', '>=', now()->subMinutes(10))->orWhereIn('status', DeviceCommand::ACTIVE))

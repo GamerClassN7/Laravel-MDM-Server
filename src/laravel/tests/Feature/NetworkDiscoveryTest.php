@@ -221,4 +221,18 @@ class NetworkDiscoveryTest extends TestCase
         $this->assertTrue(\App\Support\PowerShellCheck::exits($script->detection, 1));
         $this->assertStringContainsString("network_discovery -NotePropertyValue 'scan'", $script->remediation);
     }
+
+    public function test_the_network_card_says_why_each_agent_cannot_scan(): void
+    {
+        config(['mdm.public_address' => '31.30.4.122']);
+        $this->agent('neighbours');
+        $old = $this->agent('scan', 'old-token', '1.15.0');
+        $old->forceFill(['name' => 'old-pc'])->save();
+
+        $refusal = collect(NetworkMap::build()['networks'])->firstWhere('id', 'net:31.30.4.122|192.168.1.0/24')['scan']['refusal'];
+
+        // The level as of the last report (a remediation shows with the next one), and the old agent.
+        $this->assertStringContainsString('nas: network_discovery is "neighbours"', $refusal);
+        $this->assertStringContainsString('old-pc: Needs agent 1.16.0 or newer', $refusal);
+    }
 }

@@ -429,7 +429,10 @@ class Device extends Model
             $command === 'wake' && version_compare((string) $this->agent_version, self::WAKE_VERSION, '<') => __('The agent is too old for this command'),
             $command === 'pingNow' && version_compare((string) $this->agent_version, self::PING_NOW_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::PING_NOW_VERSION]),
             $command === 'scanNetwork' && version_compare((string) $this->agent_version, self::NETWORK_DISCOVERY_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::NETWORK_DISCOVERY_VERSION]),
-            $command === 'scanNetwork' && $this->networkDiscovery !== 'scan' => __('Scans are not allowed on the device (network_discovery in its config.json)'),
+            // As of its last report: a change in config.json shows with the next one.
+            $command === 'scanNetwork' && $this->networkDiscovery !== 'scan' => __('network_discovery is ":level" in its config.json (as of its last report :time), scans need "scan"', [
+                'level' => $this->networkDiscovery ?? 'neighbours', 'time' => $this->updated_at?->diffForHumans() ?? '-',
+            ]),
             $command === 'scanNetwork' && ! NetworkNeighbour::enabled() => __('Network discovery is turned off in the portal'),
             $command === 'sync' && version_compare((string) $this->agent_version, self::SYNC_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::SYNC_VERSION]),
             $command === 'installUpdate' && ($params['kind'] ?? null) === 'pwsh' && version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') => __('The agent is too old for this command'),
