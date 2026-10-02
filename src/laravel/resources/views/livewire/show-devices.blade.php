@@ -113,6 +113,9 @@
                                         <span class="d-block text-truncate fw-medium"><i class="{{ $item->typeIcon }} fa-fw me-1 opacity-75"></i>{{ $item->displayName }}</span>
                                         @if ($item->tagList !== [])
                                             <x-tags class="mt-1" :tags="$item->tagList" />
+                                        @elseif ($subtitle = $item->isPingOnly ? $item->ping_address : $item->os)
+                                            {{-- No tags: the system (the address of a ping-only device) in their place. --}}
+                                            <span class="d-block small text-truncate opacity-75 mt-1" style="line-height: 1.375rem">{{ $subtitle }}</span>
                                         @else
                                             {{-- Same height as a row with tags. --}}
                                             <span aria-hidden="true" class="mdm-tags mt-1 invisible"><x-tag tag="-" /></span>

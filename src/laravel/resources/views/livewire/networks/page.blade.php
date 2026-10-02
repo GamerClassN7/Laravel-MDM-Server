@@ -114,8 +114,12 @@
                                                 <li class="d-flex align-items-center gap-2 py-1 border-top" wire:key="neighbour-{{ $neighbour['id'] }}">
                                                     <span class="nm-dot {{ $neighbour['fresh'] ? 'is-up' : 'is-offline' }}" title="{{ $neighbour['fresh'] ? __('seen now') : __('not seen for a while') }}"></span>
                                                     <div class="min-w-0 flex-grow-1" title="{{ $neighbour['title'] }}">
-                                                        <div class="text-truncate"><span class="fw-medium">{{ $neighbour['ip'] }}</span>@if ($neighbour['hostname']) <span class="text-body-secondary">· {{ $neighbour['hostname'] }}</span>@endif</div>
-                                                        <div class="text-body-secondary font-monospace" style="font-size: .75rem">{{ $neighbour['mac'] }}@if ($neighbour['random']) <span class="ms-1 font-sans-serif" title="{{ __('A private address the device made up for this network: it may change.') }}">· {{ __('random MAC') }}</span>@endif</div>
+                                                        {{-- Its name (or address) first, as on the map; the address and MAC under it. --}}
+                                                        <div class="text-truncate fw-medium">{{ $neighbour['hostname'] ?: $neighbour['ip'] }}</div>
+                                                        <div class="text-body-secondary text-truncate" style="font-size: .75rem">
+                                                            @if ($neighbour['hostname'])<span>{{ $neighbour['ip'] }}</span> · @endif<span class="font-monospace">{{ $neighbour['mac'] }}</span>
+                                                            @if ($neighbour['random']) · <span title="{{ __('A private address the device made up for this network: it may change.') }}">{{ __('random MAC') }}</span>@endif
+                                                        </div>
                                                     </div>
                                                     <button class="btn btn-sm btn-outline-primary text-nowrap" type="button" wire:click="add({{ $neighbour['id'] }})" title="{{ __('Add as a ping-only device (it follows its MAC address to a new IP)') }}"><i class="fas fa-plus"></i><span class="d-none d-sm-inline ms-1">{{ __('Add') }}</span></button>
                                                     <button class="btn btn-sm btn-outline-secondary" type="button" wire:click="ignore({{ $neighbour['id'] }})" title="{{ __('Ignore') }}"><i class="fas fa-eye-slash"></i></button>
@@ -139,7 +143,7 @@
                                                         title="{{ $scan['agent'] ? __('Ping every address of the network from :agent and take what answers', ['agent' => $scan['name']]) : $scan['refusal'] }}">
                                                         <i class="fas fa-satellite-dish me-1"></i>{{ __('Scan') }}
                                                     </button>
-                                                    <span class="small text-body-secondary text-truncate">
+                                                    <span class="small text-body-secondary min-w-0">
                                                         @if ($command)
                                                             <span class="{{ $command->status === 'succeeded' ? '' : 'text-danger' }}">{{ $command->displayMessage ?: $command->statusLabel }}</span> · {{ $command->updated_at->diffForHumans() }}
                                                         @elseif ($scan['agent'])

@@ -25,9 +25,6 @@
     <link href="{{ asset('/favicon.svg') }}" rel="icon" type="image/svg+xml">
 
     <!-- Fonts -->
-    <link href="https://fonts.googleapis.com" rel="preconnect">
-    <link crossorigin href="https://fonts.gstatic.com" rel="preconnect">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
 
     <!-- Scripts -->

@@ -157,9 +157,16 @@
                                         <tr wire:key="alert-rule-{{ $rule->id }}" class="{{ $rule->enabled ? '' : 'opacity-50' }}">
                                             <td class="ps-3 text-nowrap fw-medium"><i class="{{ $rule->icon }} fa-fw text-body-secondary me-2"></i>{{ $rule->label }}</td>
                                             <td class="small">{{ $rule->condition }}</td>
-                                            <td class="d-none d-md-table-cell small"><x-target-summary :target="$rule->target ?? []" /></td>
+                                            <td class="d-none d-md-table-cell small">
+                                                @if (\App\Models\AlertRule::isEvent($rule->type))
+                                                    {{-- Event rules have no target: they are about the whole fleet. --}}
+                                                    <span class="text-body-secondary"><i class="fas fa-globe me-1"></i>{{ __('Whole fleet') }}</span>
+                                                @else
+                                                    <x-target-summary :target="$rule->target ?? []" />
+                                                @endif
+                                            </td>
                                             <td class="d-none d-lg-table-cell small text-muted">
-                                                {{ $rule->channels === null ? __('All channels') : collect($rule->channels)->map(fn ($channel) => $channel === 'email' ? __('E-mail') : \App\Support\Notifier::serviceName($channel))->implode(', ') }}
+                                                {{ $rule->channels === null ? __('All channels') : ($rule->channels === [] ? __('None') : collect($rule->channels)->map(fn ($channel) => $channel === 'email' ? __('E-mail') : \App\Support\Notifier::serviceName($channel))->implode(', ')) }}
                                             </td>
                                             <td>
                                                 <div class="form-check form-switch m-0">
