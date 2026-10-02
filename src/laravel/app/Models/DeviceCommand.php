@@ -46,7 +46,9 @@ class DeviceCommand extends Model
         'updateAgent' => 1800,
         'runScripts' => 600,
         'sync' => 1800,
-        'wake' => 300,
+        // Agents 1.13.2+ keep a wake running until the woken device reports (completeWakes):
+        // booting and starting the agent takes a while.
+        'wake' => 600,
         'pingNow' => 120,
     ];
 
@@ -193,25 +195,70 @@ class DeviceCommand extends Model
         return implode(':', [$params['kind'], $params['edition'] ?? '', $params['id'], $params['user'] ?? '']);
     }
 
-    /** Active commands without news for longer than their timeout are given up. */
+    /**
+     * Active commands without news for longer than their timeout are given up. The open pages of
+     * their devices (and of the device a wake was for) are told.
+     */
     public static function expireStale(?int $deviceId = null): int
     {
         $expired = 0;
         foreach (self::TIMEOUTS as $command => $timeout) {
-            $query = self::query()->where('command', $command)
+            $stale = self::query()->where('command', $command)
                 ->when($deviceId, fn ($query) => $query->where('device_id', $deviceId))
                 ->where(fn ($query) => $query
                     ->where(fn ($query) => $query->where('status', 'queued')->where('updated_at', '<', now()->subSeconds(self::QUEUE_TTL)))
-                    ->orWhere(fn ($query) => $query->whereIn('status', ['sent', 'running'])->where('updated_at', '<', now()->subSeconds($timeout))));
-            $expired += $query->toBase()->update([
-                'status' => 'expired',
-                'message' => __('No result from the device'),
-                'finished_at' => now(),
-                'updated_at' => now(),
-            ]);
+                    ->orWhere(fn ($query) => $query->whereIn('status', ['sent', 'running'])->where('updated_at', '<', now()->subSeconds($timeout))))
+                ->get(['id', 'device_id', 'command', 'status', 'target', 'params']);
+            foreach ($stale as $row) {
+                // A magic packet that went out: the device did not come online.
+                $message = $row->command === 'wake' && $row->status === 'running'
+                    ? __('Magic packet sent, but :device did not come online within :minutes minutes', ['device' => $row->params['title'] ?? '?', 'minutes' => intdiv($timeout, 60)])
+                    : __('No result from the device');
+                $done = self::query()->whereKey($row->id)->whereIn('status', self::ACTIVE)->toBase()->update([
+                    'status' => 'expired',
+                    'message' => $message,
+                    'finished_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                if ($done === 1) {
+                    $expired++;
+                    self::announce($row->device_id, $row->target);
+                }
+            }
         }
 
         return $expired;
+    }
+
+    /** Tells the open pages of the device and of the device a wake or ping is for. */
+    public static function announce(int $deviceId, ?string $target): void
+    {
+        \App\Support\LiveUpdates::device($deviceId, 'command');
+        if ($target !== null && preg_match('/^(device|ping):(\d+)$/', $target, $matches) && (int) $matches[2] !== $deviceId) {
+            \App\Support\LiveUpdates::device((int) $matches[2], 'command');
+        }
+    }
+
+    /** A device that was being woken reports: its wakes are done. Returns how many. */
+    public static function completeWakes(int $deviceId): int
+    {
+        $done = 0;
+        foreach (self::query()->where('command', 'wake')->where('target', 'device:'.$deviceId)->active()->get() as $wake) {
+            $updated = self::query()->whereKey($wake->id)->whereIn('status', self::ACTIVE)->toBase()->update([
+                'status' => 'succeeded',
+                'progress' => 100,
+                'message' => __('Online after :time', ['time' => $wake->created_at->diffForHumans(now(), ['syntax' => \Carbon\CarbonInterface::DIFF_ABSOLUTE, 'parts' => 2])]),
+                'started_at' => $wake->started_at ?? now(),
+                'finished_at' => now(),
+                'updated_at' => now(),
+            ]);
+            if ($updated === 1) {
+                $done++;
+                self::announce($wake->device_id, $wake->target);
+            }
+        }
+
+        return $done;
     }
 
     public function getActiveAttribute(): bool

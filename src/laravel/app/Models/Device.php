@@ -74,6 +74,7 @@ class Device extends Model
         'public_key' => 'array',
         'key_registered_at' => 'datetime',
         'tags' => 'array',
+        'agent_errors' => 'array',
     ];
 
     public const MAX_TAGS = 20;
@@ -305,6 +306,10 @@ class Device extends Model
         }
         if ($taken->isNotEmpty()) {
             \App\Support\LiveUpdates::device($id, 'command');
+            // A wake taken by the relay shows on the device it wakes too.
+            foreach ($taken->whereNotNull('target')->pluck('target')->unique() as $target) {
+                DeviceCommand::announce($id, $target);
+            }
         }
 
         return $taken;
@@ -407,7 +412,7 @@ class Device extends Model
 
         // Instant delivery over WebSocket; the command stays queued for the HTTP report as a fallback.
         rescue(fn () => \App\Events\DeviceCommandIssued::dispatch($this, $command));
-        \App\Support\LiveUpdates::device($this->id, 'command');
+        DeviceCommand::announce($this->id, $target);
 
         return $issued;
     }
@@ -1004,7 +1009,10 @@ class Device extends Model
             if ($relay->isMobile && (! $allowMobile || $this->public_ip === null || $relay->public_ip !== $this->public_ip)) {
                 continue;
             }
-            if ($this->public_ip !== null && $relay->public_ip !== null && $this->public_ip !== $relay->public_ip) {
+            // Only addresses of the same family tell: the same network can reach the server over
+            // IPv6 from one device and over IPv4 from another.
+            if ($this->public_ip !== null && $relay->public_ip !== null && $this->public_ip !== $relay->public_ip
+                && str_contains($this->public_ip, ':') === str_contains($relay->public_ip, ':')) {
                 continue;
             }
             $shared = array_intersect_key($networks, $relay->ipv4Networks(self::RELAY_INTERFACE_TYPES, true));
@@ -1123,6 +1131,7 @@ class Device extends Model
             $values = ['ping_relay_id' => $relay->id, 'ping_rtt' => $up ? $rtt : null];
             if ($up) {
                 $values['last_seen_at'] = now();
+                DeviceCommand::completeWakes($id);
             }
             static::query()->whereKey($id)->toBase()->update($values);
             PingResult::query()->create(['device_id' => $id, 'up' => $up, 'rtt' => $up ? $rtt : null, 'relay_id' => $relay->id]);
@@ -1174,6 +1183,64 @@ class Device extends Model
         }
 
         return $taken;
+    }
+
+    /** Distinct agent errors kept per device, and for how long. */
+    public const MAX_AGENT_ERRORS = 20;
+
+    public const AGENT_ERRORS_DAYS = 7;
+
+    /**
+     * Errors from the agent's log ([{message, count, first, last}], unix times): merged with the
+     * ones it sent before by message, the newest MAX_AGENT_ERRORS of the last days. Returns how
+     * many were taken.
+     */
+    public function recordAgentErrors(mixed $errors): int
+    {
+        if (! is_array($errors)) {
+            return 0;
+        }
+        $oldest = now()->subDays(self::AGENT_ERRORS_DAYS)->getTimestamp();
+        $newest = now()->addMinutes(5)->getTimestamp();
+        $kept = collect($this->agent_errors ?? [])->keyBy('message');
+        $taken = 0;
+        foreach (array_slice($errors, 0, 50) as $error) {
+            $message = is_array($error) && is_string($error['message'] ?? null) ? trim(mb_strcut($error['message'], 0, 500)) : '';
+            $last = is_array($error) && is_numeric($error['last'] ?? null) ? (int) $error['last'] : null;
+            if ($message === '' || $last === null || $last < $oldest || $last > $newest) {
+                continue;
+            }
+            $first = is_numeric($error['first'] ?? null) ? min((int) $error['first'], $last) : $last;
+            $count = is_numeric($error['count'] ?? null) ? max(1, min(100000, (int) $error['count'])) : 1;
+            $before = $kept->get($message);
+            $kept->put($message, [
+                'message' => $message,
+                'count' => ($before['count'] ?? 0) + $count,
+                'first' => min($before['first'] ?? $first, $first),
+                'last' => max($before['last'] ?? $last, $last),
+            ]);
+            $taken++;
+        }
+        $this->agent_errors = $kept->filter(fn ($error) => $error['last'] >= $oldest)
+            ->sortByDesc('last')->take(self::MAX_AGENT_ERRORS)->values()->all() ?: null;
+        static::query()->whereKey($this->id)->toBase()->update(['agent_errors' => $this->agent_errors === null ? null : json_encode($this->agent_errors)]);
+
+        return $taken;
+    }
+
+    /** The agent's errors of the last days, newest first. */
+    public function getRecentAgentErrorsAttribute(): array
+    {
+        $oldest = now()->subDays(self::AGENT_ERRORS_DAYS)->getTimestamp();
+
+        return array_values(array_filter($this->agent_errors ?? [], fn ($error) => ($error['last'] ?? 0) >= $oldest));
+    }
+
+    /** Forgets the agent's errors (the alert's Clear). */
+    public function clearAgentErrors(): void
+    {
+        $this->agent_errors = null;
+        static::query()->whereKey($this->id)->toBase()->update(['agent_errors' => null]);
     }
 
     /** Checks and cleans the settings of a ping-only device; null when they are not valid. */

@@ -443,6 +443,86 @@ class FleetFeaturesTest extends TestCase
         $this->assertSame(0, $elsewhere->commands()->count() + $old->commands()->count());
     }
 
+    public function test_wake_runs_until_the_device_reports_and_fails_as_an_alert_of_the_device(): void
+    {
+        $sleeping = $this->device('sleep', ['Networks' => [$this->network('192.168.1.20')]], online: false);
+        $relay = $this->device('relay', ['Networks' => [$this->network('192.168.1.5', 24, 'AA-BB-CC-DD-EE-02')]], version: '1.13.2');
+        // The same network reaching the server over IPv6 from one and over IPv4 from the other.
+        Device::query()->whereKey($sleeping->id)->update(['public_ip' => '2001:db8::20']);
+        Device::query()->whereKey($relay->id)->update(['public_ip' => '1.1.1.1']);
+        $this->assertNull($sleeping->fresh()->wakeRefusal());
+
+        $this->actingAs(User::factory()->create());
+        $command = $sleeping->fresh()->wake();
+        $this->signedJson('POST', '/api/device/commands/take', [], 'relay')->assertJsonPath('tasks.0.command', 'wake');
+        // Agents 1.13.2+: running once the packet is out; a progress bar on the woken device.
+        $this->signedJson('POST', "/api/device/commands/{$command->id}", ['status' => 'running', 'progress' => 50, 'message' => 'Magic packet sent to AA:BB:CC:DD:EE:01, waiting for the device to come online'], 'relay')->assertOk();
+        $this->actingAs(User::factory()->create());
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $sleeping->id])
+            ->assertSee('waiting for the device to come online')
+            ->assertSeeHtml('progress-bar');
+
+        // The device reports: done.
+        $this->signedJson('POST', '/api/device/heartbeat', [], 'sleep')->assertNoContent();
+        $this->assertSame('succeeded', $command->fresh()->status);
+        $this->assertStringStartsWith('Online after', $command->fresh()->message);
+
+        // Another time it does not come online: an alert of the device, not of the relay.
+        Device::query()->whereKey($sleeping->id)->update(['last_seen_at' => now()->subHour()]);
+        $again = $sleeping->fresh()->wake();
+        $this->signedJson('POST', '/api/device/commands/take', [], 'relay');
+        $this->signedJson('POST', "/api/device/commands/{$again->id}", ['status' => 'running', 'progress' => 50], 'relay')->assertOk();
+        $this->travel(11)->minutes();
+        Device::recordHeartbeat($relay->id, channel: 'http');
+        DeviceCommand::expireStale();
+        $this->assertSame('expired', $again->fresh()->status);
+        $this->assertStringContainsString('did not come online within 10 minutes', $again->fresh()->message);
+
+        $alerts = collect(\App\Support\SmartAlerts::for($sleeping->fresh()));
+        $wake = $alerts->firstWhere('key', 'wake');
+        $this->assertSame('danger', $wake['severity']);
+        $this->assertSame('wake', $wake['action']['command']);
+        $this->assertNull($wake['refusal']);
+        $this->assertNull(collect(\App\Support\SmartAlerts::for($relay->fresh()))->first(fn ($alert) => str_starts_with($alert['key'], 'failed:')));
+
+        // Try again from the alert: a new wake through the relay.
+        $this->actingAs(User::factory()->create());
+        Livewire::test(\App\Livewire\DeviceAlerts::class, ['selectedDeviceId' => $sleeping->id])->call('runAlert', 'wake')->assertHasNoErrors();
+        $this->assertSame(1, $relay->commands()->where('command', 'wake')->active()->count());
+    }
+
+    public function test_errors_from_the_agent_log_are_an_alert_of_the_device(): void
+    {
+        Carbon::setTestNow('2026-10-02 12:00:00');
+        $device = $this->device('a', version: '1.13.2');
+        $errors = [
+            ['message' => 'Inventory collection failed: access denied', 'count' => 3, 'first' => now()->subHour()->getTimestamp(), 'last' => now()->subMinutes(5)->getTimestamp()],
+            ['message' => 'Report failed: HTTP 500', 'count' => 1, 'first' => now()->subMinutes(2)->getTimestamp(), 'last' => now()->subMinutes(2)->getTimestamp()],
+            ['message' => 'Too old', 'count' => 1, 'last' => now()->subDays(8)->getTimestamp()],
+            ['message' => '', 'last' => now()->getTimestamp()],
+        ];
+        $this->signedJson('POST', '/api/device/errors', ['errors' => $errors], 'a')->assertJson(['taken' => 2]);
+        // The same error again is counted, not listed twice.
+        $this->signedJson('POST', '/api/device/errors', ['errors' => [$errors[1]]], 'a')->assertJson(['taken' => 1]);
+
+        $device->refresh();
+        $this->assertSame(['Report failed: HTTP 500', 'Inventory collection failed: access denied'], array_column($device->recentAgentErrors, 'message'));
+        $this->assertSame(2, $device->recentAgentErrors[0]['count']);
+
+        $alert = collect(\App\Support\SmartAlerts::for($device))->firstWhere('key', 'agent_errors');
+        $this->assertSame('The agent reported 2 errors', $alert['title']);
+        $this->assertStringStartsWith('Report failed: HTTP 500 · 2 times', $alert['message']);
+        $this->assertCount(1, $alert['details']);
+
+        $this->actingAs(User::factory()->create());
+        Livewire::test(\App\Livewire\DeviceAlerts::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('The agent reported 2 errors')
+            ->call('runAlert', 'agent_errors')
+            ->assertDontSee('The agent reported');
+        $this->assertNull($device->fresh()->agent_errors);
+        Carbon::setTestNow();
+    }
+
     public function test_ping_only_device_is_pinged_by_a_stationary_agent_in_its_network(): void
     {
         $user = User::factory()->create();

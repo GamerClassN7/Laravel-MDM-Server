@@ -91,7 +91,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.13.1'
+$AgentVersion = '1.13.2'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -1451,7 +1451,7 @@ function Initialize-ServerKey {
     } elseif ($ServerKeyFingerprint -and $key.fingerprint -ne $ServerKeyFingerprint.ToLowerInvariant()) {
         throw "The pinned server key $($key.fingerprint) does not match -ServerKeyFingerprint $ServerKeyFingerprint. Reinstall with -ResetServerKey if the server key was replaced on purpose."
     } elseif ($embedded -and (Get-KeyFingerprint -Key $embedded) -ne $key.fingerprint) {
-        Write-AgentLog "Warning: this agent carries server key $(Get-KeyFingerprint -Key $embedded), the pinned key $($key.fingerprint) stays trusted"
+        Write-AgentLog "Warning: this agent carries server key $(Get-KeyFingerprint -Key $embedded), the pinned key $($key.fingerprint) stays trusted" -IsError
     }
 
     Set-ServerKey -Key $key
@@ -1832,7 +1832,7 @@ function Request-ScriptRuns {
             $script:ScriptQueue.Enqueue($run)
         }
         catch {
-            Write-AgentLog "Script run $runId rejected: $($_.Exception.Message)"
+            Write-AgentLog "Script run $runId rejected: $($_.Exception.Message)" -ErrorRecord $_
             if ($runId) {
                 try { Invoke-MdmApi -Method Post -Path "device/scripts/runs/$runId" -Token $Token -Body @{ status = 'rejected'; error = $_.Exception.Message } | Out-Null } catch { }
             }
@@ -1923,7 +1923,7 @@ function Update-ScriptRun {
         } | Out-Null
     }
     catch {
-        Write-AgentLog "Script result not sent: $($_.Exception.Message)"
+        Write-AgentLog "Script result not sent: $($_.Exception.Message)" -ErrorRecord $_
     }
 }
 
@@ -1932,10 +1932,15 @@ function Update-ScriptRun {
 #region Agent
 
 function Write-AgentLog {
+    # -IsError, or -ErrorRecord of an error that is not just the network: the line also goes to the
+    # server, as an alert of the device (Send-AgentErrors).
     param (
         [Parameter(Mandatory = $true)]
         [string]
-        $Message
+        $Message,
+        [switch]
+        $IsError,
+        $ErrorRecord
     )
 
     $LogPath = "$AgentDir/agent.log"
@@ -1943,6 +1948,92 @@ function Write-AgentLog {
         Move-Item -Path $LogPath -Destination "$LogPath.1" -Force
     }
     "{0:yyyy-MM-dd HH:mm:ss} {1}" -f (Get-Date), $Message | Add-Content -Path $LogPath -Encoding UTF8
+    if ($IsError -or ($ErrorRecord -and -not (Test-NetworkError -ErrorRecord $ErrorRecord))) {
+        Add-AgentError -Message $Message
+    }
+}
+
+function Test-NetworkError {
+    # The server or the network could not be reached (nothing the server can show while it is so);
+    # an answer of the server with an error is not one.
+    param ($ErrorRecord)
+
+    $exception = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
+    if ($exception -and $null -ne $exception.Data['MdmStatus']) { return $false }
+    while ($exception) {
+        if ($exception -is [System.Net.Http.HttpRequestException] -or $exception -is [System.Net.Sockets.SocketException] -or
+            $exception -is [System.Net.WebSockets.WebSocketException] -or $exception -is [System.Net.WebException] -or
+            $exception -is [System.TimeoutException] -or $exception -is [System.Threading.Tasks.TaskCanceledException] -or
+            $exception -is [System.IO.IOException]) {
+            return $true
+        }
+        $exception = $exception.InnerException
+    }
+    return $false
+}
+
+function Add-AgentError {
+    # Kept (also over a restart) until the server took it, the same message counted once.
+    param ([string]$Message)
+
+    # Only the agent itself, not its jobs (they have their own variables).
+    if ($null -eq $script:AgentErrors) { return }
+    try {
+        $now = Get-UnixTime
+        $text = if ($Message.Length -gt 500) { $Message.Substring(0, 500) } else { $Message }
+        $known = $script:AgentErrors | Where-Object { $_['message'] -eq $text } | Select-Object -First 1
+        if ($known) {
+            # Index syntax: .count of a dictionary is its number of entries.
+            $known['count'] = [int]$known['count'] + 1
+            $known['last'] = $now
+        } else {
+            if ($script:AgentErrors.Count -ge 30) { $script:AgentErrors.RemoveAt(0) }
+            [void]$script:AgentErrors.Add([ordered]@{ message = $text; count = 1; first = $now; last = $now })
+        }
+        ConvertTo-Json -InputObject @($script:AgentErrors) -Depth 3 -Compress | Set-Content -Path "$AgentDir/pending-errors.json" -Encoding UTF8
+    }
+    catch {
+        # Never break the log line itself.
+    }
+}
+
+function Initialize-AgentErrors {
+    $script:AgentErrors = New-Object System.Collections.ArrayList
+    try {
+        if (Test-Path -Path "$AgentDir/pending-errors.json") {
+            foreach ($item in @(Get-Content -Path "$AgentDir/pending-errors.json" -Raw | ConvertFrom-Json)) {
+                if ($item.message) {
+                    [void]$script:AgentErrors.Add([ordered]@{ message = "$($item.message)"; count = [int]$item.count; first = [long]$item.first; last = [long]$item.last })
+                }
+            }
+        }
+    }
+    catch {
+        $script:AgentErrors.Clear()
+    }
+}
+
+function Send-AgentErrors {
+    # The errors of the log to the server (an alert of the device); kept when it cannot take them.
+    param ([Parameter(Mandatory = $true)][string]$Token)
+
+    if (-not $script:AgentErrors -or $script:AgentErrors.Count -eq 0) { return }
+    $batch = @($script:AgentErrors.ToArray())
+    try {
+        Invoke-MdmApi -Method Post -Path 'device/errors' -Token $Token -Body @{ errors = $batch } | Out-Null
+        $sent = $true
+    }
+    catch {
+        # A server without it (or an agent that does not sign): nothing to wait for.
+        $sent = $_.Exception.Data['MdmStatus'] -in 403, 404
+        if (-not $sent) { return }
+    }
+    foreach ($item in $batch) { $script:AgentErrors.Remove($item) }
+    if ($script:AgentErrors.Count -eq 0) {
+        Remove-Item -Path "$AgentDir/pending-errors.json" -Force -ErrorAction SilentlyContinue
+    } else {
+        ConvertTo-Json -InputObject @($script:AgentErrors) -Depth 3 -Compress | Set-Content -Path "$AgentDir/pending-errors.json" -Encoding UTF8
+    }
 }
 
 function Invoke-MdmApi {
@@ -2298,7 +2389,7 @@ if (-not `$onLinux) { Unregister-ScheduledTask -TaskName 'Laravel-MDM-Agent-Rest
         $pwsh = (Get-Process -Id $PID).Path
         # Not in the agent's cgroup: systemd would stop it together with the agent.
         systemd-run --unit="laravel-mdm-agent-restart-$PID" --collect --quiet $pwsh -NoProfile -NonInteractive -EncodedCommand $encoded 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { Write-AgentLog 'Agent update: systemd-run failed, no rollback watcher' }
+        if ($LASTEXITCODE -ne 0) { Write-AgentLog 'Agent update: systemd-run failed, no rollback watcher' -IsError }
         return
     }
     try {
@@ -2430,13 +2521,13 @@ function Get-Report {
     if ($Health) {
         $data['disk_health'] = $Health
     }
-    try { $data['services'] = @(Get-AgentServices) } catch { Write-AgentLog "Services failed: $($_.Exception.Message)" }
+    try { $data['services'] = @(Get-AgentServices) } catch { Write-AgentLog "Services failed: $($_.Exception.Message)" -ErrorRecord $_ }
     try {
         $docker = Get-DockerContainers
         if ($docker) { $data['docker'] = $docker }
     }
     catch {
-        Write-AgentLog "Docker failed: $($_.Exception.Message)"
+        Write-AgentLog "Docker failed: $($_.Exception.Message)" -ErrorRecord $_
     }
 
     return $data
@@ -2506,7 +2597,7 @@ function Send-PingResults {
         }
     }
     catch {
-        Write-AgentLog "Ping results not sent: $($_.Exception.Message)"
+        Write-AgentLog "Ping results not sent: $($_.Exception.Message)" -ErrorRecord $_
         # Not reached: the pings go into the history later (see Send-Backlog).
         if ($null -eq $_.Exception.Data['MdmStatus']) { Add-Backlog -Kind 'pings' -Items $results -Max 10000 }
     }
@@ -2565,7 +2656,7 @@ function Update-Agent {
         [System.IO.File]::WriteAllBytes((Join-Path $AgentDir 'app.ps1'), $bytes)
     }
     catch {
-        Write-AgentLog "Agent update failed: $($_.Exception.Message)"
+        Write-AgentLog "Agent update failed: $($_.Exception.Message)" -ErrorRecord $_
         [void](Send-CommandStatus -Id $CommandId -Status failed -Message $_.Exception.Message)
         return
     }
@@ -2606,7 +2697,7 @@ function Send-CommandStatus {
         return $true
     }
     catch {
-        Write-AgentLog "Command ${Id}: status '$Status' not reported: $($_.Exception.Message)"
+        Write-AgentLog "Command ${Id}: status '$Status' not reported: $($_.Exception.Message)" -ErrorRecord $_
         # The server gave the command up meanwhile (not_running) or does not know it.
         return $_.Exception.Data['MdmError'] -in 'not_running', 'Not Found'
     }
@@ -2651,7 +2742,7 @@ function Complete-PendingCommand {
         }
     }
     catch {
-        Write-AgentLog "Pending command: $($_.Exception.Message)"
+        Write-AgentLog "Pending command: $($_.Exception.Message)" -ErrorRecord $_
         Remove-Item -Path $path -Force -ErrorAction SilentlyContinue
         return $true
     }
@@ -2740,7 +2831,7 @@ function Save-CommandState {
         $state | ConvertTo-Json -Depth 5 -Compress | Set-Content -Path "$AgentDir/commands-state.json" -Encoding UTF8
     }
     catch {
-        Write-AgentLog "Command state not saved: $($_.Exception.Message)"
+        Write-AgentLog "Command state not saved: $($_.Exception.Message)" -ErrorRecord $_
     }
 }
 
@@ -3356,7 +3447,7 @@ function Invoke-DeviceCommand {
                     $updateParams = Test-UpdateParams -Params $Params
                 }
                 catch {
-                    Write-AgentLog "Update refused: $($_.Exception.Message)"
+                    Write-AgentLog "Update refused: $($_.Exception.Message)" -ErrorRecord $_
                     [void](Send-CommandStatus -Id $Id -Status failed -Message "Refused by the agent: $($_.Exception.Message)")
                     return
                 }
@@ -3378,10 +3469,11 @@ function Invoke-DeviceCommand {
                 $wake = Test-WakeParams -Params $Params
                 Send-MagicPacket -Macs $wake.Macs -Broadcasts $wake.Broadcasts
                 Write-AgentLog "Magic packet sent to $($wake.Macs -join ', ') via $($wake.Broadcasts -join ', ')"
-                [void](Send-CommandStatus -Id $Id -Status succeeded -Message "Magic packet sent to $($wake.Macs -join ', ')")
+                # Running until the woken device reports (the server finishes it, or it times out).
+                [void](Send-CommandStatus -Id $Id -Status running -Progress 50 -Message "Magic packet sent to $($wake.Macs -join ', '), waiting for the device to come online")
             }
             catch {
-                Write-AgentLog "Wake-on-LAN failed: $($_.Exception.Message)"
+                Write-AgentLog "Wake-on-LAN failed: $($_.Exception.Message)" -ErrorRecord $_
                 [void](Send-CommandStatus -Id $Id -Status failed -Message "Wake-on-LAN failed: $($_.Exception.Message)")
             }
         }
@@ -3402,7 +3494,7 @@ function Invoke-DeviceCommand {
             }
             $up = $reply -and $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
             $result = @{ id = $target.Id; up = [bool]$up; rtt = $(if ($up) { [double]$reply.RoundtripTime } else { $null }); at = Get-UnixTime }
-            try { Invoke-MdmApi -Method Post -Path 'device/pings' -Token $script:AgentToken -Body @{ results = @($result) } | Out-Null } catch { Write-AgentLog "Ping result not sent: $($_.Exception.Message)" }
+            try { Invoke-MdmApi -Method Post -Path 'device/pings' -Token $script:AgentToken -Body @{ results = @($result) } | Out-Null } catch { Write-AgentLog "Ping result not sent: $($_.Exception.Message)" -ErrorRecord $_ }
             if ($up) {
                 [void](Send-CommandStatus -Id $Id -Status succeeded -Message "$($target.Address) answered in $($reply.RoundtripTime) ms")
             } else {
@@ -3413,7 +3505,7 @@ function Invoke-DeviceCommand {
             [void](Send-CommandStatus -Id $Id -Status running -Message 'Shutting down')
             $failure = Invoke-PowerAction -Restart:$false
             if ($failure) {
-                Write-AgentLog "Turn off failed: $failure"
+                Write-AgentLog "Turn off failed: $failure" -IsError
                 [void](Send-CommandStatus -Id $Id -Status failed -Message "Turn off failed: $failure")
             } else {
                 [void](Send-CommandStatus -Id $Id -Status succeeded -Message 'Shutting down')
@@ -3427,7 +3519,7 @@ function Invoke-DeviceCommand {
             if ($failure) {
                 # Not restarting after all: report it now, so it can be tried again.
                 Remove-Item -Path "$AgentDir/pending-command.json" -Force -ErrorAction SilentlyContinue
-                Write-AgentLog "Restart failed: $failure"
+                Write-AgentLog "Restart failed: $failure" -IsError
                 [void](Send-CommandStatus -Id $Id -Status failed -Message "Restart failed: $failure")
             }
         }
@@ -3535,7 +3627,8 @@ function Receive-WsMessage {
     $Realtime.Pending = $null
 
     if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
-        throw "WebSocket closed by server: $($result.CloseStatusDescription)"
+        # A WebSocketException: the connection is set up again, it is not an error of the agent.
+        throw (New-Object System.Net.WebSockets.WebSocketException "WebSocket closed by server: $($result.CloseStatusDescription)")
     }
 
     if (-not $Realtime.Message) {
@@ -3589,7 +3682,7 @@ function Invoke-RealtimeMessage {
             Send-WsMessage -Socket $Realtime.Socket -Message @{ event = 'pusher:pong'; data = @{} }
         }
         'pusher:error' {
-            throw "WebSocket error: $($Message.data)"
+            throw (New-Object System.Net.WebSockets.WebSocketException "WebSocket error: $($Message.data)")
         }
         'command' {
             if ($Message.channel -ne $Realtime.Config.channel) {
@@ -3599,7 +3692,7 @@ function Invoke-RealtimeMessage {
             # the commands themselves come from the signed API, so nothing can be injected or replayed.
             $payload = if ($data.p -is [string]) { $data.p | ConvertFrom-Json } else { $null }
             if (-not (Test-ServerSignature -Context 'MDM1-WS' -Message "$($data.p)" -Signature "$($data.sig)") -or "$($payload.device_id)" -ne "$($script:DeviceId)" -or [Math]::Abs((Get-UnixTime) - [long]$payload.ts) -gt 300) {
-                Write-AgentLog 'Ignoring a command event that is not signed by the server for this device'
+                Write-AgentLog 'Ignoring a command event that is not signed by the server for this device' -IsError
                 return
             }
             $response = Invoke-MdmApi -Method Post -Path 'device/commands/take' -Token $Token -Body @{}
@@ -3810,7 +3903,7 @@ function Get-Backlog {
                 foreach ($item in @(Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json | ForEach-Object { $_ })) { if ($item) { [void]$list.Add($item) } }
             }
         }
-        catch { Write-AgentLog "Backlog ${Kind}: $($_.Exception.Message)" }
+        catch { Write-AgentLog "Backlog ${Kind}: $($_.Exception.Message)" -ErrorRecord $_ }
         $script:Backlog[$Kind] = $list
     }
     return , $script:Backlog[$Kind]
@@ -3825,7 +3918,7 @@ function Save-Backlog {
         if ($list.Count -eq 0) { Remove-Item -Path $path -Force -ErrorAction SilentlyContinue; return }
         ConvertTo-Json -InputObject @($list) -Depth 4 -Compress | Set-Content -Path $path -Encoding UTF8
     }
-    catch { Write-AgentLog "Backlog ${Kind} not saved: $($_.Exception.Message)" }
+    catch { Write-AgentLog "Backlog ${Kind} not saved: $($_.Exception.Message)" -ErrorRecord $_ }
 }
 
 function Add-Backlog {
@@ -3846,6 +3939,7 @@ function Send-Backlog {
 
     if ($script:BacklogSent -and ((Get-Date) - $script:BacklogSent).TotalSeconds -lt 20) { return }
     $script:BacklogSent = Get-Date
+    Send-AgentErrors -Token $Token
     foreach ($kind in 'metrics', 'pings') {
         $list = Get-Backlog -Kind $kind
         if ($list.Count -eq 0) { continue }
@@ -3867,7 +3961,7 @@ function Send-Backlog {
                 $list.Clear()
                 Save-Backlog -Kind $kind
             }
-            Write-AgentLog "Backlog ($kind) not sent: $($_.Exception.Message)"
+            Write-AgentLog "Backlog ($kind) not sent: $($_.Exception.Message)" -ErrorRecord $_
         }
     }
 }
@@ -3890,7 +3984,7 @@ function Send-Heartbeat {
         if ($stateJson -ne $script:LastStateJson) { $state = $current }
     }
     catch {
-        Write-AgentLog "Live state failed: $($_.Exception.Message)"
+        Write-AgentLog "Live state failed: $($_.Exception.Message)" -ErrorRecord $_
     }
     # Reverb limits messages to 10 kB (with the signature): a large state (many services) goes over HTTPS instead.
     $stateOverWs = $state -and $stateJson.Length -le 7000
@@ -3928,7 +4022,7 @@ function Send-Heartbeat {
         Send-Backlog -Token $Token
     }
     catch {
-        Write-AgentLog "Heartbeat failed: $($_.Exception.Message)"
+        Write-AgentLog "Heartbeat failed: $($_.Exception.Message)" -ErrorRecord $_
         if ($sample -and $null -eq $_.Exception.Data['MdmStatus']) {
             # Not reached at all (an answer with an error would not change by waiting).
             Add-Backlog -Kind 'metrics' -Items $sample -Max 2880
@@ -3937,6 +4031,7 @@ function Send-Heartbeat {
 }
 
 function Start-Agent {
+    Initialize-AgentErrors
     # Keep the agent in the background, user applications take precedence.
     try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
 
@@ -4002,7 +4097,7 @@ function Start-Agent {
                         [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status running -Progress 60 -Message 'Inventory collected')
                     }
                 } else {
-                    Write-AgentLog "Inventory collection failed: $($inventoryJob.ChildJobs[0].JobStateInfo.Reason)"
+                    Write-AgentLog "Inventory collection failed: $($inventoryJob.ChildJobs[0].JobStateInfo.Reason)" -IsError
                     if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'collecting') {
                         [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status failed -Message "Inventory collection failed: $($inventoryJob.ChildJobs[0].JobStateInfo.Reason)")
                         $script:SyncRequest = $null
@@ -4024,7 +4119,7 @@ function Start-Agent {
             }
             catch {
                 # Script problems must not tear down the WebSocket connection.
-                Write-AgentLog "Scripts: $($_.Exception.Message)"
+                Write-AgentLog "Scripts: $($_.Exception.Message)" -ErrorRecord $_
             }
             if ($OnLinux -and $inventory -and -not $inventoryJob -and ((Get-Date) - $lastPackageCheck).TotalSeconds -ge 60) {
                 # Packages installed outside the agent (apt, unattended-upgrades): collect again once
@@ -4057,7 +4152,7 @@ function Start-Agent {
                     $health = @{ CollectedAt = Get-Date; Data = $data }
                     $lastReport = [DateTime]::MinValue
                 } else {
-                    Write-AgentLog "Disk health collection failed: $($healthJob.ChildJobs[0].JobStateInfo.Reason)"
+                    Write-AgentLog "Disk health collection failed: $($healthJob.ChildJobs[0].JobStateInfo.Reason)" -IsError
                 }
                 Remove-Job -Job $healthJob -Force
                 $healthJob = $null
@@ -4085,7 +4180,7 @@ function Start-Agent {
                 }
                 catch {
                     # HTTP problems must not tear down the WebSocket connection.
-                    Write-AgentLog "Report failed: $($_.Exception.Message)"
+                    Write-AgentLog "Report failed: $($_.Exception.Message)" -ErrorRecord $_
                     if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'report') {
                         [void](Send-CommandStatus -Id $script:SyncRequest.Id -Status failed -Message "Report failed: $($_.Exception.Message)")
                         $script:SyncRequest = $null
@@ -4119,7 +4214,7 @@ function Start-Agent {
             }
         }
         catch {
-            Write-AgentLog "Error: $($_.Exception.Message)"
+            Write-AgentLog "Error: $($_.Exception.Message)" -ErrorRecord $_
             if ($realtime) {
                 $realtime.Socket.Dispose()
                 $realtime = $null
@@ -4241,6 +4336,6 @@ try {
 }
 catch {
     # Errors before the loop (token, keys, configuration) would end the task without a trace.
-    try { Write-AgentLog "Agent stopped: $($_.Exception.Message)" } catch { }
+    try { Write-AgentLog "Agent stopped: $($_.Exception.Message)" -ErrorRecord $_ } catch { }
     exit 1
 }

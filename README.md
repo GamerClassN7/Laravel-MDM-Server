@@ -213,11 +213,17 @@ agent is back. Commands without news are given up after a timeout. A command tha
 way is never queued again: double clicks, two users or an action for all devices do not run it twice.
 
 **Smart alerts** show what needs attention on a device (restart required, a newer agent, updates,
-low disk space, disk health, failed services and remediations, failed commands) with the action
-that fixes it. An alert can be dismissed: it stays hidden until it says something else (e.g. more
+low disk space, disk health, failed services and remediations, failed commands, errors from the
+agent's log) with the action that fixes it. An alert can be dismissed: it stays hidden until it says something else (e.g. more
 updates) or goes away and comes back. The **Smart alerts** dashboard widget lists them for all
 devices, with one button per alert for all devices that can take the action now.
 A device without a heartbeat for 90 seconds is shown as offline.
+
+**Agent errors:** agents 1.13.2+ send the errors they write to their log (a failed inventory,
+report or command status, a crash of the agent) to the server once it answers, each message once
+with how often and when it happened; they are kept over a restart until the server took them. Not
+reaching the server (network down, the WebSocket reconnecting) is not one. The device shows them as
+an alert (the newest ones of the last 7 days) until **Clear**.
 
 When the agent cannot reach the server (network outage, server down), it keeps the CPU and memory
 samples, and the results of the ping-only devices it pings, in `backlog-metrics.json` /
@@ -467,12 +473,16 @@ NAS or Raspberry Pi that is always on:
 3. The relay gets a `wake` command with the MAC addresses and the broadcast addresses (the network's
    own one and `255.255.255.255`) in its signed command response. It checks them again and sends the
    packet to UDP ports 9 and 7. The command is the relay's (its history shows it); the woken device
-   shows the progress until it is back.
+   shows it like its other commands, with a progress bar.
+4. The command runs until the woken device reports (agents 1.13.2+; older ones are done once the
+   packet is out). When it does not come online within 10 minutes, the wake fails and the woken
+   device shows an alert with **Try again**.
 
 Devices on a battery (laptops) move between networks: their last report may show a network they
 have left, and the same private address (`192.168.1.0/24`) can be another network elsewhere. They
 only send a magic packet when no stationary agent can and they reach the server through the same
-public address as the sleeping device. Every relay needs a report from the last 11 minutes, so its
+public address as the sleeping device. Only addresses of the same family count (a network can reach
+the server over IPv6 from one device and over IPv4 from another). Every relay needs a report from the last 11 minutes, so its
 networks are current.
 
 **Wake-on-LAN settings** in the device menu set the MAC address and the IPv4 address with its

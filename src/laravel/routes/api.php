@@ -37,6 +37,7 @@ Route::middleware(['device.signature', 'auth:api'])->post('/device', function (R
     $device->last_http_at = now();
     // The commands column is not written here: queued commands are taken atomically below.
     $device->save();
+    App\Models\DeviceCommand::completeWakes($device->id);
     App\Support\LiveUpdates::device($device->id, 'report');
 
     return response()->json([
@@ -117,6 +118,8 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
     // Heartbeat fallback for agents without a WebSocket connection.
     Route::post('/device/heartbeat', function (Request $request) {
         Device::recordHeartbeat($request->user()->id, $request->input('metrics'), 'http', $request->input('state'));
+        // Woken (Wake-on-LAN): the relay's wake is done.
+        App\Models\DeviceCommand::completeWakes($request->user()->id);
 
         return response()->noContent();
     });
@@ -130,6 +133,20 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         $taken = App\Models\DeviceMetric::backfill($device->id, $request->json('samples'));
         if ($taken > 0) {
             App\Support\LiveUpdates::device($device->id, 'metrics');
+        }
+
+        return response()->json(['taken' => $taken]);
+    });
+
+    // Errors the agent wrote to its log (agents 1.13.2+), sent once the server answers: an alert
+    // of the device.
+    Route::post('/device/errors', function (Request $request) {
+        /** @var Device $device */
+        $device = $request->user();
+        abort_unless($device->signsRequests, 403);
+        $taken = $device->recordAgentErrors($request->json('errors'));
+        if ($taken > 0) {
+            App\Support\LiveUpdates::device($device->id, 'errors');
         }
 
         return response()->json(['taken' => $taken]);
@@ -209,7 +226,7 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         $updated = DeviceCommand::query()->whereKey($deviceCommand->id)->whereIn('status', ['sent', 'running'])->toBase()->update($values);
 
         if ($updated === 1) {
-            App\Support\LiveUpdates::device($device->id, 'command');
+            DeviceCommand::announce($device->id, $deviceCommand->target);
         }
 
         return $updated === 1
