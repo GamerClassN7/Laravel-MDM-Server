@@ -61,8 +61,8 @@ class NetworkMapTest extends TestCase
         $gateway = 'gw:31.30.4.122|50:C7:BF:AA:BB:CC';
         $this->assertSame('192.168.1.1 · 192.168.77.1', $nodes[$gateway]['sub']);
         $this->assertTrue($edges->has("site:31.30.4.122>{$gateway}"));
-        $this->assertTrue($edges->has("{$gateway}>net:31.30.4.122|192.168.1.0/24"));
-        $this->assertTrue($edges->has("{$gateway}>net:31.30.4.122|192.168.77.0/24"));
+        $this->assertTrue($edges->has("{$gateway}>net:gw:50:C7:BF:AA:BB:CC|192.168.1.0/24"));
+        $this->assertTrue($edges->has("{$gateway}>net:gw:50:C7:BF:AA:BB:CC|192.168.77.0/24"));
         // No gateway reported: the site links to its network directly.
         $this->assertTrue($edges->has('site:89.24.10.5>net:89.24.10.5|10.0.0.0/24'));
         // A VPN spans the sites, over the internet; a /32 of a client is in its /24. Docker is left out.
@@ -71,25 +71,52 @@ class NetworkMapTest extends TestCase
         $this->assertFalse($nodes->has('net:31.30.4.122|172.17.0.0/16'));
 
         // A device in several networks: a link to each, the disconnected one is down.
-        $this->assertSame('lan', $edges["net:31.30.4.122|192.168.1.0/24>device:{$laptop->id}"]['type']);
-        $this->assertFalse($edges["net:31.30.4.122|192.168.77.0/24>device:{$laptop->id}"]['up']);
+        $this->assertSame('lan', $edges["net:gw:50:C7:BF:AA:BB:CC|192.168.1.0/24>device:{$laptop->id}"]['type']);
+        $this->assertFalse($edges["net:gw:50:C7:BF:AA:BB:CC|192.168.77.0/24>device:{$laptop->id}"]['up']);
         $this->assertSame('vpn', $edges["net:vpn|10.8.0.0/24>device:{$laptop->id}"]['type']);
         $this->assertTrue($edges->has("net:vpn|10.8.0.0/24>device:{$office->id}"));
         // The ping-only device is in the network of its address, its relay pings it.
-        $this->assertTrue($edges->has("net:31.30.4.122|192.168.1.0/24>device:{$printer->id}"));
+        $this->assertTrue($edges->has("net:gw:50:C7:BF:AA:BB:CC|192.168.1.0/24>device:{$printer->id}"));
         $this->assertContains('pings 1', $nodes["device:{$nas->id}"]['badges']);
         // Offline, isolated (no other agent in its network).
         $this->assertSame('offline', $nodes["device:{$vps->id}"]['state']);
         $this->assertTrue($nodes["device:{$vps->id}"]['isolated']);
         $this->assertFalse($nodes["device:{$nas->id}"]['isolated']);
         // This server: in the network the agents reach it from over private addresses.
-        $this->assertTrue($edges->has('net:31.30.4.122|192.168.1.0/24>server'));
+        $this->assertTrue($edges->has('net:gw:50:C7:BF:AA:BB:CC|192.168.1.0/24>server'));
         $this->assertSame('31.30.4.122', $nodes['site:31.30.4.122']['group']);
 
         // The list: busiest first, VPNs last.
         $this->assertSame('192.168.1.0/24', $map['networks'][0]['cidr']);
         $this->assertSame('vpn', collect($map['networks'])->last()['kind']);
         $this->assertSame('192.168.1.1', $map['networks'][0]['gateway']);
+    }
+
+    public function test_one_lan_is_one_network_whatever_address_its_devices_reach_the_server_from(): void
+    {
+        // The server is in the LAN; its name resolves to nothing public, MDM_PUBLIC_ADDRESS is not set.
+        config(['mdm.public_address' => null, 'app.url' => 'http://localhost']);
+        $gw = '50-C7-BF-AA-BB-CC';
+        // One goes over the router's public address (hairpin NAT), the others from inside; one has
+        // no gateway MAC (the router not in its ARP table).
+        $asus = $this->agent('ASUS-PC-2', '62.141.23.141', [$this->nic('Ethernet', 'lan', '192.168.1.20', 24, true, '192.168.1.1', $gw)]);
+        $docker = $this->agent('docker-host', '192.168.1.5', [$this->nic('ens18', 'lan', '192.168.1.5', 24, true, '192.168.1.1', $gw)]);
+        $pihole = $this->agent('pi-hole', '192.168.1.6', [$this->nic('eth0', 'lan', '192.168.1.6', 24, true, '192.168.1.1')]);
+        $office = $this->agent('OFFICE', '89.24.10.5', [$this->nic('eth0', 'lan', '192.168.1.50', 24, true, '192.168.1.1', 'AA-BB-CC-00-00-01')]);
+
+        $map = NetworkMap::build();
+        $networks = collect($map['networks']);
+
+        // The home LAN once, with the public address of the router, and the office's own LAN.
+        $home = $networks->firstWhere('id', 'net:gw:50:C7:BF:AA:BB:CC|192.168.1.0/24');
+        $this->assertSame([$asus->id, $docker->id, $pihole->id], collect($home['devices'])->pluck('id')->sort()->values()->all());
+        $this->assertSame('62.141.23.141', $home['site']);
+        $this->assertSame('89.24.10.5', $networks->firstWhere('id', 'net:gw:AA:BB:CC:00:00:01|192.168.1.0/24')['site']);
+        $this->assertCount(2, $networks);
+        // This server is in it (its agents reach it from inside), at the router's address.
+        $edges = collect($map['edges'])->keyBy('id');
+        $this->assertTrue($edges->has('net:gw:50:C7:BF:AA:BB:CC|192.168.1.0/24>server'));
+        $this->assertSame('public · this server', collect($map['nodes'])->firstWhere('id', 'site:62.141.23.141')['sub']);
     }
 
     public function test_the_server_address_comes_from_its_name(): void

@@ -575,11 +575,18 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
 **Networks** in the main menu draws the fleet as a map, built from what the agents report. Top down:
 
 1. **Internet**.
-2. **Public addresses** (sites): the address each agent reaches the server from. An agent that
-   reaches it over a private address is inside the network of this server (hairpin NAT, split DNS).
+2. **Public addresses** (sites): of each network, the most common address its agents reach the
+   server from. An agent that reaches it over a private address is inside the network of this
+   server (split DNS), so one device of a LAN going over the router's public address (hairpin NAT)
+   and another from inside are still one site.
 3. **Gateways**: the default gateway of the interfaces (agents 1.15.0+, with its MAC from the
    neighbour table). One router of several networks (a LAN and a guest Wi-Fi) is one node.
-4. **Networks**: the IPv4 subnets of the interfaces, per site, LAN, Wi-Fi, LAN + Wi-Fi or mobile.
+4. **Networks**: the IPv4 subnets of the interfaces, LAN, Wi-Fi, LAN + Wi-Fi or mobile. A network
+   is told apart by the MAC of its gateway (every device in it sees the same router), so one LAN is
+   one network whatever address its devices reach the server from, and two homes with
+   192.168.1.0/24 stay two. A device whose ARP table lacks the router joins the one network of its
+   subnet whose devices reach the server from the same addresses; without a gateway MAC at all
+   the public address decides.
    VPNs (WireGuard, Tailscale, …) span the sites and hang from the internet; the /32 of a VPN
    client is in its /24. Docker, VM and Bluetooth interfaces are left out.
 5. **Devices**, linked to every network they have an interface in: a solid line for LAN, dotted for
@@ -587,9 +594,10 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
    several between them. Ping-only devices are in the network of their address; their agent shows
    how many it pings.
 
-**This server** is placed at the public address its name (`APP_URL`, else the address system admins
-open the portal with) resolves to, in the network the agents reach it from over private
-addresses; `MDM_PUBLIC_ADDRESS` sets the address by hand.
+**This server** is placed in the network the agents reach it from over private addresses. Its
+public address is `MDM_PUBLIC_ADDRESS` when set, else the address another device of that network
+reaches it through (the router's), else what its name (`APP_URL`, else the address system admins
+open the portal with) resolves to.
 
 A link that is down (a disconnected interface, an offline device) stays as a faint line; a network
 without anything online is drawn faint. A device that is the only agent in its networks is
@@ -613,7 +621,7 @@ know show up. What an agent may do is set on the device, in `network_discovery` 
 
 - **Unknown devices:** a neighbour in the network of one of the agent's interfaces (Docker, VMs and
   VPNs left out) whose MAC address no device of the portal has (their interfaces, gateways,
-  ping-only and Wake-on-LAN settings). It is kept per MAC address and public address, so a device
+  ping-only and Wake-on-LAN settings). It is kept per MAC address and network (its gateway), so a device
   with a dynamic address is still one entry. It is drawn dashed under its network (at most 8,
   the rest as **+n unknown**) and listed in the network's card with its address, name and MAC
   (**random MAC**: a private address a phone or laptop made up for that Wi-Fi). Neighbours seen in

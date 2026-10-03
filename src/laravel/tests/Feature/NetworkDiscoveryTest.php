@@ -66,7 +66,7 @@ class NetworkDiscoveryTest extends TestCase
 
         $this->assertSame(['192.168.1.1', '192.168.1.50'], NetworkNeighbour::query()->orderBy('ip')->pluck('ip')->all());
         $pi = NetworkNeighbour::query()->where('ip', '192.168.1.50')->firstOrFail();
-        $this->assertSame(['31.30.4.122', '192.168.1.0/24', 'B8:27:EB:12:34:56'], [$pi->site, $pi->network, $pi->mac]);
+        $this->assertSame(['gw:50:C7:BF:AA:BB:CC', '192.168.1.0/24', 'B8:27:EB:12:34:56'], [$pi->site, $pi->network, $pi->mac]);
         $this->assertFalse($pi->randomMac);
 
         // Seen again at another address: the same neighbour (by its MAC), with a name from a scan.
@@ -126,7 +126,7 @@ class NetworkDiscoveryTest extends TestCase
         $edges = collect($map['edges'])->keyBy('id');
         // The gateway is drawn as the gateway, not as an unknown device.
         $this->assertSame(['raspberrypi.lan', '192.168.1.77'], $nodes->where('kind', 'unknown')->pluck('label')->values()->all());
-        $this->assertSame('unknown', $edges["net:31.30.4.122|192.168.1.0/24>unknown:{$pi->id}"]['type']);
+        $this->assertSame('unknown', $edges["net:gw:50:C7:BF:AA:BB:CC|192.168.1.0/24>unknown:{$pi->id}"]['type']);
         // A click opens its network's card in the list.
         $this->assertStringContainsString('/networks?view=list#network-', $nodes["unknown:{$pi->id}"]['url']);
         $this->assertSame([$pi->id, $phone->id], array_column($map['networks'][0]['unknown'], 'id'));
@@ -157,7 +157,7 @@ class NetworkDiscoveryTest extends TestCase
         config(['mdm.public_address' => '31.30.4.122']);
         $this->actingAs(User::factory()->create());
         $agent = $this->agent('neighbours');
-        $key = 'net:31.30.4.122|192.168.1.0/24';
+        $key = 'net:gw:50:C7:BF:AA:BB:CC|192.168.1.0/24';
 
         // Not allowed on the device: no scan.
         $network = collect(NetworkMap::build()['networks'])->firstWhere('id', $key);
@@ -231,7 +231,7 @@ class NetworkDiscoveryTest extends TestCase
         $old = $this->agent('scan', 'old-token', '1.15.0');
         $old->forceFill(['name' => 'old-pc'])->save();
 
-        $refusal = collect(NetworkMap::build()['networks'])->firstWhere('id', 'net:31.30.4.122|192.168.1.0/24')['scan']['refusal'];
+        $refusal = collect(NetworkMap::build()['networks'])->firstWhere('id', 'net:gw:50:C7:BF:AA:BB:CC|192.168.1.0/24')['scan']['refusal'];
 
         // The level as of the last report (a remediation shows with the next one), and the old agent.
         $this->assertSame('nas: network_discovery "neighbours" · old-pc: needs agent 1.16.0', $refusal);
@@ -254,5 +254,34 @@ class NetworkDiscoveryTest extends TestCase
             ->call('scan', '10.0.0.0/24')->assertHasNoErrors()
             ->call('scan', '192.168.1.0/24')->assertHasNoErrors();
         $this->assertSame([['cidr' => '192.168.1.0/24']], $agent->commands()->where('command', 'scanNetwork')->pluck('params')->all());
+    }
+
+    public function test_a_neighbour_seen_from_one_lan_is_one_device_whatever_address_the_agents_report_from(): void
+    {
+        $outside = $this->agent('neighbours');
+        $inside = $this->agent('neighbours', 'inside-token');
+        $inside->forceFill(['public_ip' => '192.168.1.7'])->save();
+
+        NetworkNeighbour::record($outside, [['Ip' => '192.168.1.50', 'Mac' => 'b8-27-eb-12-34-56']]);
+        NetworkNeighbour::record($inside->fresh(), [['Ip' => '192.168.1.50', 'Mac' => 'b8-27-eb-12-34-56']]);
+
+        $this->assertSame(['gw:50:C7:BF:AA:BB:CC'], NetworkNeighbour::query()->pluck('site')->all());
+    }
+
+    public function test_old_neighbours_move_to_their_gateway_and_stay_ignored(): void
+    {
+        $agent = $this->agent('neighbours');
+        $make = fn (string $site, ?string $ignored) => NetworkNeighbour::query()->create([
+            'site' => $site, 'network' => '192.168.1.0/24', 'mac' => 'B8:27:EB:12:34:56', 'ip' => '192.168.1.50', 'seen_by' => $agent->id,
+            'first_seen_at' => now()->subDays(3), 'last_seen_at' => now()->subHour(), 'ignored_at' => $ignored,
+        ]);
+        $make('31.30.4.122', now()->subDay());
+        $make('?', null);
+
+        (require database_path('migrations/2026_10_08_000000_key_network_neighbours_by_gateway.php'))->up();
+
+        $row = NetworkNeighbour::query()->sole();
+        $this->assertSame('gw:50:C7:BF:AA:BB:CC', $row->site);
+        $this->assertNotNull($row->ignored_at);
     }
 }

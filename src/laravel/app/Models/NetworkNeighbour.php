@@ -13,8 +13,9 @@ use SteelAnts\LaravelBoilerplate\Models\Setting;
 use SteelAnts\LaravelBoilerplate\Types\SettingDataType;
 
 /**
- * A device an agent sees in its network (its ARP table, a scan): one per MAC address and public
- * address (site), with the IP address it had last. Known ones (a device of the portal has the MAC)
+ * A device an agent sees in its network (its ARP table, a scan): one per MAC address and network
+ * (site: the network's gateway MAC as "gw:…", without one the public address of the agent,
+ * NetworkMap::segmentOf), with the IP address it had last. Known ones (a device of the portal has the MAC)
  * are left out where they are shown; unknown ones are on the Networks page, can be ignored or
  * added as a ping-only device. Ping-only devices with a MAC follow it to a new address (DHCP).
  */
@@ -115,7 +116,8 @@ class NetworkNeighbour extends Model
         if (! is_array($neighbours) || $device->isPingOnly || $device->networkDiscovery === null || $device->networkDiscovery === 'off' || ! self::enabled()) {
             return 0;
         }
-        $site = NetworkMap::siteOf($device, NetworkMap::serverAddresses()[0] ?? null);
+        $serverSite = NetworkMap::serverAddresses()[0] ?? null;
+        // cidr => the key of its network (its gateway's MAC, NetworkMap::segmentOf).
         $networks = [];
         $own = [];
         foreach ($device->networks as $interface) {
@@ -125,7 +127,7 @@ class NetworkNeighbour extends Model
             foreach ($interface['Addresses'] as $address) {
                 $own[] = $address['Address'];
                 if ($cidr = NetworkMap::cidr($address['Address'], $address['PrefixLength'])) {
-                    $networks[] = $cidr;
+                    $networks[$cidr] ??= NetworkMap::segmentOf($interface, $device, $serverSite);
                 }
             }
         }
@@ -140,20 +142,21 @@ class NetworkNeighbour extends Model
             if ($mac === null || ! is_string($ip) || ! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) || in_array($ip, $own, true)) {
                 continue;
             }
-            $network = collect($networks)->first(fn ($cidr) => NetworkMap::contains($cidr, $ip));
+            $network = collect(array_keys($networks))->first(fn ($cidr) => NetworkMap::contains($cidr, $ip));
             if ($network === null || ! NetworkMap::isHost($network, $ip)) {
                 continue;
             }
             $hostname = is_string($neighbour['Hostname'] ?? null) ? trim(preg_replace('/[^\w.\-]/u', '', $neighbour['Hostname'])) : '';
-            $seen[$mac] = ['ip' => $ip, 'network' => $network, 'hostname' => $hostname !== '' && $hostname !== $ip ? mb_substr($hostname, 0, 255) : null];
+            $seen[$mac] = ['ip' => $ip, 'network' => $network, 'site' => $networks[$network], 'hostname' => $hostname !== '' && $hostname !== $ip ? mb_substr($hostname, 0, 255) : null];
         }
         if ($seen === []) {
             return 0;
         }
 
-        $existing = static::query()->where('site', $site)->whereIn('mac', array_keys($seen))->get()->keyBy('mac');
+        $existing = static::query()->whereIn('site', array_unique(array_column($seen, 'site')))->whereIn('mac', array_keys($seen))->get()
+            ->keyBy(fn (self $row) => $row->site.'|'.$row->mac);
         foreach ($seen as $mac => $values) {
-            $row = $existing[$mac] ?? new static(['site' => $site, 'mac' => $mac, 'first_seen_at' => now()]);
+            $row = $existing[$values['site'].'|'.$mac] ?? new static(['site' => $values['site'], 'mac' => $mac, 'first_seen_at' => now()]);
             $row->fill([
                 'ip' => $values['ip'],
                 'network' => $values['network'],
