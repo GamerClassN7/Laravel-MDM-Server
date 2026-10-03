@@ -597,7 +597,10 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
 **This server** is placed in the network the agents reach it from over private addresses. Its
 public address is `MDM_PUBLIC_ADDRESS` when set, else the address another device of that network
 reaches it through (the router's), else what its name (`APP_URL`, else the address system admins
-open the portal with) resolves to.
+open the portal with) resolves to, else the address the server reaches the internet from, which
+it asks of `https://ifconfig.me/ip` (`MDM_PUBLIC_ADDRESS_URL` for another service) once an hour:
+only the request leaves the server, nothing about the fleet. `MDM_DETECT_PUBLIC_ADDRESS=false`
+turns it off for a server without internet access.
 
 A link that is down (a disconnected interface, an offline device) stays as a faint line; a network
 without anything online is drawn faint. A device that is the only agent in its networks is
