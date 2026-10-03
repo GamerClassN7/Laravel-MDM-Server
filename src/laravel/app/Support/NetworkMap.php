@@ -7,6 +7,7 @@ use App\Models\DeviceCommand;
 use App\Models\NetworkNeighbour;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Throwable;
 
 /**
@@ -46,8 +47,19 @@ class NetworkMap
         return (new self)->make($devices ?? Device::query()->orderBy('id')->get());
     }
 
-    /** The public IPv4 addresses this server's name (APP_URL, else the remembered address) resolves to. */
+    /**
+     * The public IPv4 addresses of this server: MDM_PUBLIC_ADDRESS, else what its name (APP_URL,
+     * else the remembered address) resolves to, else the address it reaches the internet from.
+     */
     public static function serverAddresses(): array
+    {
+        $named = self::namedAddresses();
+
+        return $named !== [] ? $named : self::egressAddresses();
+    }
+
+    /** MDM_PUBLIC_ADDRESS, or the public addresses the portal's name resolves to. */
+    private static function namedAddresses(): array
     {
         // Set by hand (MDM_PUBLIC_ADDRESS): when the name resolves to something else (split DNS, a proxy).
         $set = (string) config('mdm.public_address');
@@ -72,6 +84,37 @@ class NetworkMap
 
             return array_values(array_filter($addresses, fn ($address) => Device::isPublicIp($address)));
         });
+    }
+
+    /**
+     * The address this server reaches the internet from (the public address of its network),
+     * asked of mdm.public_address_url (ifconfig.me) once an hour; none for a server without
+     * internet access, nothing is asked with MDM_DETECT_PUBLIC_ADDRESS=false. A failed try is
+     * not repeated for ten minutes (the page does not wait for it every time).
+     */
+    public static function egressAddresses(): array
+    {
+        $url = (string) config('mdm.public_address_url');
+        if (! config('mdm.detect_public_address') || $url === '') {
+            return [];
+        }
+        $key = 'network-map:egress:'.md5($url);
+        $known = Cache::get($key);
+        if (is_array($known)) {
+            return $known;
+        }
+        $addresses = [];
+        try {
+            // IPv4 only (the networks of the map are).
+            $body = trim(Http::timeout(3)->connectTimeout(2)->withOptions(['curl' => [CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4]])->get($url)->body());
+            if (filter_var($body, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && Device::isPublicIp($body)) {
+                $addresses = [$body];
+            }
+        } catch (Throwable) {
+        }
+        Cache::put($key, $addresses, $addresses === [] ? 600 : self::RESOLVE_TTL);
+
+        return $addresses;
     }
 
     /**
@@ -221,7 +264,7 @@ class NetworkMap
         foreach ($sites as $site) {
             $count = collect($siteOf)->filter(fn ($s) => $s === $site)->count();
             $this->node('site:'.$site, 'site', match ($site) { '?' => __('Unknown address'), 'local' => __('Public address unknown'), default => $site },
-                $site === $serverSite ? __('public · this server') : __('public'),
+                $site === 'local' ? __('this server · set MDM_PUBLIC_ADDRESS') : ($site === $serverSite ? __('public · this server') : __('public')),
                 $site === $serverSite ? 'fas fa-home' : 'fas fa-building', $site === '?' ? 'secondary' : 'success',
                 badges: [trans_choice(':count device|:count devices', $count)], extra: ['group' => $site]);
             $this->edge('internet', 'site:'.$site, 'wan', true);

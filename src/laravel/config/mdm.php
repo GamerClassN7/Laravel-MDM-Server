@@ -25,6 +25,13 @@ return [
     // its name (APP_URL) resolves to when not set.
     'public_address' => env('MDM_PUBLIC_ADDRESS'),
 
+    // Without it (and when the name does not resolve to a public address, no device reaches the
+    // server through the router's) the server asks this address for its own public address,
+    // once an hour (only its address leaves the server). MDM_DETECT_PUBLIC_ADDRESS=false for a
+    // server without internet access.
+    'detect_public_address' => (bool) env('MDM_DETECT_PUBLIC_ADDRESS', true),
+    'public_address_url' => env('MDM_PUBLIC_ADDRESS_URL', 'https://ifconfig.me/ip'),
+
     // Seconds a signed message may differ from the server clock.
     'signature_max_skew' => 300,
 

@@ -7,6 +7,8 @@ use App\Models\Device;
 use App\Models\User;
 use App\Support\NetworkMap;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Livewire\Livewire;
 use Tests\TestCase;
 
@@ -117,6 +119,45 @@ class NetworkMapTest extends TestCase
         $edges = collect($map['edges'])->keyBy('id');
         $this->assertTrue($edges->has('net:gw:50:C7:BF:AA:BB:CC|192.168.1.0/24>server'));
         $this->assertSame('public · this server', collect($map['nodes'])->firstWhere('id', 'site:62.141.23.141')['sub']);
+    }
+
+    public function test_the_server_asks_for_its_public_address_when_nothing_else_tells_it(): void
+    {
+        config(['mdm.detect_public_address' => true, 'mdm.public_address' => null, 'app.url' => 'http://localhost', 'mdm.public_address_url' => 'https://ifconfig.me/ip']);
+        Http::fake(['ifconfig.me/*' => Http::response("203.0.113.9\n")]);
+
+        $this->assertSame(['203.0.113.9'], NetworkMap::serverAddresses());
+        $this->assertSame(['203.0.113.9'], NetworkMap::serverAddresses());
+        Http::assertSentCount(1);
+
+        // The map: the server's LAN (its agents reach it from inside) has that address.
+        $this->agent('NAS', '192.168.1.5', [$this->nic('eth0', 'lan', '192.168.1.5', 24, true, '192.168.1.1', '50-C7-BF-AA-BB-CC')]);
+        $site = collect(NetworkMap::build()['nodes'])->firstWhere('id', 'site:203.0.113.9');
+        $this->assertSame(['203.0.113.9', 'public · this server'], [$site['label'], $site['sub']]);
+    }
+
+    public function test_the_public_address_lookup_is_careful(): void
+    {
+        config(['mdm.detect_public_address' => true, 'mdm.public_address' => null, 'app.url' => 'http://localhost']);
+
+        // An answer that is no public address (an error page, a private address) is none, and not asked again for a while.
+        Http::fake(['*' => Http::response('<html>Too many requests</html>', 429)]);
+        $this->assertSame([], NetworkMap::serverAddresses());
+        $this->assertSame([], NetworkMap::serverAddresses());
+        Http::assertSentCount(1);
+
+        Cache::flush();
+        Http::fake(['*' => Http::response('192.168.1.1')]);
+        $this->assertSame([], NetworkMap::serverAddresses());
+
+        // Set by hand, or switched off: nothing is asked.
+        Cache::flush();
+        Http::fake();
+        config(['mdm.public_address' => '198.51.100.7']);
+        $this->assertSame(['198.51.100.7'], NetworkMap::serverAddresses());
+        config(['mdm.public_address' => null, 'mdm.detect_public_address' => false]);
+        $this->assertSame([], NetworkMap::serverAddresses());
+        Http::assertNothingSent();
     }
 
     public function test_the_server_address_comes_from_its_name(): void
