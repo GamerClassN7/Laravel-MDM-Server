@@ -302,7 +302,7 @@ label.mdm-tag {
     &.is-down { opacity: .15; }
     // The column of a grid behind its cards; the link of a device to its other network.
     &.is-spine { opacity: .35; }
-    &.is-side { stroke-width: 2.4; opacity: 1; }
+    &.is-side { stroke-width: 1.6; opacity: .4; &.is-active { stroke-width: 2.6; opacity: 1; } }
 }
 
 // Data tables (steelants/livewire-datatable): columns a table hides on narrow screens, set in its

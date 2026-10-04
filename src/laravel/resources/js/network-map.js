@@ -379,7 +379,7 @@ export function createNetworkMap(root, data) {
             return `<path class="${route.cls}" d="${curve(elbow(route.a, route.b, route.base + lane * LANE))}">${route.title}</path>`;
         });
 
-        // The other networks of a device: drawn while the device or the network is pointed at.
+        // The other networks of a device: faint, clear while the device or the network is pointed at.
         // Where the other networks are: a device goes to the outer column on that side (second pass).
         const wanted = new Map();
         for (const edge of sideLinks) {
@@ -395,7 +395,7 @@ export function createNetworkMap(root, data) {
 
             return;
         }
-        const side = (edge) => {
+        const side = (edge, active) => {
             const net = box.get(edge.from);
             const dev = box.get(edge.to);
             const grid = gridBox.get(main.get(edge.to));
@@ -410,10 +410,10 @@ export function createNetworkMap(root, data) {
             const points = beside
                 ? [[net.x, net.bottom], [net.x, y], [edgeX, y]]
                 : [[net.x, net.bottom], [net.x, net.bottom + 18], [channel, net.bottom + 18], [channel, y], [edgeX, y]];
-            return `<path class="nm-link is-side is-${esc(edge.type)}" d="${curve(points)}"></path>`;
+            return `<path class="nm-link is-side is-${esc(edge.type)}${active ? ' is-active' : ''}" d="${curve(points)}"></path>`;
         };
         const drawSide = () => {
-            sideLayer.innerHTML = sideLinks.filter((edge) => hover.has(edge.from) || hover.has(edge.to)).map(side).join('');
+            sideLayer.innerHTML = sideLinks.map((edge) => side(edge, hover.has(edge.from) || hover.has(edge.to))).join('');
         };
         svg.innerHTML = `<g>${bars.join('')}${drawn.join('')}</g><g class="nm-side"></g>`;
         const sideLayer = svg.querySelector('.nm-side');
