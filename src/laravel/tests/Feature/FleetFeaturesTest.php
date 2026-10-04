@@ -471,7 +471,8 @@ class FleetFeaturesTest extends TestCase
         $sleeping = $this->device('sleep', ['Networks' => [$this->network('192.168.1.20', 24, 'AA-BB-CC-DD-EE-01'), $this->network('10.8.0.2', 24, '00-00-00-00-00-00', 'vpn')]], online: false);
         $elsewhere = $this->device('far', ['Networks' => [$this->network('192.168.2.5')]]);
         $old = $this->device('old', ['Networks' => [$this->network('192.168.1.6')]], version: '1.8.1');
-        $this->assertSame(__('No online agent 1.9.0+ in the same network'), $sleeping->wakeRefusal());
+        // It says what keeps the agent of the network from relaying.
+        $this->assertSame(__('No online agent 1.9.0+ in the same network').' (pc-old: '.__('The agent is too old for this command').')', $sleeping->wakeRefusal());
 
         $relay = $this->device('relay', ['Networks' => [$this->network('192.168.1.5', 24, 'AA-BB-CC-DD-EE-02')]]);
         $this->assertNull($sleeping->wakeRefusal());

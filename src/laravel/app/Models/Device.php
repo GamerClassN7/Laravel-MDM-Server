@@ -1313,9 +1313,40 @@ class Device extends Model
             ! $this->offline => __('The device is online'),
             $this->wakeMacs === [] => $this->isPingOnly ? __('Add its MAC address to wake it') : __('No wired or Wi-Fi network card is known'),
             $this->wakeNetworks() === [] => __('Its network is not known yet (agent 1.9.0+ reports it, or set it in the Wake-on-LAN settings)'),
-            $this->wakeRelay() === null => __('No online agent 1.9.0+ in the same network'),
+            $this->wakeRelay() === null => $this->wakeRelayRefusal(),
             default => null,
         };
+    }
+
+    /**
+     * "No online agent …" with what keeps each agent that has an interface in the network from
+     * relaying (offline, too old, no signing, no recent report, another public address, on a battery).
+     */
+    private function wakeRelayRefusal(): string
+    {
+        $message = __('No online agent 1.9.0+ in the same network');
+        $networks = $this->wakeNetworks();
+        $reasons = [];
+        foreach (static::query()->where('kind', 'agent')->orderBy('id')->get() as $relay) {
+            if ($relay->id === $this->id || array_intersect_key($networks, $relay->ipv4Networks(self::RELAY_INTERFACE_TYPES, true)) === []) {
+                continue;
+            }
+            $reason = match (true) {
+                $relay->offline => __('offline'),
+                ! $relay->signsRequests => __('does not sign its communication'),
+                ! $relay->connectedViaApi => __('no report over the API in the last :seconds s', ['seconds' => self::REPORT_TIMEOUT]),
+                ($wake = $relay->commandRefusal('wake', ['macs' => ['00:00:00:00:00:01'], 'broadcasts' => ['255.255.255.255'], 'device' => $this->id])) !== null => $wake,
+                $relay->isMobile && ($this->public_ip === null || $relay->public_ip !== $this->public_ip) => __('on a battery, not behind the public address of this device'),
+                $this->public_ip !== null && $relay->public_ip !== null && $this->public_ip !== $relay->public_ip
+                    && str_contains($this->public_ip, ':') === str_contains($relay->public_ip, ':') => __('behind another public address (:relay, this device :device)', ['relay' => $relay->public_ip, 'device' => $this->public_ip]),
+                default => null,
+            };
+            if ($reason !== null) {
+                $reasons[] = $relay->displayName.': '.$reason;
+            }
+        }
+
+        return $reasons === [] ? $message : $message.' ('.implode('; ', $reasons).')';
     }
 
     /** Asks a relay in the same network to send the magic packet; the command is the relay's. */
