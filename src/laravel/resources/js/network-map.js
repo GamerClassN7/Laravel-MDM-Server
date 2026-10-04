@@ -93,14 +93,42 @@ export function createNetworkMap(root, data) {
         }
 
         // Laid out with the sizes the nodes render at.
-        // Each site in a cluster: its gateway, networks and devices stay together (VPNs between them).
+        // Devices in one network only (and its unknown devices) sit in a grid in a frame under
+        // it, one block for dagre; devices of several networks stay between them.
+        const parents = new Map();
+        for (const edge of map.edges) {
+            if (nodes.get(edge.from)?.kind === 'network') {
+                parents.set(edge.to, [...(parents.get(edge.to) || []), edge.from]);
+            }
+        }
+        const members = new Map();
+        for (const node of map.nodes) {
+            const owners = parents.get(node.id) || [];
+            if (owners.length === 1 && ['device', 'unknown', 'server'].includes(node.kind)) {
+                members.set(owners[0], [...(members.get(owners[0]) || []), node.id]);
+            }
+        }
+        const grids = new Map();
+        const inGrid = new Set();
+        const GAP = { x: 14, y: 12, pad: 12 };
+        for (const [network, ids] of members) {
+            if (ids.length < 4) {
+                continue;
+            }
+            const cols = Math.min(ids.length, 6, Math.max(3, Math.round(Math.sqrt(ids.length * 1.8))));
+            const rows = Math.ceil(ids.length / cols);
+            const colWidth = Array.from({ length: cols }, (_, c) => Math.max(...ids.filter((_, k) => k % cols === c).map((id) => elements.get(id).offsetWidth)));
+            const rowHeight = Array.from({ length: rows }, (_, r) => Math.max(...ids.slice(r * cols, (r + 1) * cols).map((id) => elements.get(id).offsetHeight)));
+            const width = colWidth.reduce((a, b) => a + b, 0) + GAP.x * (cols - 1) + GAP.pad * 2;
+            const height = rowHeight.reduce((a, b) => a + b, 0) + GAP.y * (rows - 1) + GAP.pad * 2;
+            grids.set(network, { id: `grid:${network}`, ids, cols, colWidth, rowHeight, width, height });
+            ids.forEach((id) => inGrid.add(id));
+        }
+
         const graph = new dagre.graphlib.Graph({ compound: true });
         graph.setGraph({ rankdir: 'TB', nodesep: 28, ranksep: 64, edgesep: 12, marginx: 24, marginy: 24 });
         graph.setDefaultEdgeLabel(() => ({}));
-        for (const [id, el] of elements) {
-            graph.setNode(id, { width: el.offsetWidth, height: el.offsetHeight });
-        }
-        for (const node of map.nodes) {
+        const clusterOf = (node) => {
             if (node.group && node.kind !== 'internet') {
                 const cluster = `cluster:${node.group}`;
                 if (!graph.hasNode(cluster)) {
@@ -108,33 +136,99 @@ export function createNetworkMap(root, data) {
                 }
                 graph.setParent(node.id, cluster);
             }
-        }
-        // Devices in one network only go in up to three rows under it (a long row would be too
-        // wide to read); devices of several networks stay in the first row, between them.
-        const links = new Map();
-        for (const edge of map.edges) {
-            if (nodes.get(edge.from)?.kind === 'network') {
-                links.set(edge.to, (links.get(edge.to) || 0) + 1);
+        };
+        for (const [id, el] of elements) {
+            if (!inGrid.has(id)) {
+                graph.setNode(id, { width: el.offsetWidth, height: el.offsetHeight });
             }
         }
-        const rowOf = new Map();
-        const perNetwork = new Map();
-        for (const edge of map.edges) {
-            if (nodes.get(edge.from)?.kind === 'network' && links.get(edge.to) === 1) {
-                const index = perNetwork.get(edge.from) || 0;
-                perNetwork.set(edge.from, index + 1);
-                rowOf.set(edge.id, index);
+        for (const node of map.nodes) {
+            if (!inGrid.has(node.id)) {
+                clusterOf(node);
             }
         }
+        for (const [network, grid] of grids) {
+            // A narrow stand-in for the layout, widened below (centered under its network).
+            graph.setNode(grid.id, { width: Math.min(grid.width, 150), height: grid.height });
+            clusterOf({ id: grid.id, group: nodes.get(network).group, kind: 'grid' });
+            graph.setEdge(network, grid.id, { minlen: 1, weight: 1 });
+        }
         for (const edge of map.edges) {
-            if (nodes.has(edge.from) && nodes.has(edge.to)) {
-                const count = perNetwork.get(edge.from) || 0;
-                const row = rowOf.has(edge.id) && count > 4 ? rowOf.get(edge.id) % 3 : 0;
-                graph.setEdge(edge.from, edge.to, { minlen: rankSpan(edge, nodes) + row, weight: edge.type === 'tunnel' ? 0 : 1 });
+            if (nodes.has(edge.from) && nodes.has(edge.to) && !inGrid.has(edge.to)) {
+                graph.setEdge(edge.from, edge.to, { minlen: rankSpan(edge, nodes), weight: edge.type === 'tunnel' ? 0 : 1 });
             }
         }
         dagre.layout(graph);
-        size = { width: graph.graph().width, height: graph.graph().height };
+
+        // The grids at their real width, centered under their network; what stands beside them in
+        // the same row moves aside (left to right, then the row back to where it was on average).
+        if (grids.size > 0) {
+            const rows = new Map();
+            for (const id of graph.nodes()) {
+                const n = graph.node(id);
+                if (!id.startsWith('cluster:') && n.x !== undefined) {
+                    const key = Math.round(n.y);
+                    rows.set(key, [...(rows.get(key) || []), { id, n }]);
+                }
+            }
+            const gridOf = new Map([...grids.values()].map((grid) => [grid.id, grid]));
+            for (const row of rows.values()) {
+                if (!row.some((item) => gridOf.has(item.id))) {
+                    continue;
+                }
+                const GAP_X = 28;
+                const items = row.map((item) => {
+                    const grid = gridOf.get(item.id);
+                    const want = grid ? graph.node([...grids].find(([, g]) => g === grid)[0]).x : item.n.x;
+                    return { ...item, grid: !!grid, want, x: want, width: grid ? grid.width : item.n.width };
+                }).sort((a, b) => a.want - b.want);
+                // The grids stay under their network (apart from each other when they would overlap).
+                const fixed = items.filter((item) => item.grid);
+                for (let k = 1; k < fixed.length; k++) {
+                    fixed[k].x = Math.max(fixed[k].x, fixed[k - 1].x + (fixed[k - 1].width + fixed[k].width) / 2 + GAP_X);
+                }
+                // Each of the others goes to the side of the nearest grid it was on, outward from it.
+                const sides = new Map(fixed.map((item) => [item, { left: [], right: [] }]));
+                for (const item of items.filter((candidate) => !candidate.grid)) {
+                    const nearest = fixed.reduce((best, candidate) => (Math.abs(candidate.want - item.want) < Math.abs(best.want - item.want) ? candidate : best));
+                    sides.get(nearest)[item.want < nearest.want ? 'left' : 'right'].push(item);
+                }
+                for (const [grid, { left, right }] of sides) {
+                    let edge = grid.x - grid.width / 2 - GAP_X;
+                    for (const item of left.sort((a, b) => b.want - a.want)) {
+                        item.x = Math.min(item.want, edge - item.width / 2);
+                        edge = item.x - item.width / 2 - GAP_X;
+                    }
+                    edge = grid.x + grid.width / 2 + GAP_X;
+                    for (const item of right.sort((a, b) => a.want - b.want)) {
+                        item.x = Math.max(item.want, edge + item.width / 2);
+                        edge = item.x + item.width / 2 + GAP_X;
+                    }
+                }
+                for (const item of items) {
+                    item.n.x = item.x;
+                    item.n.width = item.width;
+                }
+            }
+        }
+        // The view as big as what is drawn.
+        let minX = Infinity;
+        let maxX = -Infinity;
+        for (const id of graph.nodes()) {
+            const n = graph.node(id);
+            if (!id.startsWith('cluster:') && n.x !== undefined) {
+                minX = Math.min(minX, n.x - n.width / 2);
+                maxX = Math.max(maxX, n.x + n.width / 2);
+            }
+        }
+        const margin = 24;
+        for (const id of graph.nodes()) {
+            const n = graph.node(id);
+            if (n.x !== undefined) {
+                n.x += margin - minX;
+            }
+        }
+        size = { width: maxX - minX + margin * 2, height: graph.graph().height };
         stage.style.width = `${size.width}px`;
         stage.style.height = `${size.height}px`;
         svg.setAttribute('width', size.width);
@@ -142,6 +236,9 @@ export function createNetworkMap(root, data) {
 
         const box = new Map();
         for (const [id, el] of elements) {
+            if (inGrid.has(id)) {
+                continue;
+            }
             const { x, y, width, height } = graph.node(id);
             if (x === undefined) {
                 continue;
@@ -150,9 +247,32 @@ export function createNetworkMap(root, data) {
             el.style.top = `${y - height / 2}px`;
             box.set(id, { x, top: y - height / 2, bottom: y + height / 2 });
         }
+        // The grids: a frame behind, the devices in rows and columns of their own width and height.
+        const frames = [];
+        for (const [network, grid] of grids) {
+            const { x, y } = graph.node(grid.id);
+            const left = x - grid.width / 2;
+            const top = y - grid.height / 2;
+            const kind = nodes.get(network).network || 'lan';
+            frames.push(`<div class="nm-group is-${esc(kind)}" style="left:${left}px;top:${top}px;width:${grid.width}px;height:${grid.height}px"></div>`);
+            let rowTop = top + GAP.pad;
+            for (let r = 0; r * grid.cols < grid.ids.length; r++) {
+                let colLeft = left + GAP.pad;
+                for (let c = 0; c < grid.cols && r * grid.cols + c < grid.ids.length; c++) {
+                    const el = elements.get(grid.ids[r * grid.cols + c]);
+                    el.style.left = `${colLeft}px`;
+                    el.style.top = `${rowTop + (grid.rowHeight[r] - el.offsetHeight) / 2}px`;
+                    colLeft += grid.colWidth[c] + GAP.x;
+                }
+                rowTop += grid.rowHeight[r] + GAP.y;
+            }
+            box.set(grid.id, { x, top, bottom: top + grid.height });
+        }
+        layer.insertAdjacentHTML('afterbegin', frames.join(''));
 
         // Links from the bottom of the upper node to the top of the lower one; down ones faint.
-        svg.innerHTML = map.edges.filter((edge) => box.has(edge.from) && box.has(edge.to)).map((edge) => {
+        const gridLinks = [...grids].map(([network, grid]) => ({ from: network, to: grid.id, type: ['wifi', 'cellular', 'vpn'].includes(nodes.get(network).network) ? nodes.get(network).network : 'lan', up: nodes.get(network).state === 'up' }));
+        svg.innerHTML = [...map.edges.filter((edge) => !inGrid.has(edge.to)), ...gridLinks].filter((edge) => box.has(edge.from) && box.has(edge.to)).map((edge) => {
             const a = box.get(edge.from);
             const b = box.get(edge.to);
             const mid = (a.bottom + b.top) / 2;

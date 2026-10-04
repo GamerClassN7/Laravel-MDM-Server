@@ -590,8 +590,9 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
    VPNs (WireGuard, Tailscale, …) span the sites and hang from the internet; the /32 of a VPN
    client is in its /24. Docker, VM and Bluetooth interfaces are left out.
 5. **Devices**, linked to every network they have an interface in: a solid line for LAN, dotted for
-   Wi-Fi, dashed for VPN. A device in one network only sits under it (in up to three rows), one of
-   several between them. Ping-only devices are in the network of their address; their agent shows
+   Wi-Fi, dashed for VPN. The devices of one network only (and its unknown devices, from four of
+   them) sit in a grid in a frame under it, one link to the frame; a device of several networks
+   stays between them. Ping-only devices are in the network of their address; their agent shows
    how many it pings.
 
 **This server** is placed in the network the agents reach it from over private addresses. Its

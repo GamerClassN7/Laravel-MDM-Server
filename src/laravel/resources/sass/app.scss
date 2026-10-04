@@ -274,6 +274,17 @@ label.mdm-tag {
     &.is-unknown .nm-badge { background: var(--bs-warning-bg-subtle); color: var(--bs-warning-text-emphasis); }
 }
 
+// The frame around the devices of one network (a grid under it).
+.nm-group {
+    position: absolute;
+    border: 1px dashed rgba(99, 132, 255, .45);
+    border-radius: .9rem;
+    background: rgba(99, 132, 255, .05);
+    &.is-wifi { border-color: rgba(150, 120, 255, .55); background: rgba(150, 120, 255, .05); }
+    &.is-vpn { border-color: rgba(23, 162, 184, .5); background: rgba(23, 162, 184, .05); }
+    &.is-cellular { border-color: rgba(160, 170, 190, .5); background: rgba(160, 170, 190, .05); }
+}
+
 .nm-dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; margin-right: .3rem; vertical-align: middle; background: #28c76f; }
 .nm-dot.is-offline { background: #6c757d; }
 .nm-dot.is-warning { background: #ea5455; }
