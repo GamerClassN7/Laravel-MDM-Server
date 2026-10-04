@@ -86,9 +86,11 @@
         @if (\App\Models\AlertRule::isEvent($type))
             <div>
                 <div class="small fw-medium text-muted mb-2">{{ __('On') }}</div>
-                <div class="small text-body-secondary"><i class="fas fa-globe me-1"></i>{{ $type === 'unknown_device'
-                    ? __('Every device an agent sees in its network (its ARP table or a scan) that no device of the portal has the MAC address of, from now on, once each. Ignored ones on the Networks page are left out.')
-                    : __('Every device enrolled with the agent or added as ping-only from now on, once each.') }}</div>
+                <div class="small text-body-secondary"><i class="fas fa-globe me-1"></i>{{ match ($type) {
+                    'unknown_device' => __('Every device an agent sees in its network (its ARP table or a scan) that no device of the portal has the MAC address of, from now on, once each. Ignored ones on the Networks page are left out.'),
+                    'address_changed' => __('Every time a ping-only device with a MAC address is seen at another IP address (DHCP): the portal follows it, the alert says to reserve the address in the router.'),
+                    default => __('Every device enrolled with the agent or added as ping-only from now on, once each.'),
+                } }}</div>
             </div>
         @else
             <div>

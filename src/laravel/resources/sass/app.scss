@@ -274,6 +274,17 @@ label.mdm-tag {
     &.is-unknown .nm-badge { background: var(--bs-warning-bg-subtle); color: var(--bs-warning-text-emphasis); }
 }
 
+// A network that shows or hides its devices on a click.
+.nm-node.is-toggle { cursor: pointer; }
+.nm-chev { font-size: .6rem; margin-left: .4rem; opacity: .6; }
+// The other networks of a device (on its card).
+.nm-tag {
+    display: inline-block; margin-left: .3rem; padding: 0 .35rem; border-radius: 1rem; font-size: .6rem; line-height: 1.1rem; vertical-align: 1px;
+    background: rgba(99, 132, 255, .2); color: #9db0ff;
+    &.is-wifi { background: rgba(150, 120, 255, .22); color: #c3b0ff; }
+    &.is-vpn { background: rgba(23, 162, 184, .22); color: #7fe0ee; }
+}
+
 .nm-dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 50%; margin-right: .3rem; vertical-align: middle; background: #28c76f; }
 .nm-dot.is-offline { background: #6c757d; }
 .nm-dot.is-warning { background: #ea5455; }
@@ -289,6 +300,9 @@ label.mdm-tag {
     &.is-tunnel { stroke: rgba(23, 162, 184, .55); stroke-dasharray: 2 4; }
     &.is-unknown { stroke: rgba(160, 170, 190, .6); stroke-width: 1.5; stroke-dasharray: 4 4; }
     &.is-down { opacity: .15; }
+    // The column of a grid behind its cards; the link of a device to its other network.
+    &.is-spine { opacity: .35; }
+    &.is-side { stroke-width: 2.4; opacity: 1; }
 }
 
 // Data tables (steelants/livewire-datatable): columns a table hides on narrow screens, set in its

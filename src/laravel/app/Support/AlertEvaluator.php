@@ -38,6 +38,10 @@ class AlertEvaluator
 
         foreach (AlertRule::query()->with('user')->get() as $rule) {
             if (AlertRule::isEvent($rule->type)) {
+                // Sent when it happens (addressChanged), not by a run.
+                if ($rule->type === 'address_changed') {
+                    continue;
+                }
                 try {
                     $counts['triggered'] += $rule->type === 'unknown_device' ? $this->announceUnknownDevices($rule) : $this->announceNewDevices($rule);
                 } catch (Throwable $e) {
@@ -299,6 +303,32 @@ class AlertEvaluator
         }
 
         return $sent;
+    }
+
+    /**
+     * A ping-only device with a MAC address moved to another IP address (the agents saw the MAC
+     * there, NetworkNeighbour::followMacs): its address is followed, the alert says to pin it.
+     */
+    public static function addressChanged(Device $device, string $from, string $to): void
+    {
+        $message = __(':device (:mac) moved from :from to :to: its address is dynamic. Reserve :to for the MAC address in the router (static DHCP lease) or set it on the device; the portal follows it meanwhile.', [
+            'device' => $device->displayName, 'mac' => $device->ping_mac, 'from' => $from, 'to' => $to,
+        ]);
+        foreach (AlertRule::query()->with('user')->where('type', 'address_changed')->where('enabled', true)->get() as $rule) {
+            try {
+                $rule->events()->create([
+                    'device_id' => $device->id,
+                    'message' => mb_strimwidth($message, 0, 1000),
+                    'value' => null,
+                    'triggered_at' => now(),
+                    'resolved_at' => now(),
+                ]);
+                LiveUpdates::device($device->id, 'alert');
+                Notifier::notify($rule->user, "🔀 {$device->displayName}: ".__('Address changed'), $message."\n".url('/devices?selectedDeviceId='.$device->id), $rule->channels);
+            } catch (Throwable $e) {
+                Log::warning("Alert rule {$rule->id} failed: {$e->getMessage()}");
+            }
+        }
     }
 
     private function trigger(AlertRule $rule, Device $device, array $result): void

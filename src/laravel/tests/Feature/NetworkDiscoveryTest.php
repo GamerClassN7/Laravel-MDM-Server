@@ -95,6 +95,8 @@ class NetworkDiscoveryTest extends TestCase
 
     public function test_a_ping_only_device_follows_its_mac_to_a_new_address(): void
     {
+        $user = User::factory()->create();
+        $rule = AlertRule::query()->create(['user_id' => $user->id, 'type' => 'address_changed', 'target' => [], 'channels' => [], 'enabled' => true]);
         $this->agent();
         $printer = new Device;
         $printer->forceFill(['kind' => 'ping', 'name' => 'Printer', 'os' => '', 'token' => hash('sha256', 'p'), 'ping_address' => '192.168.1.30', 'ping_prefix' => 24, 'ping_mac' => 'AA:BB:CC:00:00:30'])->save();
@@ -102,6 +104,12 @@ class NetworkDiscoveryTest extends TestCase
         $this->report('neighbours', [['Ip' => '192.168.1.31', 'Mac' => 'aa-bb-cc-00-00-30']]);
 
         $this->assertSame('192.168.1.31', $printer->fresh()->ping_address);
+        // The alert says it moved and to reserve the address.
+        $this->assertSame(1, $rule->events()->where('device_id', $printer->id)->count());
+        $this->assertStringContainsString('moved from 192.168.1.30 to 192.168.1.31', $rule->events()->first()->message);
+        // The same address again is no change.
+        $this->report('neighbours', [['Ip' => '192.168.1.31', 'Mac' => 'aa-bb-cc-00-00-30']]);
+        $this->assertSame(1, $rule->events()->count());
         // Known: not shown as unknown.
         $this->assertCount(0, NetworkNeighbour::unknown());
     }
@@ -125,10 +133,11 @@ class NetworkDiscoveryTest extends TestCase
         $nodes = collect($map['nodes'])->keyBy('id');
         $edges = collect($map['edges'])->keyBy('id');
         // The gateway is drawn as the gateway, not as an unknown device.
-        $this->assertSame(['raspberrypi.lan', '192.168.1.77'], $nodes->where('kind', 'unknown')->pluck('label')->values()->all());
-        $this->assertSame('unknown', $edges["net:gw:50:C7:BF:AA:BB:CC|192.168.1.0/24>unknown:{$pi->id}"]['type']);
-        // A click opens its network's card in the list.
-        $this->assertStringContainsString('/networks?view=list#network-', $nodes["unknown:{$pi->id}"]['url']);
+        // All of a network's unknown devices are one card; a click opens the network's card in the list.
+        $key = 'net:gw:50:C7:BF:AA:BB:CC|192.168.1.0/24';
+        $this->assertSame(['2 unknown devices'], $nodes->where('kind', 'unknown')->pluck('label')->values()->all());
+        $this->assertSame('unknown', $edges["{$key}>unknown:{$key}"]['type']);
+        $this->assertStringContainsString('/networks?view=list#network-', $nodes["unknown:{$key}"]['url']);
         $this->assertSame([$pi->id, $phone->id], array_column($map['networks'][0]['unknown'], 'id'));
 
         Livewire::withQueryParams(['view' => 'list'])->test(Page::class)->assertSee('2 unknown devices')->assertSee('raspberrypi.lan')
@@ -140,7 +149,7 @@ class NetworkDiscoveryTest extends TestCase
         $this->assertCount(0, NetworkNeighbour::unknown());
     }
 
-    public function test_more_unknown_devices_than_fit_are_one_node(): void
+    public function test_many_unknown_devices_are_still_one_node(): void
     {
         config(['mdm.public_address' => '31.30.4.122']);
         $this->agent();
@@ -148,8 +157,8 @@ class NetworkDiscoveryTest extends TestCase
 
         $nodes = collect(NetworkMap::build()['nodes'])->where('kind', 'unknown');
 
-        $this->assertCount(NetworkMap::MAX_UNKNOWN_NODES, $nodes);
-        $this->assertSame('+5 unknown', $nodes->last()['label']);
+        $this->assertCount(1, $nodes);
+        $this->assertSame('12 unknown devices', $nodes->first()['label']);
     }
 
     public function test_a_scan_goes_to_an_agent_in_the_network_that_allows_it(): void

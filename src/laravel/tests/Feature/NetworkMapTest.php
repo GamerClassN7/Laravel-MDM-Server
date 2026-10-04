@@ -121,6 +121,25 @@ class NetworkMapTest extends TestCase
         $this->assertSame('public · this server', collect($map['nodes'])->firstWhere('id', 'site:62.141.23.141')['sub']);
     }
 
+    public function test_a_device_without_the_gateway_mac_going_over_the_public_address_joins_its_lan(): void
+    {
+        // The LAN's public address is the server's (it is in it), here from MDM_PUBLIC_ADDRESS.
+        config(['mdm.public_address' => '62.141.23.141', 'app.url' => 'http://localhost']);
+        $gw = '50-C7-BF-AA-BB-CC';
+        $docker = $this->agent('docker-host', '192.168.1.5', [$this->nic('ens18', 'lan', '192.168.1.5', 24, true, '192.168.1.1', $gw)]);
+        // An old agent that does not report the router, offline, reaching the server over the router's address.
+        $asus = $this->agent('ASUS-PC-2', '62.141.23.141', [$this->nic('Ethernet', 'lan', '192.168.1.104', 24)], online: false);
+        // Another home that also uses 192.168.1.0/24 stays another network.
+        $other = $this->agent('OTHER', '89.24.10.5', [$this->nic('eth0', 'lan', '192.168.1.9', 24)]);
+
+        $networks = collect(NetworkMap::build()['networks']);
+
+        $home = $networks->firstWhere('id', 'net:gw:50:C7:BF:AA:BB:CC|192.168.1.0/24');
+        $this->assertSame([$docker->id, $asus->id], collect($home['devices'])->pluck('id')->sort()->values()->all());
+        $this->assertCount(2, $networks);
+        $this->assertSame([$other->id], collect($networks->firstWhere('id', 'net:89.24.10.5|192.168.1.0/24')['devices'])->pluck('id')->all());
+    }
+
     public function test_the_server_asks_for_its_public_address_when_nothing_else_tells_it(): void
     {
         config(['mdm.detect_public_address' => true, 'mdm.public_address' => null, 'app.url' => 'http://localhost', 'mdm.public_address_url' => 'https://ifconfig.me/ip']);

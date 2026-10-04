@@ -488,6 +488,7 @@ open the portal with (remembered in `storage/app/portal-url`; not localhost, and
   | Remediations | the latest run of a remediation script failed |
   | New device | a device is enrolled with the agent or added as ping-only (once each, nothing to resolve; sent with its name, system and agent version after its first report, at the latest 10 minutes after enrolment) |
   | Unknown device | an agent sees a device the portal does not know in its network (once each, see [Network discovery](#network-discovery)) |
+  | Address changed | a ping-only device with a MAC address is seen at another IP address (DHCP): the portal follows it, the alert says to reserve the address for the MAC in the router (static lease) or set it on the device |
 
   Disk and memory switch between **%** and **GB**: a percentage suits drives of the same size, a
   size suits the big ones (10 % of 4 TB are still 400 GB) and memory of different machines. GB are
@@ -589,10 +590,14 @@ address, the prefix of its network (`/24`) and optionally the MAC address for Wa
    the public address decides.
    VPNs (WireGuard, Tailscale, …) span the sites and hang from the internet; the /32 of a VPN
    client is in its /24. Docker, VM and Bluetooth interfaces are left out.
-5. **Devices**, linked to every network they have an interface in: a solid line for LAN, dotted for
-   Wi-Fi, dashed for VPN. A device in one network only sits under it (in up to three rows), one of
-   several between them. Ping-only devices are in the network of their address; their agent shows
-   how many it pings.
+5. **Devices** under their network: a click on a network shows or hides its devices (up to six
+   are shown at first, the rest on a click). They sit in a grid under it, without a frame, the
+   network centered over them; its unknown devices are one card. All links are right-angled with
+   rounded corners: solid for LAN, dotted for Wi-Fi, dashed for VPN. A device of several
+   networks is in the grid of its main one (LAN, then Wi-Fi, then VPN), in the first column,
+   with a tag for each other network; its links to those are drawn while you point at the
+   device or the network (not all devices of a LAN are in the VPN). Ping-only devices are in the
+   network of their address; their agent shows how many it pings.
 
 **This server** is placed in the network the agents reach it from over private addresses. Its
 public address is `MDM_PUBLIC_ADDRESS` when set, else the address another device of that network
