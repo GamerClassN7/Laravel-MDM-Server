@@ -389,6 +389,7 @@ class NetworkMap
                 __('see the network below'),
                 'fas fa-question', 'secondary', url: self::cardUrl($key), badges: $new > 0 ? [__(':count new', ['count' => $new])] : [],
                 extra: ['group' => $network['site'], 'more' => true]);
+            $this->nodes[$key]['sub'] .= ' · '.__(':count unknown', ['count' => count($unknown)]);
             $this->edge($key, 'unknown:'.$key, 'unknown', collect($unknown)->contains(fn (NetworkNeighbour $neighbour) => $neighbour->fresh));
         }
 

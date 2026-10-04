@@ -36,6 +36,33 @@ function rankSpan(edge, nodes) {
     return 1;
 }
 
+// A polyline with rounded corners (all links are right-angled, the same everywhere).
+function curve(points, radius = 12) {
+    let d = `M${points[0][0]} ${points[0][1]}`;
+    for (let i = 1; i < points.length - 1; i++) {
+        const [px, py] = points[i - 1];
+        const [x, y] = points[i];
+        const [nx, ny] = points[i + 1];
+        const before = Math.hypot(x - px, y - py);
+        const after = Math.hypot(nx - x, ny - y);
+        const k = Math.min(radius, before / 2, after / 2);
+        if (k < 0.5) {
+            d += ` L${x} ${y}`;
+            continue;
+        }
+        d += ` L${x - ((x - px) / before) * k} ${y - ((y - py) / before) * k} Q${x} ${y} ${x + ((nx - x) / after) * k} ${y + ((ny - y) / after) * k}`;
+    }
+    const [lx, ly] = points[points.length - 1];
+
+    return `${d} L${lx} ${ly}`;
+}
+
+// Down from the parent, across at the height `mid`, down to the child.
+const elbow = (a, b, mid) => (Math.abs(a.x - b.x) < 0.5 ? [[a.x, a.bottom], [b.x, b.top]] : [[a.x, a.bottom], [a.x, mid], [b.x, mid], [b.x, b.top]]);
+
+const NETWORK_NAMES = { vpn: 'VPN', wifi: 'Wi-Fi', mixed: 'LAN', cellular: 'Mobile', lan: 'LAN' };
+const networkName = (node) => NETWORK_NAMES[node.network] || 'LAN';
+
 export function createNetworkMap(root, data) {
     root.innerHTML = '<div class="nm-viewport"><div class="nm-stage"><svg class="nm-links"></svg><div class="nm-nodes"></div></div></div>'
         + '<div class="nm-tools">'
@@ -74,13 +101,21 @@ export function createNetworkMap(root, data) {
         apply();
     };
 
+    // Which networks show their devices: what the user chose, else small ones (a click toggles).
+    const OPEN_UP_TO = 6;
+    const chosen = new Map();
+    let current = null;
+    let hover = new Set();
+
     const render = (map) => {
+        current = map;
         const nodes = new Map(map.nodes.map((node) => [node.id, node]));
         layer.innerHTML = '';
         const elements = new Map();
         for (const node of map.nodes) {
             const el = document.createElement(node.url ? 'a' : 'div');
             el.className = `nm-node is-${node.kind} tone-${node.tone} state-${node.state}${node.isolated ? ' is-isolated' : ''}`;
+            el.dataset.id = node.id;
             if (node.url) {
                 el.href = node.url;
             }
@@ -92,11 +127,10 @@ export function createNetworkMap(root, data) {
             elements.set(node.id, el);
         }
 
-        // Laid out with the sizes the nodes render at.
-        // The devices of a network (and its unknown devices) sit in a grid in a frame under it, one
-        // block for dagre. A device of several networks is in the grid of its main one (a wired LAN
-        // before Wi-Fi before a VPN), in the first row; its other networks link to the device itself
-        // (not to the frame: not all devices of a LAN are in the VPN).
+        // The devices of a network sit in a grid under it (shown when the network is open); a device
+        // of several networks is in the grid of its main one (a wired LAN before Wi-Fi before a VPN),
+        // in the first column; its other networks link to it on hover (not all devices of a LAN are
+        // in the VPN).
         const parents = new Map();
         for (const edge of map.edges) {
             if (nodes.get(edge.from)?.kind === 'network') {
@@ -114,34 +148,65 @@ export function createNetworkMap(root, data) {
                 members.set(main.get(node.id), [...(members.get(main.get(node.id)) || []), node.id]);
             }
         }
-        const grids = new Map();
-        const inGrid = new Set();
-        const sideLinks = new Map();
-        const GAP = { x: 14, y: 12, pad: 0, bus: 22 };
+        const isOpen = (network) => (chosen.has(network) ? chosen.get(network) : (members.get(network) || []).length <= OPEN_UP_TO);
         const shared = new Set(map.edges.filter((edge) => main.has(edge.to) && edge.from !== main.get(edge.to)).map((edge) => edge.to));
-        for (const [network, all] of members) {
-            if (all.length < 4) {
-                continue;
+
+        for (const [id, el] of elements) {
+            const node = nodes.get(id);
+            if (node.kind === 'network' && (members.get(id) || []).length > 0) {
+                const open = isOpen(id);
+                el.classList.add('is-toggle', open ? 'is-open' : 'is-closed');
+                el.querySelector('.nm-label').insertAdjacentHTML('beforeend', `<i class="fas fa-chevron-${open ? 'down' : 'right'} nm-chev"></i>`);
+                el.title = open ? 'Hide the devices' : 'Show the devices';
             }
-            const ids = [...all.filter((id) => shared.has(id)), ...all.filter((id) => !shared.has(id))];
-            const cols = Math.min(ids.length, 6, Math.max(3, Math.round(Math.sqrt(ids.length * 1.8))));
-            const rows = Math.ceil(ids.length / cols);
-            const colWidth = Array.from({ length: cols }, (_, c) => Math.max(...ids.filter((_, k) => k % cols === c).map((id) => elements.get(id).offsetWidth)));
-            const rowHeight = Array.from({ length: rows }, (_, r) => Math.max(...ids.slice(r * cols, (r + 1) * cols).map((id) => elements.get(id).offsetHeight)));
-            const width = colWidth.reduce((a, b) => a + b, 0) + GAP.x * (cols - 1) + GAP.pad * 2;
-            const height = rowHeight.reduce((a, b) => a + b, 0) + GAP.y * (rows - 1) + GAP.pad * 2 + GAP.bus;
-            grids.set(network, { id: `grid:${network}`, ids, cols, colWidth, rowHeight, width, height });
-            ids.forEach((id) => inGrid.add(id));
-        }
-        // The other networks of the devices in a grid: a link to each of those devices.
-        for (const edge of map.edges) {
-            if (inGrid.has(edge.to) && edge.from !== main.get(edge.to)) {
-                sideLinks.set(edge.id, { from: edge.from, to: edge.to, type: edge.type, up: edge.up });
+            // The other networks of a device: tags on its card.
+            const others = (parents.get(id) || []).filter((owner) => owner !== main.get(id));
+            if (main.has(id) && others.length > 0) {
+                el.querySelector('.nm-label').insertAdjacentHTML('beforeend', others.map((owner) => `<span class="nm-tag is-${esc(nodes.get(owner).network)}">${esc(networkName(nodes.get(owner)))}</span>`).join(''));
             }
         }
 
+        const grids = new Map();
+        const inGrid = new Set();
+        const hidden = new Set();
+        const GAP = { x: 14, y: 12 };
+        for (const [network, all] of members) {
+            if (!isOpen(network)) {
+                all.forEach((id) => hidden.add(id));
+                continue;
+            }
+            const first = all.filter((id) => shared.has(id));
+            const rest = all.filter((id) => !shared.has(id));
+            const cols = Math.min(all.length, 6, Math.max(3, Math.round(Math.sqrt(all.length * 1.8))));
+            const rows = Math.max(Math.ceil(all.length / cols), first.length);
+            // Shared devices down the first column, the others row by row in the rest.
+            const cell = new Map(first.map((id, row) => [id, { row, col: 0 }]));
+            let k = 0;
+            for (let row = 0; row < rows && k < rest.length; row++) {
+                for (let col = 0; col < cols && k < rest.length; col++) {
+                    if (col === 0 && row < first.length) {
+                        continue;
+                    }
+                    cell.set(rest[k++], { row, col });
+                }
+            }
+            const ids = [...cell.keys()];
+            const usedRows = Math.max(...[...cell.values()].map((c) => c.row)) + 1;
+            const colWidth = Array.from({ length: cols }, (_, c) => Math.max(0, ...ids.filter((id) => cell.get(id).col === c).map((id) => elements.get(id).offsetWidth)));
+            const rowHeight = Array.from({ length: usedRows }, (_, r) => Math.max(0, ...ids.filter((id) => cell.get(id).row === r).map((id) => elements.get(id).offsetHeight)));
+            const width = colWidth.reduce((a, b) => a + b, 0) + GAP.x * (cols - 1);
+            const height = rowHeight.reduce((a, b) => a + b, 0) + GAP.y * (usedRows - 1);
+            grids.set(network, { id: `grid:${network}`, ids, cell, cols, rows: usedRows, colWidth, rowHeight, width, height });
+            ids.forEach((id) => inGrid.add(id));
+        }
+        // The other networks of the devices that are shown in a grid.
+        const sideLinks = map.edges.filter((edge) => inGrid.has(edge.to) && edge.from !== main.get(edge.to));
+        for (const id of hidden) {
+            elements.get(id).style.display = 'none';
+        }
+
         const graph = new dagre.graphlib.Graph({ compound: true });
-        graph.setGraph({ rankdir: 'TB', nodesep: 28, ranksep: 64, edgesep: 12, marginx: 24, marginy: 24 });
+        graph.setGraph({ rankdir: 'TB', nodesep: 32, ranksep: 64, edgesep: 12, marginx: 0, marginy: 24 });
         graph.setDefaultEdgeLabel(() => ({}));
         const clusterOf = (node) => {
             if (node.group && node.kind !== 'internet') {
@@ -152,88 +217,31 @@ export function createNetworkMap(root, data) {
                 graph.setParent(node.id, cluster);
             }
         };
+        const placed = (id) => !inGrid.has(id) && !hidden.has(id);
         for (const [id, el] of elements) {
-            if (!inGrid.has(id)) {
+            if (placed(id)) {
                 graph.setNode(id, { width: el.offsetWidth, height: el.offsetHeight });
             }
         }
         for (const node of map.nodes) {
-            if (!inGrid.has(node.id)) {
+            if (placed(node.id)) {
                 clusterOf(node);
             }
         }
+        // A grid is one block of its real size under its network: dagre centers the network over it.
         for (const [network, grid] of grids) {
-            // A narrow stand-in for the layout, widened below (centered under its network).
-            graph.setNode(grid.id, { width: Math.min(grid.width, 150), height: grid.height });
+            graph.setNode(grid.id, { width: grid.width, height: grid.height });
             clusterOf({ id: grid.id, group: nodes.get(network).group, kind: 'grid' });
-            graph.setEdge(network, grid.id, { minlen: 1, weight: 1 });
+            graph.setEdge(network, grid.id, { minlen: 1, weight: 2 });
         }
-
         for (const edge of map.edges) {
-            if (nodes.has(edge.from) && nodes.has(edge.to) && !inGrid.has(edge.to)) {
+            if (nodes.has(edge.from) && nodes.has(edge.to) && placed(edge.to) && placed(edge.from)) {
                 graph.setEdge(edge.from, edge.to, { minlen: rankSpan(edge, nodes), weight: edge.type === 'tunnel' ? 0 : 1 });
             }
         }
         dagre.layout(graph);
 
-        // The grids at their real width, centered under their network; what stands beside them in
-        // the same row moves aside (left to right, then the row back to where it was on average).
-        if (grids.size > 0) {
-            const rows = new Map();
-            for (const id of graph.nodes()) {
-                const n = graph.node(id);
-                if (!id.startsWith('cluster:') && n.x !== undefined) {
-                    const key = Math.round(n.y);
-                    rows.set(key, [...(rows.get(key) || []), { id, n }]);
-                }
-            }
-            const gridOf = new Map([...grids.values()].map((grid) => [grid.id, grid]));
-            for (const row of rows.values()) {
-                if (!row.some((item) => gridOf.has(item.id))) {
-                    continue;
-                }
-                const GAP_X = 28;
-                const items = row.map((item) => {
-                    const grid = gridOf.get(item.id);
-                    const want = grid ? graph.node([...grids].find(([, g]) => g === grid)[0]).x : item.n.x;
-                    return { ...item, grid: !!grid, want, x: want, width: grid ? grid.width : item.n.width };
-                }).sort((a, b) => a.want - b.want);
-                // The grids stay under their network (apart from each other when they would overlap).
-                const fixed = items.filter((item) => item.grid);
-                for (let k = 1; k < fixed.length; k++) {
-                    fixed[k].x = Math.max(fixed[k].x, fixed[k - 1].x + (fixed[k - 1].width + fixed[k].width) / 2 + GAP_X);
-                }
-                // The others beside a grid share both sides of it evenly (symmetric), outward from it.
-                const sides = new Map(fixed.map((item) => [item, { left: [], right: [] }]));
-                const byGrid = new Map(fixed.map((item) => [item, []]));
-                for (const item of items.filter((candidate) => !candidate.grid)) {
-                    byGrid.get(fixed.reduce((best, candidate) => (Math.abs(candidate.want - item.want) < Math.abs(best.want - item.want) ? candidate : best))).push(item);
-                }
-                for (const [grid, list] of byGrid) {
-                    list.sort((a, b) => a.want - b.want);
-                    const half = Math.ceil(list.length / 2);
-                    sides.get(grid).left = list.slice(0, half);
-                    sides.get(grid).right = list.slice(half);
-                }
-                for (const [grid, { left, right }] of sides) {
-                    let edge = grid.x - grid.width / 2 - GAP_X;
-                    for (const item of left.sort((a, b) => b.want - a.want)) {
-                        item.x = edge - item.width / 2;
-                        edge = item.x - item.width / 2 - GAP_X;
-                    }
-                    edge = grid.x + grid.width / 2 + GAP_X;
-                    for (const item of right.sort((a, b) => a.want - b.want)) {
-                        item.x = edge + item.width / 2;
-                        edge = item.x + item.width / 2 + GAP_X;
-                    }
-                }
-                for (const item of items) {
-                    item.n.x = item.x;
-                    item.n.width = item.width;
-                }
-            }
-        }
-        // The view as big as what is drawn.
+        // The view as big as what is drawn (room on the left for a link running beside a grid).
         let minX = Infinity;
         let maxX = -Infinity;
         for (const id of graph.nodes()) {
@@ -243,14 +251,15 @@ export function createNetworkMap(root, data) {
                 maxX = Math.max(maxX, n.x + n.width / 2);
             }
         }
-        const margin = 24;
+        const margin = 28;
+        const shift = margin + (sideLinks.length > 0 ? 24 : 0) - minX;
         for (const id of graph.nodes()) {
             const n = graph.node(id);
             if (n.x !== undefined) {
-                n.x += margin - minX;
+                n.x += shift;
             }
         }
-        size = { width: maxX - minX + margin * 2, height: graph.graph().height };
+        size = { width: maxX - minX + margin * 2 + (sideLinks.length > 0 ? 24 : 0), height: graph.graph().height };
         stage.style.width = `${size.width}px`;
         stage.style.height = `${size.height}px`;
         svg.setAttribute('width', size.width);
@@ -258,7 +267,7 @@ export function createNetworkMap(root, data) {
 
         const box = new Map();
         for (const [id, el] of elements) {
-            if (inGrid.has(id)) {
+            if (!placed(id)) {
                 continue;
             }
             const { x, y, width, height } = graph.node(id);
@@ -267,53 +276,93 @@ export function createNetworkMap(root, data) {
             }
             el.style.left = `${x - width / 2}px`;
             el.style.top = `${y - height / 2}px`;
-            box.set(id, { x, top: y - height / 2, bottom: y + height / 2 });
+            box.set(id, { x, top: y - height / 2, bottom: y + height / 2, left: x - width / 2, right: x + width / 2 });
         }
-        // The grids: the devices in rows and columns of their own width and height, hung on a bar
-        // under their network (no frame).
         const bars = [];
+        const gridBox = new Map();
         for (const [network, grid] of grids) {
             const { x, y } = graph.node(grid.id);
             const left = x - grid.width / 2;
-            const top = y - grid.height / 2 + GAP.bus;
+            const top = y - grid.height / 2;
+            gridBox.set(network, { left, top, right: left + grid.width });
+            const colLeft = grid.colWidth.map((_, c) => left + grid.colWidth.slice(0, c).reduce((a, b) => a + b + GAP.x, 0));
+            const rowTop = grid.rowHeight.map((_, r) => top + grid.rowHeight.slice(0, r).reduce((a, b) => a + b + GAP.y, 0));
+            for (const id of grid.ids) {
+                const el = elements.get(id);
+                const { row, col } = grid.cell.get(id);
+                const elTop = rowTop[row] + (grid.rowHeight[row] - el.offsetHeight) / 2;
+                el.style.left = `${colLeft[col]}px`;
+                el.style.top = `${elTop}px`;
+                box.set(id, { x: colLeft[col] + el.offsetWidth / 2, top: elTop, bottom: elTop + el.offsetHeight, left: colLeft[col], right: colLeft[col] + el.offsetWidth });
+            }
+            // One link from the network to the top device of every column, the column goes on behind its cards.
             const kind = ['wifi', 'cellular', 'vpn'].includes(nodes.get(network).network) ? nodes.get(network).network : 'lan';
             const cls = `nm-link is-${kind}${nodes.get(network).state === 'up' ? '' : ' is-down'}`;
-            const firstRow = grid.ids.slice(0, grid.cols).map((id, c) => ({ id, c }));
-            let rowTop = top + GAP.pad;
-            for (let r = 0; r * grid.cols < grid.ids.length; r++) {
-                let colLeft = left + GAP.pad;
-                for (let c = 0; c < grid.cols && r * grid.cols + c < grid.ids.length; c++) {
-                    const el = elements.get(grid.ids[r * grid.cols + c]);
-                    el.style.left = `${colLeft}px`;
-                    const elTop = rowTop + (grid.rowHeight[r] - el.offsetHeight) / 2;
-                    el.style.top = `${elTop}px`;
-                    const id = grid.ids[r * grid.cols + c];
-                    box.set(id, { x: colLeft + el.offsetWidth / 2, top: elTop, bottom: elTop + el.offsetHeight });
-                    colLeft += grid.colWidth[c] + GAP.x;
+            const parent = box.get(network);
+            const mid = parent.bottom + 32;
+            for (let c = 0; c < grid.cols; c++) {
+                const column = grid.ids.filter((id) => grid.cell.get(id).col === c).sort((p, q) => grid.cell.get(p).row - grid.cell.get(q).row);
+                if (column.length === 0) {
+                    continue;
                 }
-                rowTop += grid.rowHeight[r] + GAP.y;
+                const head = box.get(column[0]);
+                bars.push(`<path class="${cls}" d="${curve(elbow(parent, head, mid))}"></path>`);
+                if (column.length > 1) {
+                    bars.push(`<path class="${cls} is-spine" d="M${head.x} ${head.bottom} V${box.get(column[column.length - 1]).top}"></path>`);
+                }
             }
-            box.set(grid.id, { x, top, bottom: top + grid.height });
-            // A bar over the first row with a drop to every column; the columns go on behind their cards.
-            const busY = top - GAP.bus / 2;
-            const xs = firstRow.map(({ c }) => left + GAP.pad + grid.colWidth.slice(0, c).reduce((a, b) => a + b + GAP.x, 0) + grid.colWidth[c] / 2);
-            const spine = (grid.rowHeight.length > 1) ? xs.map((cx, c) => ({ cx, last: box.get(grid.ids.filter((_, k) => k % grid.cols === c).pop()) })) : [];
-            bars.push(`<path class="${cls}" d="M${x} ${box.get(network).bottom} V${busY} M${Math.min(...xs)} ${busY} H${Math.max(...xs)} ${xs.map((cx) => `M${cx} ${busY} V${top}`).join(' ')} ${spine.map(({ cx, last }) => `M${cx} ${top} V${last.top}`).join(' ')}"></path>`);
         }
 
         // Links from the bottom of the upper node to the top of the lower one; down ones faint.
-        svg.innerHTML = bars.join('') + [...map.edges.filter((edge) => !inGrid.has(edge.to)), ...sideLinks.values()].filter((edge) => box.has(edge.from) && box.has(edge.to)).map((edge) => {
+        const drawn = map.edges.filter((edge) => placed(edge.to) && placed(edge.from) && box.has(edge.from) && box.has(edge.to)).map((edge) => {
             const a = box.get(edge.from);
             const b = box.get(edge.to);
-            const mid = (a.bottom + b.top) / 2;
+            const mid = edge.type === 'tunnel' ? a.bottom + 14 : rankSpan(edge, nodes) > 1 ? b.top - 32 : a.bottom + 32;
             const title = edge.label ? `<title>${esc(edge.label)}</title>` : '';
-            return `<path class="nm-link is-${esc(edge.type)}${edge.up ? '' : ' is-down'}" d="M${a.x} ${a.bottom} C ${a.x} ${mid}, ${b.x} ${mid}, ${b.x} ${b.top}">${title}</path>`;
-        }).join('');
+            return `<path class="nm-link is-${esc(edge.type)}${edge.up ? '' : ' is-down'}" d="${curve(elbow(a, b, mid))}">${title}</path>`;
+        });
+
+        // The other networks of a device: drawn while the device or the network is pointed at.
+        const side = (edge) => {
+            const net = box.get(edge.from);
+            const dev = box.get(edge.to);
+            const grid = gridBox.get(main.get(edge.to));
+            if (!net || !dev || !grid) {
+                return '';
+            }
+            const y = (dev.top + dev.bottom) / 2;
+            const channel = grid.left - 14;
+            const points = net.x < grid.left - 24
+                ? [[net.x, net.bottom], [net.x, y], [dev.left, y]]
+                : [[net.x, net.bottom], [net.x, net.bottom + 18], [channel, net.bottom + 18], [channel, y], [dev.left, y]];
+            return `<path class="nm-link is-side is-${esc(edge.type)}" d="${curve(points)}"></path>`;
+        };
+        const drawSide = () => {
+            sideLayer.innerHTML = sideLinks.filter((edge) => hover.has(edge.from) || hover.has(edge.to)).map(side).join('');
+        };
+        svg.innerHTML = `<g>${bars.join('')}${drawn.join('')}</g><g class="nm-side"></g>`;
+        const sideLayer = svg.querySelector('.nm-side');
+        drawSide();
+        layer.onpointerover = (event) => {
+            const id = event.target.closest('.nm-node')?.dataset.id;
+            hover = new Set(id ? [id] : []);
+            drawSide();
+        };
+        layer.onpointerleave = () => {
+            hover = new Set();
+            drawSide();
+        };
 
         if (!fitted) {
             fit();
             fitted = true;
         }
+    };
+
+    const toggle = (network) => {
+        const open = layer.querySelector(`[data-id="${CSS.escape(network)}"]`)?.classList.contains('is-open');
+        chosen.set(network, !open);
+        render(current);
     };
 
     // Dragging pans, two fingers pinch; a click on a node opens it (not after a drag).
@@ -371,6 +420,12 @@ export function createNetworkMap(root, data) {
             event.stopPropagation();
         }
     }, true);
+    viewport.addEventListener('click', (event) => {
+        const network = event.target.closest('.nm-node.is-toggle');
+        if (network && !moved) {
+            toggle(network.dataset.id);
+        }
+    });
     viewport.addEventListener('wheel', (event) => {
         event.preventDefault();
         const rect = viewport.getBoundingClientRect();

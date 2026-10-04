@@ -95,6 +95,8 @@ class NetworkDiscoveryTest extends TestCase
 
     public function test_a_ping_only_device_follows_its_mac_to_a_new_address(): void
     {
+        $user = User::factory()->create();
+        $rule = AlertRule::query()->create(['user_id' => $user->id, 'type' => 'address_changed', 'target' => [], 'channels' => [], 'enabled' => true]);
         $this->agent();
         $printer = new Device;
         $printer->forceFill(['kind' => 'ping', 'name' => 'Printer', 'os' => '', 'token' => hash('sha256', 'p'), 'ping_address' => '192.168.1.30', 'ping_prefix' => 24, 'ping_mac' => 'AA:BB:CC:00:00:30'])->save();
@@ -102,6 +104,12 @@ class NetworkDiscoveryTest extends TestCase
         $this->report('neighbours', [['Ip' => '192.168.1.31', 'Mac' => 'aa-bb-cc-00-00-30']]);
 
         $this->assertSame('192.168.1.31', $printer->fresh()->ping_address);
+        // The alert says it moved and to reserve the address.
+        $this->assertSame(1, $rule->events()->where('device_id', $printer->id)->count());
+        $this->assertStringContainsString('moved from 192.168.1.30 to 192.168.1.31', $rule->events()->first()->message);
+        // The same address again is no change.
+        $this->report('neighbours', [['Ip' => '192.168.1.31', 'Mac' => 'aa-bb-cc-00-00-30']]);
+        $this->assertSame(1, $rule->events()->count());
         // Known: not shown as unknown.
         $this->assertCount(0, NetworkNeighbour::unknown());
     }

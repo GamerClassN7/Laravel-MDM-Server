@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\AlertEvaluator;
 use App\Support\LiveUpdates;
 use App\Support\NetworkMap;
 use Illuminate\Database\Eloquent\Builder;
@@ -180,8 +181,10 @@ class NetworkNeighbour extends Model
             if ($device->ping_address === $now['ip'] || ! $device->ping_address || ! NetworkMap::contains($now['network'], $device->ping_address)) {
                 continue;
             }
+            $from = $device->ping_address;
             $device->ping_address = $now['ip'];
             $device->save();
+            AlertEvaluator::addressChanged($device, $from, $now['ip']);
             LiveUpdates::device($device->id, 'ping');
         }
     }
