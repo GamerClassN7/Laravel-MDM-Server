@@ -25,9 +25,6 @@ class NetworkMap
     /** Interfaces that stay inside the machine (containers, VMs) or are no network. */
     public const SKIPPED_TYPES = ['docker', 'virtual', 'bluetooth'];
 
-    /** Unknown devices drawn per network; the rest are one node ("+12 unknown"). */
-    public const MAX_UNKNOWN_NODES = 8;
-
     /** Seconds the addresses of this server's name are kept. */
     private const RESOLVE_TTL = 3600;
 
@@ -381,22 +378,18 @@ class NetworkMap
             }
             $this->networks[$key]['unknown'][] = $neighbour;
         }
+        // All unknown devices of a network are one card (the list below has them).
         foreach ($this->networks as $key => $network) {
             $unknown = $network['unknown'] ?? [];
-            $shown = count($unknown) > self::MAX_UNKNOWN_NODES ? array_slice($unknown, 0, self::MAX_UNKNOWN_NODES - 1) : $unknown;
-            foreach ($shown as $neighbour) {
-                $this->node('unknown:'.$neighbour->id, 'unknown', $neighbour->displayName, $neighbour->hostname ? $neighbour->ip : $neighbour->mac,
-                    'fas fa-question', 'secondary', state: $neighbour->fresh ? 'up' : 'offline', url: self::cardUrl($key),
-                    badges: array_values(array_filter([$neighbour->first_seen_at->gte(now()->subDay()) ? __('new') : null])),
-                    extra: ['title' => self::neighbourTitle($neighbour), 'group' => $network['site']]);
-                $this->edge($key, 'unknown:'.$neighbour->id, 'unknown', $neighbour->fresh, $neighbour->ip);
+            if ($unknown === []) {
+                continue;
             }
-            if (count($unknown) > count($shown)) {
-                $rest = count($unknown) - count($shown);
-                $this->node('unknown:'.$key, 'unknown', __('+:count unknown', ['count' => $rest]), __('see the network below'), 'fas fa-ellipsis-h', 'secondary',
-                    url: self::cardUrl($key), extra: ['group' => $network['site'], 'more' => true]);
-                $this->edge($key, 'unknown:'.$key, 'unknown', true);
-            }
+            $new = collect($unknown)->filter(fn (NetworkNeighbour $neighbour) => $neighbour->first_seen_at->gte(now()->subDay()))->count();
+            $this->node('unknown:'.$key, 'unknown', trans_choice(':count unknown device|:count unknown devices', count($unknown), ['count' => count($unknown)]),
+                __('see the network below'),
+                'fas fa-question', 'secondary', url: self::cardUrl($key), badges: $new > 0 ? [__(':count new', ['count' => $new])] : [],
+                extra: ['group' => $network['site'], 'more' => true]);
+            $this->edge($key, 'unknown:'.$key, 'unknown', collect($unknown)->contains(fn (NetworkNeighbour $neighbour) => $neighbour->fresh));
         }
 
         // This server: in the network the agents reach it from over private addresses, else at its site.

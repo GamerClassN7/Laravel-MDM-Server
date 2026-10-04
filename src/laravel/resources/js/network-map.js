@@ -117,7 +117,7 @@ export function createNetworkMap(root, data) {
         const grids = new Map();
         const inGrid = new Set();
         const sideLinks = new Map();
-        const GAP = { x: 14, y: 12, pad: 12 };
+        const GAP = { x: 14, y: 12, pad: 0, bus: 22 };
         const shared = new Set(map.edges.filter((edge) => main.has(edge.to) && edge.from !== main.get(edge.to)).map((edge) => edge.to));
         for (const [network, all] of members) {
             if (all.length < 4) {
@@ -129,7 +129,7 @@ export function createNetworkMap(root, data) {
             const colWidth = Array.from({ length: cols }, (_, c) => Math.max(...ids.filter((_, k) => k % cols === c).map((id) => elements.get(id).offsetWidth)));
             const rowHeight = Array.from({ length: rows }, (_, r) => Math.max(...ids.slice(r * cols, (r + 1) * cols).map((id) => elements.get(id).offsetHeight)));
             const width = colWidth.reduce((a, b) => a + b, 0) + GAP.x * (cols - 1) + GAP.pad * 2;
-            const height = rowHeight.reduce((a, b) => a + b, 0) + GAP.y * (rows - 1) + GAP.pad * 2;
+            const height = rowHeight.reduce((a, b) => a + b, 0) + GAP.y * (rows - 1) + GAP.pad * 2 + GAP.bus;
             grids.set(network, { id: `grid:${network}`, ids, cols, colWidth, rowHeight, width, height });
             ids.forEach((id) => inGrid.add(id));
         }
@@ -203,21 +203,27 @@ export function createNetworkMap(root, data) {
                 for (let k = 1; k < fixed.length; k++) {
                     fixed[k].x = Math.max(fixed[k].x, fixed[k - 1].x + (fixed[k - 1].width + fixed[k].width) / 2 + GAP_X);
                 }
-                // Each of the others goes to the side of the nearest grid it was on, outward from it.
+                // The others beside a grid share both sides of it evenly (symmetric), outward from it.
                 const sides = new Map(fixed.map((item) => [item, { left: [], right: [] }]));
+                const byGrid = new Map(fixed.map((item) => [item, []]));
                 for (const item of items.filter((candidate) => !candidate.grid)) {
-                    const nearest = fixed.reduce((best, candidate) => (Math.abs(candidate.want - item.want) < Math.abs(best.want - item.want) ? candidate : best));
-                    sides.get(nearest)[item.want < nearest.want ? 'left' : 'right'].push(item);
+                    byGrid.get(fixed.reduce((best, candidate) => (Math.abs(candidate.want - item.want) < Math.abs(best.want - item.want) ? candidate : best))).push(item);
+                }
+                for (const [grid, list] of byGrid) {
+                    list.sort((a, b) => a.want - b.want);
+                    const half = Math.ceil(list.length / 2);
+                    sides.get(grid).left = list.slice(0, half);
+                    sides.get(grid).right = list.slice(half);
                 }
                 for (const [grid, { left, right }] of sides) {
                     let edge = grid.x - grid.width / 2 - GAP_X;
                     for (const item of left.sort((a, b) => b.want - a.want)) {
-                        item.x = Math.min(item.want, edge - item.width / 2);
+                        item.x = edge - item.width / 2;
                         edge = item.x - item.width / 2 - GAP_X;
                     }
                     edge = grid.x + grid.width / 2 + GAP_X;
                     for (const item of right.sort((a, b) => a.want - b.want)) {
-                        item.x = Math.max(item.want, edge + item.width / 2);
+                        item.x = edge + item.width / 2;
                         edge = item.x + item.width / 2 + GAP_X;
                     }
                 }
@@ -263,14 +269,16 @@ export function createNetworkMap(root, data) {
             el.style.top = `${y - height / 2}px`;
             box.set(id, { x, top: y - height / 2, bottom: y + height / 2 });
         }
-        // The grids: a frame behind, the devices in rows and columns of their own width and height.
-        const frames = [];
+        // The grids: the devices in rows and columns of their own width and height, hung on a bar
+        // under their network (no frame).
+        const bars = [];
         for (const [network, grid] of grids) {
             const { x, y } = graph.node(grid.id);
             const left = x - grid.width / 2;
-            const top = y - grid.height / 2;
-            const kind = nodes.get(network).network || 'lan';
-            frames.push(`<div class="nm-group is-${esc(kind)}" style="left:${left}px;top:${top}px;width:${grid.width}px;height:${grid.height}px"></div>`);
+            const top = y - grid.height / 2 + GAP.bus;
+            const kind = ['wifi', 'cellular', 'vpn'].includes(nodes.get(network).network) ? nodes.get(network).network : 'lan';
+            const cls = `nm-link is-${kind}${nodes.get(network).state === 'up' ? '' : ' is-down'}`;
+            const firstRow = grid.ids.slice(0, grid.cols).map((id, c) => ({ id, c }));
             let rowTop = top + GAP.pad;
             for (let r = 0; r * grid.cols < grid.ids.length; r++) {
                 let colLeft = left + GAP.pad;
@@ -286,12 +294,15 @@ export function createNetworkMap(root, data) {
                 rowTop += grid.rowHeight[r] + GAP.y;
             }
             box.set(grid.id, { x, top, bottom: top + grid.height });
+            // A bar over the first row with a drop to every column; the columns go on behind their cards.
+            const busY = top - GAP.bus / 2;
+            const xs = firstRow.map(({ c }) => left + GAP.pad + grid.colWidth.slice(0, c).reduce((a, b) => a + b + GAP.x, 0) + grid.colWidth[c] / 2);
+            const spine = (grid.rowHeight.length > 1) ? xs.map((cx, c) => ({ cx, last: box.get(grid.ids.filter((_, k) => k % grid.cols === c).pop()) })) : [];
+            bars.push(`<path class="${cls}" d="M${x} ${box.get(network).bottom} V${busY} M${Math.min(...xs)} ${busY} H${Math.max(...xs)} ${xs.map((cx) => `M${cx} ${busY} V${top}`).join(' ')} ${spine.map(({ cx, last }) => `M${cx} ${top} V${last.top}`).join(' ')}"></path>`);
         }
-        layer.insertAdjacentHTML('afterbegin', frames.join(''));
 
         // Links from the bottom of the upper node to the top of the lower one; down ones faint.
-        const gridLinks = [...sideLinks.values(), ...[...grids].map(([network, grid]) => ({ from: network, to: grid.id, type: ['wifi', 'cellular', 'vpn'].includes(nodes.get(network).network) ? nodes.get(network).network : 'lan', up: nodes.get(network).state === 'up' }))];
-        svg.innerHTML = [...map.edges.filter((edge) => !inGrid.has(edge.to)), ...gridLinks].filter((edge) => box.has(edge.from) && box.has(edge.to)).map((edge) => {
+        svg.innerHTML = bars.join('') + [...map.edges.filter((edge) => !inGrid.has(edge.to)), ...sideLinks.values()].filter((edge) => box.has(edge.from) && box.has(edge.to)).map((edge) => {
             const a = box.get(edge.from);
             const b = box.get(edge.to);
             const mid = (a.bottom + b.top) / 2;
