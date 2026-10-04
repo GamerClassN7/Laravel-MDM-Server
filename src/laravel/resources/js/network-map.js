@@ -245,6 +245,27 @@ export function createNetworkMap(root, data) {
         }
         dagre.layout(graph);
 
+        // A parent centered over its children (dagre leans to the side that has more edges, such as
+        // the VPN tunnels); only where nothing stands in its way.
+        const kids = new Map();
+        for (const edge of map.edges) {
+            if (edge.type !== 'tunnel' && placed(edge.to) && placed(edge.from) && graph.hasNode(edge.from) && graph.hasNode(edge.to)) {
+                kids.set(edge.from, [...(kids.get(edge.from) || []), edge.to]);
+            }
+        }
+        for (const [id, list] of [...kids].sort((p, q) => graph.node(p[0]).y - graph.node(q[0]).y)) {
+            const n = graph.node(id);
+            const xs = list.map((child) => graph.node(child).x);
+            const x = (Math.min(...xs) + Math.max(...xs)) / 2;
+            const clear = graph.nodes().every((other) => {
+                const o = graph.node(other);
+                return other === id || other.startsWith('cluster:') || o.x === undefined || Math.abs(o.y - n.y) > (o.height + n.height) / 2 || Math.abs(o.x - x) >= (o.width + n.width) / 2 + 16;
+            });
+            if (clear) {
+                n.x = x;
+            }
+        }
+
         // The view as big as what is drawn (room on the left for a link running beside a grid).
         let minX = Infinity;
         let maxX = -Infinity;
@@ -284,6 +305,7 @@ export function createNetworkMap(root, data) {
             box.set(id, { x, top: y - height / 2, bottom: y + height / 2, left: x - width / 2, right: x + width / 2 });
         }
         const bars = [];
+        const routes = [];
         const gridBox = new Map();
         for (const [network, grid] of grids) {
             const { x, y } = graph.node(grid.id);
@@ -304,14 +326,13 @@ export function createNetworkMap(root, data) {
             const kind = ['wifi', 'cellular', 'vpn'].includes(nodes.get(network).network) ? nodes.get(network).network : 'lan';
             const cls = `nm-link is-${kind}${nodes.get(network).state === 'up' ? '' : ' is-down'}`;
             const parent = box.get(network);
-            const mid = parent.bottom + 32;
             for (let c = 0; c < grid.cols; c++) {
                 const column = grid.ids.filter((id) => grid.cell.get(id).col === c).sort((p, q) => grid.cell.get(p).row - grid.cell.get(q).row);
                 if (column.length === 0) {
                     continue;
                 }
                 const head = box.get(column[0]);
-                bars.push(`<path class="${cls}" d="${curve(elbow(parent, head, mid))}"></path>`);
+                routes.push({ bundle: network, a: parent, b: head, cls, title: '' });
                 if (column.length > 1) {
                     bars.push(`<path class="${cls} is-spine" d="M${head.x} ${head.bottom} V${box.get(column[column.length - 1]).top}"></path>`);
                 }
@@ -319,12 +340,43 @@ export function createNetworkMap(root, data) {
         }
 
         // Links from the bottom of the upper node to the top of the lower one; down ones faint.
-        const drawn = map.edges.filter((edge) => placed(edge.to) && placed(edge.from) && box.has(edge.from) && box.has(edge.to)).map((edge) => {
-            const a = box.get(edge.from);
-            const b = box.get(edge.to);
-            const mid = edge.type === 'tunnel' ? a.bottom + 14 : rankSpan(edge, nodes) > 1 ? b.top - 32 : a.bottom + 32;
-            const title = edge.label ? `<title>${esc(edge.label)}</title>` : '';
-            return `<path class="nm-link is-${esc(edge.type)}${edge.up ? '' : ' is-down'}" d="${curve(elbow(a, b, mid))}">${title}</path>`;
+        for (const edge of map.edges) {
+            if (placed(edge.to) && placed(edge.from) && box.has(edge.from) && box.has(edge.to)) {
+                routes.push({ bundle: edge.from + (edge.type === 'tunnel' ? ':tunnel' : ''), a: box.get(edge.from), b: box.get(edge.to),
+                    cls: `nm-link is-${esc(edge.type)}${edge.up ? '' : ' is-down'}`, title: edge.label ? `<title>${esc(edge.label)}</title>` : '' });
+            }
+        }
+        // The links of one parent share a bar (the tree); the bars of different parents (and tunnels)
+        // that would lie on each other run side by side in lanes.
+        const LANE = 9;
+        const bars_ = new Map();
+        for (const route of routes) {
+            route.base = route.a.bottom + 32;
+            if (Math.abs(route.a.x - route.b.x) >= 0.5) {
+                const key = Math.round(route.base);
+                const group = bars_.get(key) || new Map();
+                const range = group.get(route.bundle) || { from: Infinity, to: -Infinity, lane: 0 };
+                range.from = Math.min(range.from, route.a.x, route.b.x);
+                range.to = Math.max(range.to, route.a.x, route.b.x);
+                group.set(route.bundle, range);
+                bars_.set(key, group);
+            }
+        }
+        for (const group of bars_.values()) {
+            const taken = [];
+            for (const range of [...group.values()].sort((p, q) => p.from - q.from)) {
+                let lane = 0;
+                while ((taken[lane] || []).some((other) => other.from < range.to && range.from < other.to)) {
+                    lane++;
+                }
+                (taken[lane] ||= []).push(range);
+                range.lane = lane;
+            }
+        }
+        const drawn = routes.map((route) => {
+            const lane = bars_.get(Math.round(route.base))?.get(route.bundle)?.lane || 0;
+
+            return `<path class="${route.cls}" d="${curve(elbow(route.a, route.b, route.base + lane * LANE))}">${route.title}</path>`;
         });
 
         // The other networks of a device: drawn while the device or the network is pointed at.
