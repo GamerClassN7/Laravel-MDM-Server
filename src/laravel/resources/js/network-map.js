@@ -107,7 +107,8 @@ export function createNetworkMap(root, data) {
     let current = null;
     let hover = new Set();
 
-    const render = (map) => {
+    // sides: 'left' | 'right' of its grid for each device of several networks (where its other network is).
+    const render = (map, sides = new Map(), pass = 0) => {
         current = map;
         const nodes = new Map(map.nodes.map((node) => [node.id, node]));
         layer.innerHTML = '';
@@ -178,16 +179,19 @@ export function createNetworkMap(root, data) {
             const first = all.filter((id) => shared.has(id));
             const rest = all.filter((id) => !shared.has(id));
             const cols = Math.min(all.length, 6, Math.max(3, Math.round(Math.sqrt(all.length * 1.8))));
-            const rows = Math.max(Math.ceil(all.length / cols), first.length);
-            // Shared devices down the first column, the others row by row in the rest.
-            const cell = new Map(first.map((id, row) => [id, { row, col: 0 }]));
+            const lefts = first.filter((id) => sides.get(id) !== 'right');
+            const rights = first.filter((id) => sides.get(id) === 'right');
+            const rows = Math.max(Math.ceil(all.length / cols), lefts.length, rights.length);
+            // Devices of several networks down the outer column on the side of their other network
+            // (so its link does not cross the others), the rest row by row.
+            const cell = new Map([...lefts.map((id, row) => [id, { row, col: 0 }]), ...rights.map((id, row) => [id, { row, col: cols - 1 }])]);
+            const taken = (row, col) => (col === 0 && row < lefts.length) || (col === cols - 1 && cols > 1 && row < rights.length);
             let k = 0;
             for (let row = 0; row < rows && k < rest.length; row++) {
                 for (let col = 0; col < cols && k < rest.length; col++) {
-                    if (col === 0 && row < first.length) {
-                        continue;
+                    if (!taken(row, col)) {
+                        cell.set(rest[k++], { row, col });
                     }
-                    cell.set(rest[k++], { row, col });
                 }
             }
             const ids = [...cell.keys()];
@@ -252,14 +256,15 @@ export function createNetworkMap(root, data) {
             }
         }
         const margin = 28;
-        const shift = margin + (sideLinks.length > 0 ? 24 : 0) - minX;
+        const room = sideLinks.length > 0 ? 24 : 0;
+        const shift = margin + room - minX;
         for (const id of graph.nodes()) {
             const n = graph.node(id);
             if (n.x !== undefined) {
                 n.x += shift;
             }
         }
-        size = { width: maxX - minX + margin * 2 + (sideLinks.length > 0 ? 24 : 0), height: graph.graph().height };
+        size = { width: maxX - minX + margin * 2 + room * 2, height: graph.graph().height };
         stage.style.width = `${size.width}px`;
         stage.style.height = `${size.height}px`;
         svg.setAttribute('width', size.width);
@@ -284,7 +289,7 @@ export function createNetworkMap(root, data) {
             const { x, y } = graph.node(grid.id);
             const left = x - grid.width / 2;
             const top = y - grid.height / 2;
-            gridBox.set(network, { left, top, right: left + grid.width });
+            gridBox.set(network, { left, top, right: left + grid.width, x });
             const colLeft = grid.colWidth.map((_, c) => left + grid.colWidth.slice(0, c).reduce((a, b) => a + b + GAP.x, 0));
             const rowTop = grid.rowHeight.map((_, r) => top + grid.rowHeight.slice(0, r).reduce((a, b) => a + b + GAP.y, 0));
             for (const id of grid.ids) {
@@ -323,6 +328,21 @@ export function createNetworkMap(root, data) {
         });
 
         // The other networks of a device: drawn while the device or the network is pointed at.
+        // Where the other networks are: a device goes to the outer column on that side (second pass).
+        const wanted = new Map();
+        for (const edge of sideLinks) {
+            const grid = gridBox.get(main.get(edge.to));
+            const net = box.get(edge.from);
+            if (grid && net) {
+                const side = net.x > grid.x ? 'right' : 'left';
+                wanted.set(edge.to, wanted.get(edge.to) && wanted.get(edge.to) !== side ? 'left' : side);
+            }
+        }
+        if (pass < 1 && [...wanted].some(([id, side]) => (sides.get(id) || 'left') !== side)) {
+            render(map, wanted, pass + 1);
+
+            return;
+        }
         const side = (edge) => {
             const net = box.get(edge.from);
             const dev = box.get(edge.to);
@@ -331,10 +351,13 @@ export function createNetworkMap(root, data) {
                 return '';
             }
             const y = (dev.top + dev.bottom) / 2;
-            const channel = grid.left - 14;
-            const points = net.x < grid.left - 24
-                ? [[net.x, net.bottom], [net.x, y], [dev.left, y]]
-                : [[net.x, net.bottom], [net.x, net.bottom + 18], [channel, net.bottom + 18], [channel, y], [dev.left, y]];
+            const right = sides.get(edge.to) === 'right';
+            const edgeX = right ? dev.right : dev.left;
+            const channel = right ? grid.right + 14 : grid.left - 14;
+            const beside = right ? net.x > grid.right + 24 : net.x < grid.left - 24;
+            const points = beside
+                ? [[net.x, net.bottom], [net.x, y], [edgeX, y]]
+                : [[net.x, net.bottom], [net.x, net.bottom + 18], [channel, net.bottom + 18], [channel, y], [edgeX, y]];
             return `<path class="nm-link is-side is-${esc(edge.type)}" d="${curve(points)}"></path>`;
         };
         const drawSide = () => {
