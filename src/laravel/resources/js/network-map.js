@@ -95,7 +95,8 @@ export function createNetworkMap(root, data) {
         // Laid out with the sizes the nodes render at.
         // The devices of a network (and its unknown devices) sit in a grid in a frame under it, one
         // block for dagre. A device of several networks is in the grid of its main one (a wired LAN
-        // before Wi-Fi before a VPN); its other networks link to that frame once.
+        // before Wi-Fi before a VPN), in the first row; its other networks link to the device itself
+        // (not to the frame: not all devices of a LAN are in the VPN).
         const parents = new Map();
         for (const edge of map.edges) {
             if (nodes.get(edge.from)?.kind === 'network') {
@@ -117,10 +118,12 @@ export function createNetworkMap(root, data) {
         const inGrid = new Set();
         const sideLinks = new Map();
         const GAP = { x: 14, y: 12, pad: 12 };
-        for (const [network, ids] of members) {
-            if (ids.length < 4) {
+        const shared = new Set(map.edges.filter((edge) => main.has(edge.to) && edge.from !== main.get(edge.to)).map((edge) => edge.to));
+        for (const [network, all] of members) {
+            if (all.length < 4) {
                 continue;
             }
+            const ids = [...all.filter((id) => shared.has(id)), ...all.filter((id) => !shared.has(id))];
             const cols = Math.min(ids.length, 6, Math.max(3, Math.round(Math.sqrt(ids.length * 1.8))));
             const rows = Math.ceil(ids.length / cols);
             const colWidth = Array.from({ length: cols }, (_, c) => Math.max(...ids.filter((_, k) => k % cols === c).map((id) => elements.get(id).offsetWidth)));
@@ -130,13 +133,10 @@ export function createNetworkMap(root, data) {
             grids.set(network, { id: `grid:${network}`, ids, cols, colWidth, rowHeight, width, height });
             ids.forEach((id) => inGrid.add(id));
         }
-        // The other networks of the devices in a grid: one link to its frame each.
+        // The other networks of the devices in a grid: a link to each of those devices.
         for (const edge of map.edges) {
-            const network = main.get(edge.to);
-            if (inGrid.has(edge.to) && edge.from !== network) {
-                const key = `${edge.from}>${network}`;
-                const known = sideLinks.get(key);
-                sideLinks.set(key, { from: edge.from, to: grids.get(network).id, type: edge.type, up: (known?.up ?? false) || edge.up });
+            if (inGrid.has(edge.to) && edge.from !== main.get(edge.to)) {
+                sideLinks.set(edge.id, { from: edge.from, to: edge.to, type: edge.type, up: edge.up });
             }
         }
 
@@ -168,9 +168,7 @@ export function createNetworkMap(root, data) {
             clusterOf({ id: grid.id, group: nodes.get(network).group, kind: 'grid' });
             graph.setEdge(network, grid.id, { minlen: 1, weight: 1 });
         }
-        for (const link of sideLinks.values()) {
-            graph.setEdge(link.from, link.to, { minlen: 1, weight: 0 });
-        }
+
         for (const edge of map.edges) {
             if (nodes.has(edge.from) && nodes.has(edge.to) && !inGrid.has(edge.to)) {
                 graph.setEdge(edge.from, edge.to, { minlen: rankSpan(edge, nodes), weight: edge.type === 'tunnel' ? 0 : 1 });
@@ -279,7 +277,10 @@ export function createNetworkMap(root, data) {
                 for (let c = 0; c < grid.cols && r * grid.cols + c < grid.ids.length; c++) {
                     const el = elements.get(grid.ids[r * grid.cols + c]);
                     el.style.left = `${colLeft}px`;
-                    el.style.top = `${rowTop + (grid.rowHeight[r] - el.offsetHeight) / 2}px`;
+                    const elTop = rowTop + (grid.rowHeight[r] - el.offsetHeight) / 2;
+                    el.style.top = `${elTop}px`;
+                    const id = grid.ids[r * grid.cols + c];
+                    box.set(id, { x: colLeft + el.offsetWidth / 2, top: elTop, bottom: elTop + el.offsetHeight });
                     colLeft += grid.colWidth[c] + GAP.x;
                 }
                 rowTop += grid.rowHeight[r] + GAP.y;
