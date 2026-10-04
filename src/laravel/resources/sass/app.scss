@@ -299,10 +299,11 @@ label.mdm-tag {
     &.is-vpn { stroke: #17a2b8; stroke-dasharray: 7 5; }
     &.is-tunnel { stroke: rgba(23, 162, 184, .55); stroke-dasharray: 2 4; }
     &.is-unknown { stroke: rgba(160, 170, 190, .6); stroke-width: 1.5; stroke-dasharray: 4 4; }
-    &.is-down { opacity: .15; }
+    &.is-down { opacity: .25; }
+    &.is-tunnel.is-down { opacity: .5; }
     // The column of a grid behind its cards; the link of a device to its other network.
     &.is-spine { opacity: .35; }
-    &.is-side { stroke-width: 2.4; opacity: 1; }
+    &.is-side { stroke-width: 1.6; opacity: .4; &.is-active { stroke-width: 2.6; opacity: 1; } }
 }
 
 // Data tables (steelants/livewire-datatable): columns a table hides on narrow screens, set in its
