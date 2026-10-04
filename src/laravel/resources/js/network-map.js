@@ -93,23 +93,29 @@ export function createNetworkMap(root, data) {
         }
 
         // Laid out with the sizes the nodes render at.
-        // Devices in one network only (and its unknown devices) sit in a grid in a frame under
-        // it, one block for dagre; devices of several networks stay between them.
+        // The devices of a network (and its unknown devices) sit in a grid in a frame under it, one
+        // block for dagre. A device of several networks is in the grid of its main one (a wired LAN
+        // before Wi-Fi before a VPN); its other networks link to that frame once.
         const parents = new Map();
         for (const edge of map.edges) {
             if (nodes.get(edge.from)?.kind === 'network') {
                 parents.set(edge.to, [...(parents.get(edge.to) || []), edge.from]);
             }
         }
+        const priority = { lan: 0, mixed: 0, cellular: 1, wifi: 2, vpn: 3 };
+        const mainOf = (owners) => [...owners].sort((a, b) => (priority[nodes.get(a).network] ?? 1) - (priority[nodes.get(b).network] ?? 1) || (nodes.get(b).devices || 0) - (nodes.get(a).devices || 0))[0];
         const members = new Map();
+        const main = new Map();
         for (const node of map.nodes) {
             const owners = parents.get(node.id) || [];
-            if (owners.length === 1 && ['device', 'unknown', 'server'].includes(node.kind)) {
-                members.set(owners[0], [...(members.get(owners[0]) || []), node.id]);
+            if (owners.length > 0 && ['device', 'unknown', 'server'].includes(node.kind)) {
+                main.set(node.id, mainOf(owners));
+                members.set(main.get(node.id), [...(members.get(main.get(node.id)) || []), node.id]);
             }
         }
         const grids = new Map();
         const inGrid = new Set();
+        const sideLinks = new Map();
         const GAP = { x: 14, y: 12, pad: 12 };
         for (const [network, ids] of members) {
             if (ids.length < 4) {
@@ -123,6 +129,15 @@ export function createNetworkMap(root, data) {
             const height = rowHeight.reduce((a, b) => a + b, 0) + GAP.y * (rows - 1) + GAP.pad * 2;
             grids.set(network, { id: `grid:${network}`, ids, cols, colWidth, rowHeight, width, height });
             ids.forEach((id) => inGrid.add(id));
+        }
+        // The other networks of the devices in a grid: one link to its frame each.
+        for (const edge of map.edges) {
+            const network = main.get(edge.to);
+            if (inGrid.has(edge.to) && edge.from !== network) {
+                const key = `${edge.from}>${network}`;
+                const known = sideLinks.get(key);
+                sideLinks.set(key, { from: edge.from, to: grids.get(network).id, type: edge.type, up: (known?.up ?? false) || edge.up });
+            }
         }
 
         const graph = new dagre.graphlib.Graph({ compound: true });
@@ -152,6 +167,9 @@ export function createNetworkMap(root, data) {
             graph.setNode(grid.id, { width: Math.min(grid.width, 150), height: grid.height });
             clusterOf({ id: grid.id, group: nodes.get(network).group, kind: 'grid' });
             graph.setEdge(network, grid.id, { minlen: 1, weight: 1 });
+        }
+        for (const link of sideLinks.values()) {
+            graph.setEdge(link.from, link.to, { minlen: 1, weight: 0 });
         }
         for (const edge of map.edges) {
             if (nodes.has(edge.from) && nodes.has(edge.to) && !inGrid.has(edge.to)) {
@@ -271,7 +289,7 @@ export function createNetworkMap(root, data) {
         layer.insertAdjacentHTML('afterbegin', frames.join(''));
 
         // Links from the bottom of the upper node to the top of the lower one; down ones faint.
-        const gridLinks = [...grids].map(([network, grid]) => ({ from: network, to: grid.id, type: ['wifi', 'cellular', 'vpn'].includes(nodes.get(network).network) ? nodes.get(network).network : 'lan', up: nodes.get(network).state === 'up' }));
+        const gridLinks = [...sideLinks.values(), ...[...grids].map(([network, grid]) => ({ from: network, to: grid.id, type: ['wifi', 'cellular', 'vpn'].includes(nodes.get(network).network) ? nodes.get(network).network : 'lan', up: nodes.get(network).state === 'up' }))];
         svg.innerHTML = [...map.edges.filter((edge) => !inGrid.has(edge.to)), ...gridLinks].filter((edge) => box.has(edge.from) && box.has(edge.to)).map((edge) => {
             const a = box.get(edge.from);
             const b = box.get(edge.to);
