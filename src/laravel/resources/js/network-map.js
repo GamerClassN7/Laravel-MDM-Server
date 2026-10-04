@@ -245,18 +245,19 @@ export function createNetworkMap(root, data) {
         }
         dagre.layout(graph);
 
-        // A parent centered over its children (dagre leans to the side that has more edges, such as
-        // the VPN tunnels); only where nothing stands in its way.
+        // A parent in the middle of its children (the VPN tunnels count as a split); only where nothing
+        // stands in its way.
         const kids = new Map();
         for (const edge of map.edges) {
-            if (edge.type !== 'tunnel' && placed(edge.to) && placed(edge.from) && graph.hasNode(edge.from) && graph.hasNode(edge.to)) {
+            if (placed(edge.to) && placed(edge.from) && graph.hasNode(edge.from) && graph.hasNode(edge.to)) {
                 kids.set(edge.from, [...(kids.get(edge.from) || []), edge.to]);
             }
         }
         for (const [id, list] of [...kids].sort((p, q) => graph.node(p[0]).y - graph.node(q[0]).y)) {
             const n = graph.node(id);
-            const xs = list.map((child) => graph.node(child).x);
-            const x = (Math.min(...xs) + Math.max(...xs)) / 2;
+            const xs = list.map((child) => graph.node(child).x).sort((p, q) => p - q);
+            // Over the middle one of an odd number of children (as many splits on each side), else between the two in the middle.
+            const x = xs.length % 2 === 1 ? xs[(xs.length - 1) / 2] : (xs[xs.length / 2 - 1] + xs[xs.length / 2]) / 2;
             const clear = graph.nodes().every((other) => {
                 const o = graph.node(other);
                 return other === id || other.startsWith('cluster:') || o.x === undefined || Math.abs(o.y - n.y) > (o.height + n.height) / 2 || Math.abs(o.x - x) >= (o.width + n.width) / 2 + 16;
