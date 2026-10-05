@@ -1061,8 +1061,7 @@ class Device extends Model
             }
             // Only addresses of the same family tell: the same network can reach the server over
             // IPv6 from one device and over IPv4 from another.
-            if ($this->public_ip !== null && $relay->public_ip !== null && $this->public_ip !== $relay->public_ip
-                && str_contains($this->public_ip, ':') === str_contains($relay->public_ip, ':')) {
+            if ($this->behindOtherAddress($relay)) {
                 continue;
             }
             $shared = array_intersect_key($networks, $relay->ipv4Networks(self::RELAY_INTERFACE_TYPES, true));
@@ -1078,6 +1077,17 @@ class Device extends Model
         usort($candidates, fn ($a, $b) => [$b[2], $a[0]->id] <=> [$a[2], $b[0]->id]);
 
         return $candidates;
+    }
+
+    /**
+     * Both reach the server from different public addresses (another site). An address that is not
+     * public (an agent in the server's own network reaches it over a private one) tells nothing,
+     * nor does one of another family (IPv6 from one device, IPv4 from another).
+     */
+    private function behindOtherAddress(Device $relay): bool
+    {
+        return self::isPublicIp($this->public_ip) && self::isPublicIp($relay->public_ip) && $this->public_ip !== $relay->public_ip
+            && str_contains($this->public_ip, ':') === str_contains($relay->public_ip, ':');
     }
 
     /** Runs on a battery (laptops, tablets): it may be in another network than last time. */
@@ -1337,8 +1347,7 @@ class Device extends Model
                 ! $relay->connectedViaApi => __('no report over the API in the last :seconds s', ['seconds' => self::REPORT_TIMEOUT]),
                 ($wake = $relay->commandRefusal('wake', ['macs' => ['00:00:00:00:00:01'], 'broadcasts' => ['255.255.255.255'], 'device' => $this->id])) !== null => $wake,
                 $relay->isMobile && ($this->public_ip === null || $relay->public_ip !== $this->public_ip) => __('on a battery, not behind the public address of this device'),
-                $this->public_ip !== null && $relay->public_ip !== null && $this->public_ip !== $relay->public_ip
-                    && str_contains($this->public_ip, ':') === str_contains($relay->public_ip, ':') => __('behind another public address (:relay, this device :device)', ['relay' => $relay->public_ip, 'device' => $this->public_ip]),
+                $this->behindOtherAddress($relay) => __('behind another public address (:relay, this device :device)', ['relay' => $relay->public_ip, 'device' => $this->public_ip]),
                 default => null,
             };
             if ($reason !== null) {
