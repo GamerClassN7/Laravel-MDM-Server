@@ -10,9 +10,10 @@
                 <a href='{{ route('system.log.download', ['file' => $filename]) }}' class="btn btn-primary">
                     <i class="fa fa-download"></i>
                 </a>
-                <a href='{{ route('system.log.delete', ['file' => $filename]) }}' onclick="return confirm('{{ __('Are you sure?') }}')" class="btn btn-danger">
-                    <i class="fa fa-trash"></i>
-                </a>
+                <form method="POST" action="{{ route('system.log.delete', ['file' => $filename]) }}" class="d-inline" onsubmit="return confirm('{{ __('Are you sure?') }}')">
+                    @csrf
+                    <button type="submit" class="btn btn-danger"><i class="fa fa-trash"></i></button>
+                </form>
             </div>
         </div>
 

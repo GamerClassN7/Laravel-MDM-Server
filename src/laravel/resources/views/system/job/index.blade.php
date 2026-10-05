@@ -2,10 +2,13 @@
 	<div class="container-xl">
 		<div class="page-header">
 			<h1>{{ __("Jobs") }}</h1>
-			<button class="btn btn-danger" onclick="confirm('{{ __('Do you really want to clear all jobs?') }}') ? window.location.href = '{{ route('system.jobs.clear') }}' : false">
-				<i class="me-2 fas fa-trash"></i>
-				<span>{{ __('Clear jobs') }}</span>
-			</button>
+			<form method="POST" action="{{ route('system.jobs.clear') }}" onsubmit="return confirm('{{ __('Do you really want to clear all jobs?') }}')">
+				@csrf
+				<button type="submit" class="btn btn-danger">
+					<i class="me-2 fas fa-trash"></i>
+					<span>{{ __('Clear jobs') }}</span>
+				</button>
+			</form>
 		</div>
 
 		<div class="page-header mb-2">
@@ -20,19 +23,25 @@
 
 		<div class="page-header mb-2 mt-4">
 			<h5>{{ __("Waiting") }} <span class="badge text-bg-secondary">{{ $waiting_count }}</span></h5>
-			<button class="btn btn-warning btn-sm" onclick="confirm('{{ __('Do you really want to stop all waiting jobs?') }}') ? window.location.href = '{{ route('system.jobs.stop') }}' : false">
-				<i class="me-2 fas fa-stop"></i>
-				<span>{{ __('Stop jobs') }}</span>
-			</button>
+			<form method="POST" action="{{ route('system.jobs.stop') }}" onsubmit="return confirm('{{ __('Do you really want to stop all waiting jobs?') }}')">
+				@csrf
+				<button type="submit" class="btn btn-warning btn-sm">
+					<i class="me-2 fas fa-stop"></i>
+					<span>{{ __('Stop jobs') }}</span>
+				</button>
+			</form>
 		</div>
         @livewire('job.data-table', [], key('data-table'))
 
 		<div class="page-header mb-2 mt-4">
 			<h5>{{ __("Failed") }} <span class="badge text-bg-secondary">{{ $failed_count }}</span></h5>
-			<button class="btn btn-success btn-sm" onclick="confirm('{{ __('Do you really want to rerun all failed jobs?') }}') ? window.location.href = '{{ route('system.jobs.rerun') }}' : false">
-				<i class="me-2 fas fa-redo"></i>
-				<span>{{ __('Rerun jobs') }}</span>
-			</button>
+			<form method="POST" action="{{ route('system.jobs.rerun') }}" onsubmit="return confirm('{{ __('Do you really want to rerun all failed jobs?') }}')">
+				@csrf
+				<button type="submit" class="btn btn-success btn-sm">
+					<i class="me-2 fas fa-redo"></i>
+					<span>{{ __('Rerun jobs') }}</span>
+				</button>
+			</form>
 		</div>
         @livewire('job.data-table', ['failed' => true], key('data-table'))
 	</div>
