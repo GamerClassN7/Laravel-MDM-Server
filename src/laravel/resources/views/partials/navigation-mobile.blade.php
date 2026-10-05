@@ -13,11 +13,5 @@
                 </a>
             </li>
         @endforeach
-        <li class="nav-item nav-item-mobile {{ request()->routeIs('profile.*') ? 'is-active' : '' }}">
-            <a class="nav-link" href="{{ route('profile.index') }}">
-                <i class="nav-link-ico fas fa-user"></i>
-                <span class="nav-link-content">{{ __('Profile') }}</span>
-            </a>
-        </li>
     </ul>
 </div>
