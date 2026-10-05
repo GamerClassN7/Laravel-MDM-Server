@@ -110,6 +110,38 @@ class DeviceFlowTest extends TestCase
             ->assertJson(['commands' => ['updateAgent']]);
     }
 
+    public function test_enrolment_codes_are_random_and_long(): void
+    {
+        $codes = collect(range(1, 50))->map(fn () => Enrolment::generateCode());
+
+        $this->assertTrue($codes->every(fn ($code) => preg_match('/^[A-HJKMNP-Z2-9]{8}$/', $code) === 1));
+        $this->assertGreaterThan(45, $codes->unique()->count());
+    }
+
+    public function test_guessing_enrolment_codes_is_throttled_and_drops_the_open_ones(): void
+    {
+        $code = Enrolment::generateCode();
+        $enrolment = new Enrolment;
+        $enrolment->code = $code;
+        $enrolment->expire_at = now()->addMinutes(15);
+        $enrolment->save();
+
+        for ($i = 0; $i < 10; $i++) {
+            $this->postJson('/api/device/register', ['enrolment_code' => 'WRONG'.$i])->assertStatus(422);
+        }
+        // Per client: the 11th request in a minute is refused, even with the right code.
+        $this->postJson('/api/device/register', ['enrolment_code' => $code])->assertStatus(429);
+        $this->assertSame(1, Enrolment::count());
+
+        // Many wrong codes (from anywhere) drop the open codes.
+        $this->app['cache']->flush();
+        for ($i = 0; $i < Enrolment::MAX_FAILURES; $i++) {
+            \Illuminate\Support\Facades\RateLimiter::hit('enrolment-failures', 900);
+        }
+        $this->postJson('/api/device/register', ['enrolment_code' => 'WRONG'])->assertStatus(422);
+        $this->assertSame(0, Enrolment::count());
+    }
+
     public function test_invalid_enrolment_code_is_rejected(): void
     {
         $this->postJson('/api/device/register', ['enrolment_code' => '0000'])

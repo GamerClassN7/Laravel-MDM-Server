@@ -16,7 +16,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The image is only built (and pushed) when the tests of the same workflow run pass.
+  tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/laravel
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, intl, gd, zip, pdo_sqlite, sqlite3
+          coverage: none
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/laravel/package-lock.json
+
+      - run: composer install --no-interaction --no-progress --prefer-dist
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - run: cp .env.example .env && php artisan key:generate
+
+      - run: php artisan test
+
   build:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
