@@ -17,6 +17,27 @@
                 <div class="small text-success mt-2"><i class="fas fa-check me-1"></i>{{ __('The rule is valid.') }}</div>
             @endif
 
+            @if ($isParser)
+                <div class="mt-3">
+                    <label class="small fw-medium text-muted mb-1" for="parser-sample">{{ __('Try on a record (a log line, or a record in JSON)') }}</label>
+                    <textarea class="form-control font-monospace small" id="parser-sample" rows="3" spellcheck="false" wire:model.live.debounce.500ms="sample"></textarea>
+                    @if ($parsed !== null)
+                        @if (isset($parsed['error']))
+                            <div class="small text-danger mt-1">{{ $parsed['error'] }}</div>
+                        @elseif ($parsed['event'] === null)
+                            <div class="small text-muted mt-1">{{ __('The parser does not match this record.') }}</div>
+                        @else
+                            <table class="table table-sm small mt-2 mb-0">
+                                <tbody>
+                                    @foreach ($parsed['event'] as $field => $value)
+                                        <tr><td class="text-muted text-nowrap">{{ $field }}</td><td class="text-break">{{ $value ?? '—' }}</td></tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
+                        @endif
+                    @endif
+                </div>
+            @else
             <div class="mt-3">
                 <div class="d-flex align-items-center gap-2 mb-2">
                     <span class="small fw-medium text-muted">{{ __('Try on') }}</span>
@@ -41,9 +62,32 @@
                     @endif
                 @endif
             </div>
+            @endif
         </div>
 
         <div class="col-12 col-lg-5 small">
+            @if ($isParser)
+            <div class="fw-medium mb-1">{{ __('Parser keys') }}</div>
+            <ul class="ps-3 text-muted">
+                <li><code>kind</code>: <code>parser</code>; <code>key</code>, <code>name</code>, <code>description</code></li>
+                <li><code>source</code>: {{ __('which log, below') }}</li>
+                <li><code>when</code>: {{ __('conditions on the record, as in detection rules (optional)') }}</li>
+                <li><code>pattern</code>: {{ __('a regular expression with named groups') }} <code>(?&lt;user&gt;\S+)</code>; <code>field</code>: {{ __('what it is matched against (Message)') }}</li>
+                <li><code>event</code>: <code>type</code>, <code>user</code>, <code>source</code>, <code>message</code>, <code>count</code> {{ __('with {group} or {Field} placeholders; {a|b} takes the first that is set') }}</li>
+            </ul>
+            <div class="text-muted mb-3">{{ __('The first parser that matches a record makes its event; events are grouped by type, user and source and go to the detection rules of the events source.') }}</div>
+            <div class="fw-medium mb-1">{{ __('Logs and their fields') }}</div>
+            <table class="table table-sm small mb-0">
+                <tbody>
+                    @foreach (\App\Support\SecurityParsers::LOG_SOURCES as $source => $definition)
+                        <tr>
+                            <td class="text-nowrap"><code>{{ $source }}</code></td>
+                            <td class="text-muted">{{ implode(', ', $definition['fields']) }}</td>
+                        </tr>
+                    @endforeach
+                </tbody>
+            </table>
+            @else
             <div class="fw-medium mb-1">{{ __('Keys') }}</div>
             <ul class="ps-3 text-muted">
                 <li><code>key</code>, <code>name</code>, <code>description</code>, <code>remediation</code></li>
@@ -67,10 +111,11 @@
                     @endforeach
                     <tr>
                         <td class="text-nowrap text-muted">{{ __('Event types') }}</td>
-                        <td class="text-muted">{{ implode(', ', array_keys(\App\Support\SecurityRules::EVENT_TYPES)) }}</td>
+                        <td class="text-muted">{{ implode(', ', array_keys(\App\Support\SecurityRules::EVENT_TYPES)) }} {{ __('(and the ones of your parsers)') }}</td>
                     </tr>
                 </tbody>
             </table>
+            @endif
         </div>
     </div>
 

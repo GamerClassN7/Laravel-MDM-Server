@@ -126,15 +126,20 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         return response()->noContent();
     });
 
-    // The security inventory and the events since the previous one (agents 1.17.0+, hourly):
-    // kept and scanned with the rules of the Security page.
+    // The security inventory and the raw logs since the previous collection (agents 1.17.0+,
+    // hourly). Only put into the cache here: parsing, storing and scanning come after the
+    // response (App\Support\SecurityInbox).
     Route::post('/device/security', function (Request $request) {
         /** @var Device $device */
         $device = $request->user();
         abort_unless($device->signsRequests, 403);
-        $result = App\Support\SecurityScanner::ingest($device, $request->json()->all());
+        $body = $request->getContent();
+        abort_if(strlen($body) > App\Support\SecurityInbox::MAX_BYTES, 413);
+        abort_unless(json_validate($body) && str_starts_with(ltrim($body), '{'), 422);
+        App\Support\SecurityInbox::push($device, $body);
+        defer(fn () => App\Support\SecurityInbox::drain(), 'security-inbox');
 
-        return response()->json($result);
+        return response()->json(['queued' => true], 202);
     });
 
     // Samples the agent collected while it could not reach the server (agents 1.11.0+): they fill

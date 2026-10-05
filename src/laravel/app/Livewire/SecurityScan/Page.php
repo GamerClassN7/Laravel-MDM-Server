@@ -68,7 +68,10 @@ class Page extends Component
         Gate::authorize('is-system-admin');
         $rule = SecurityRule::query()->findOrFail($id);
         $rule->update(['enabled' => ! $rule->enabled]);
-        SecurityScanner::scanAll();
+        // A parser takes effect with the next collections, a detection rule now.
+        if (! $rule->isParser) {
+            SecurityScanner::scanAll();
+        }
     }
 
     public function addRule(): void
@@ -81,6 +84,12 @@ class Page extends Component
     {
         Gate::authorize('is-system-admin');
         $this->dispatch('openModal', 'security-scan.rule-form', __('Edit rule'), ['ruleId' => $id], 'xl');
+    }
+
+    public function addParser(): void
+    {
+        Gate::authorize('is-system-admin');
+        $this->dispatch('openModal', 'security-scan.rule-form', __('Add parser'), ['kind' => 'parser'], 'xl');
     }
 
     /** A copy of a rule (a built-in one cannot be edited) to change as one's own. */
@@ -131,7 +140,7 @@ class Page extends Component
         $events = collect();
         if ($this->tab === 'events') {
             $events = SecurityEvent::query()->with('device')->latest('occurred_at')->latest('id')
-                ->when(isset(SecurityRules::EVENT_TYPES[$this->eventType]), fn ($q) => $q->where('type', $this->eventType))
+                ->when($this->eventType !== '', fn ($q) => $q->where('type', $this->eventType))
                 ->limit(self::LIMIT)->get();
         }
 
@@ -139,7 +148,10 @@ class Page extends Component
             'counts' => collect(SecurityRules::SEVERITIES)->map(fn ($rank, $severity) => (int) ($active[$severity] ?? 0)),
             'findings' => $this->tab === 'findings' ? $this->findings()->bySeverity()->limit(self::LIMIT)->get() : collect(),
             'events' => $events,
-            'rules' => $this->tab === 'rules' ? SecurityRule::query()->withCount(['findings as open_count' => fn ($q) => $q->active()])->orderBy('source')->orderBy('name')->get() : collect(),
+            'rules' => $this->tab === 'rules' ? SecurityRule::query()->detection()->withCount(['findings as open_count' => fn ($q) => $q->active()])->orderBy('source')->orderBy('name')->get() : collect(),
+            'parsers' => $this->tab === 'rules' ? SecurityRule::query()->parsers()->orderBy('source')->orderBy('name')->get() : collect(),
+            'eventTypes' => $this->tab === 'events' ? SecurityEvent::query()->distinct()->orderBy('type')->pluck('type')->mapWithKeys(fn ($type) => [$type => (new SecurityEvent(['type' => $type]))->label]) : collect(),
+            'pending' => \App\Support\SecurityInbox::pending(),
             'scanned' => SecurityInventory::query()->count(),
             'isAdmin' => Gate::allows('is-system-admin'),
         ])->title(__('Security'));

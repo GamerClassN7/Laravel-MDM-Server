@@ -66,7 +66,8 @@ class SecurityInventory extends Model
                     $row[$field] = self::value($item[$field] ?? null, $field);
                 }
                 if ($source === 'events') {
-                    if (! isset(SecurityRules::EVENT_TYPES[$row['Type']])) {
+                    // Types come from the parsers (built-in ones in SecurityRules::EVENT_TYPES).
+                    if (! is_string($row['Type']) || ! preg_match('/^[a-z][a-z0-9_]{1,31}$/', $row['Type'])) {
                         continue;
                     }
                     $row['Count'] = max(1, (int) $row['Count']);

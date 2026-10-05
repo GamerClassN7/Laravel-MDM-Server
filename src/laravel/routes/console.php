@@ -19,6 +19,9 @@ Schedule::call(fn () => App\Models\Device::announceNewlyOffline())->everyMinute(
 // Alert rules (App\Models\AlertRule): opens and resolves alerts, notifies their users.
 Schedule::call(fn () => App\Support\AlertEvaluator::run())->everyMinute()->name('mdm:alerts')->withoutOverlapping();
 
+// Security collections the agents sent and no request processed after its response yet.
+Schedule::call(fn () => App\Support\SecurityInbox::drain())->everyMinute()->name('mdm:security-inbox')->withoutOverlapping();
+
 // Creates the server signing key when it does not exist yet and shows its fingerprint.
 Artisan::command('mdm:signing-key', function () {
     $this->info('Signing key: '.App\Support\Signing::keyPath());

@@ -23,7 +23,8 @@ class SecurityScanner
     public const MAX_FINDINGS_PER_RULE = 50;
 
     /**
-     * A collection from the agent: the inventory is kept, the events recorded, then scanned.
+     * A collection (SecurityInbox: the logs already parsed into events): the inventory is kept,
+     * the events recorded, then scanned.
      *
      * @return array{opened: int, resolved: int}
      */
@@ -53,7 +54,7 @@ class SecurityScanner
             return $counts;
         }
 
-        $rules = SecurityRule::query()->get();
+        $rules = SecurityRule::query()->detection()->get();
         $open = SecurityFinding::query()->open()->where('device_id', $device->id)->get()->groupBy('security_rule_id');
         foreach ($rules as $rule) {
             $findings = $open->get($rule->id, collect());

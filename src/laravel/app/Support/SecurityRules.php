@@ -80,14 +80,17 @@ class SecurityRules
         ],
     ];
 
-    /** Event types the agent reports (Windows event ids / Linux logs in the comments of the agent). */
+    /** Labels of the event types the built-in parsers make (parsers may add their own). */
     public const EVENT_TYPES = [
         'failed_logon' => 'Failed sign-ins',
         'account_created' => 'Account created',
+        'account_locked' => 'Account locked out',
         'admin_added' => 'Added to administrators',
         'log_cleared' => 'Audit log cleared',
         'service_installed' => 'Service installed',
+        'task_created' => 'Scheduled task created',
         'malware_detected' => 'Malware detected',
+        'protection_disabled' => 'Protection turned off',
         'sudo_failed' => 'Failed sudo',
     ];
 

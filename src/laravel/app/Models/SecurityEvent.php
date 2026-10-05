@@ -41,7 +41,7 @@ class SecurityEvent extends Model
 
     public function getLabelAttribute(): string
     {
-        return __(SecurityRules::EVENT_TYPES[$this->type] ?? $this->type);
+        return __(SecurityRules::EVENT_TYPES[$this->type] ?? \Illuminate\Support\Str::headline($this->type));
     }
 
     /**

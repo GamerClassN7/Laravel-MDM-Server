@@ -502,5 +502,36 @@
             {"field": "Count", "op": "gte", "value": 3}
         ]},
         "message": "{Count} failed sudo attempts of {User}"
+    },
+    {
+        "key": "events.account-locked",
+        "name": "Account locked out",
+        "description": "Too many wrong passwords: someone guesses, or a stale password is still used somewhere.",
+        "severity": "low",
+        "platform": "windows",
+        "source": "events",
+        "when": {"field": "Type", "op": "eq", "value": "account_locked"},
+        "message": "{Message}"
+    },
+    {
+        "key": "events.protection-disabled",
+        "name": "Antivirus protection turned off",
+        "description": "Malware turns real-time protection off before it does its work.",
+        "severity": "high",
+        "platform": "windows",
+        "source": "events",
+        "when": {"field": "Type", "op": "eq", "value": "protection_disabled"},
+        "message": "{Message}"
+    },
+    {
+        "key": "events.task-created",
+        "name": "Scheduled task created",
+        "description": "Installers and updates create tasks too: noisy, off by default.",
+        "severity": "info",
+        "platform": "windows",
+        "source": "events",
+        "enabled": false,
+        "when": {"field": "Type", "op": "eq", "value": "task_created"},
+        "message": "{Message}"
     }
 ]

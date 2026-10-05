@@ -38,6 +38,10 @@
             @endforeach
         </ul>
 
+        @if ($pending > 0)
+            <div class="small text-muted mb-3"><i class="fas fa-hourglass-half me-1"></i>{{ trans_choice(':count collection waits to be processed|:count collections wait to be processed', $pending) }}</div>
+        @endif
+
         @if ($scanned === 0)
             <div class="alert alert-info small">
                 <i class="fas fa-info-circle me-1"></i>{{ __('No device has sent a security inventory yet: it needs agent :version or newer (collected hourly, or now with Sync).', ['version' => \App\Models\Device::SECURITY_VERSION]) }}
@@ -48,8 +52,8 @@
             <div class="d-flex flex-wrap gap-2 mb-3">
                 <select class="form-select form-select-sm w-auto" wire:model.live="eventType" aria-label="{{ __('Type') }}">
                     <option value="">{{ __('All events') }}</option>
-                    @foreach (\App\Support\SecurityRules::EVENT_TYPES as $value => $label)
-                        <option value="{{ $value }}">{{ __($label) }}</option>
+                    @foreach ($eventTypes as $value => $label)
+                        <option value="{{ $value }}">{{ $label }}</option>
                     @endforeach
                 </select>
                 <span class="small text-muted align-self-center">{{ __('Kept :days days.', ['days' => \App\Models\SecurityEvent::RETENTION_DAYS]) }}</span>
@@ -134,8 +138,55 @@
                     </table>
                 </div>
             </div>
+            <div class="d-flex align-items-center mt-4 mb-2">
+                <h2 class="h6 fw-semibold mb-0 me-auto">{{ __('Log parsers') }}</h2>
+                @if ($isAdmin)
+                    <button class="btn btn-sm btn-light" type="button" wire:click="addParser"><i class="fas fa-plus me-1"></i>{{ __('Add parser') }}</button>
+                @endif
+            </div>
+            <div class="small text-muted mb-2">{{ __('Agents send raw logs; parsers turn their records into the events the rules of the events source look at.') }}</div>
+            <div class="card overflow-hidden">
+                <div class="table-responsive">
+                    <table class="table align-middle mb-0">
+                        <thead>
+                            <tr class="small text-body-secondary">
+                                <th class="ps-3">{{ __('Parser') }}</th>
+                                <th class="d-none d-md-table-cell">{{ __('Log') }}</th>
+                                <th>{{ __('Event') }}</th>
+                                <th>{{ __('On') }}</th>
+                                <th class="pe-3"><span class="visually-hidden">{{ __('Actions') }}</span></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach ($parsers as $parser)
+                                <tr wire:key="security-parser-{{ $parser->id }}" class="{{ $parser->enabled ? '' : 'opacity-50' }}">
+                                    <td class="ps-3">
+                                        <div class="fw-medium">{{ $parser->name }}
+                                            @unless ($parser->built_in)<x-badge color="primary" size="sm" variant="subtle">{{ __('Custom') }}</x-badge>@endunless
+                                        </div>
+                                        <div class="small text-body-tertiary font-monospace">{{ $parser->key }}</div>
+                                    </td>
+                                    <td class="d-none d-md-table-cell small">{{ $parser->sourceLabel }}</td>
+                                    <td class="small font-monospace">{{ $parser->definition['event']['type'] ?? '' }}</td>
+                                    <td>
+                                        <div class="form-check form-switch m-0">
+                                            <input aria-label="{{ __('Enabled') }}" class="form-check-input" type="checkbox" wire:click="toggleRule({{ $parser->id }})" @checked($parser->enabled) @disabled(! $isAdmin)>
+                                        </div>
+                                    </td>
+                                    <td class="pe-3 text-end text-nowrap">
+                                        @if ($isAdmin)
+                                            <button class="btn btn-sm btn-light" type="button" wire:click="editRule({{ $parser->id }})">{{ $parser->built_in ? __('Show') : __('Edit') }}</button>
+                                            <button class="btn btn-sm btn-light" type="button" wire:click="duplicateRule({{ $parser->id }})" title="{{ __('Copy as a new parser') }}"><i class="far fa-copy"></i></button>
+                                        @endif
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            </div>
             <div class="small text-muted mt-2">
-                {{ __('Built-in rules come from resources/security/rules.json; switch them off or copy one to change it. Inventory findings are resolved when the next inventory no longer matches, event findings when you acknowledge them.') }}
+                {{ __('Built-in rules come from resources/security/rules.json and parsers.json; switch them off or copy one to change it. Inventory findings are resolved when the next inventory no longer matches, event findings when you acknowledge them.') }}
             </div>
         @else
             <div class="d-flex flex-wrap gap-2 mb-3">

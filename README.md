@@ -662,8 +662,15 @@ and **Remediate** sets `network_discovery` to `scan` in their `config.json` (a b
 ### Security scanner
 
 **Security** in the main menu is a small vulnerability scanner and SIEM: agents 1.17.0+ collect a
-security inventory every hour (and with **Sync**) in a background job at idle priority, the server
-runs simple JSON rules on it and opens a **finding** for every item a rule matches.
+security inventory and the raw records of their security logs every hour (and with **Sync**) in a
+background job at idle priority. The agent does not interpret the logs: **parser rules** on the
+server turn their records into events, **detection rules** look at the inventory and the events and
+open a **finding** for every item they match.
+
+Taking a collection is cheap: the server only puts it into its cache (compressed) and answers
+`202`. Parsing, storing and scanning come right after the response (the PHP worker goes on once the
+agent has its answer), and the scheduler processes every minute what is still waiting (at most
+1000 collections, a day).
 
 What the agent collects (the *sources* of the rules):
 
@@ -675,7 +682,33 @@ What the agent collects (the *sources* of the rules):
 | `startup` | Run / RunOnce keys, Startup folders, scheduled tasks outside `\Microsoft\` | cron (system and users), units in `/etc/systemd/system`, `rc.local`, desktop autostart |
 | `admins` | members of Administrators | uid 0, groups sudo / wheel / admin |
 | `posture` | firewall, antivirus (Security Center / Defender), BitLocker, Secure Boot, RDP and NLA, SMBv1, UAC, Guest, auto logon, days since the last update | firewall (ufw, firewalld, iptables / nftables), LUKS, Secure Boot, `sshd -T` (root login, passwords), unattended-upgrades, days since the last apt upgrade |
-| `events` | since the previous collection: failed sign-ins (4625), accounts created (4720), added to Administrators (4732), logs cleared (1102, 104), services installed (7045), Defender detections (1116) | failed ssh sign-ins, failed sudo, `useradd`, added to sudo / wheel / admin |
+| logs (raw, since the previous collection) | `windows.security` (1102, 4625, 4648, 4697, 4698, 4720, 4722, 4724, 4726, 4728, 4732, 4740, 4756), `windows.system` (104, 7045), `windows.defender` (1006, 1116, 1117, 5001, 5010, 5012): `Time`, `Id`, `Provider`, `Level`, `Data` (EventData / UserData, names without spaces) | `linux.auth`: the auth / authpriv journal (or `auth.log`, `secure`): `Time`, `Identifier`, `Pid`, `Message` |
+
+The built-in parsers ([`resources/security/parsers.json`](src/laravel/resources/security/parsers.json))
+make the events `failed_logon` (sshd, 4625), `sudo_failed`, `account_created` (useradd, 4720),
+`admin_added` (usermod / gpasswd to sudo, wheel or admin, 4732 to Administrators),
+`account_locked` (4740), `task_created` (4698), `log_cleared` (1102, 104), `service_installed`
+(7045), `malware_detected` (1006, 1116) and `protection_disabled` (5001, 5010, 5012). A parser of
+your own (**Add parser** on the **Rules** tab, tried on a sample line before it is saved):
+
+```json
+{
+    "kind": "parser",
+    "key": "custom.su-failed",
+    "name": "su: wrong password",
+    "source": "linux.auth",
+    "when": {"field": "Identifier", "op": "eq", "value": "su"},
+    "pattern": "^FAILED SU \\(to (?<target>\\S+)\\) (?<user>\\S+) on",
+    "event": {"type": "su_failed", "user": "{user}", "source": "{target}", "message": "{user} failed su to {target}"}
+}
+```
+
+`when` takes the conditions of detection rules on the record, `pattern` a regular expression with
+named groups (on `Message`, or on `field`); `event` fills `type`, `user`, `source`, `message` and
+`count` with `{group}` or `{Field}` placeholders (`{Data.IpAddress|Data.WorkstationName}` takes the
+first that is set, `-` counts as not set). The first parser that matches a record makes its event;
+a detection rule with `"source": "events"` and `{"field": "Type", "op": "eq", "value": "su_failed"}`
+then alerts on it.
 
 Events are grouped by type, user and source (*25 failed sign-ins of administrator from
 203.0.113.7*) and kept 30 days on the **Events** tab. Findings of the inventory are resolved when the

@@ -904,7 +904,8 @@ function Get-LinuxDiskHealth {
 # What the security scanner of the portal looks at (agents 1.17.0+, hourly, in a job at idle
 # priority): installed software, processes, listening ports, startup items, administrators,
 # security settings and the security events since the previous collection. The rules run on the
-# server (Security page), the agent only collects. Every part is optional: one that fails is left out.
+# server (Security page), the agent only collects; logs go as raw records, parsed by the parser
+# rules of the server. Every part is optional: one that fails is left out.
 
 function ConvertTo-SecurityText ($Value, [int]$Max = 1000) {
     $text = "$Value".Trim()
@@ -1327,104 +1328,99 @@ function Get-SecurityPosture {
     return $posture
 }
 
-function Get-SecurityEvents {
+function Get-SecurityLogs {
+    # The raw records of the logs the parsers of the server read, since the previous collection:
+    # the agent does not interpret them (the parser rules on the Security page do).
     param (
         [bool]$OnLinux,
-        [datetime]$Since
+        [datetime]$Since,
+        [int]$MaxRecords = 20000
     )
 
-    # Grouped by type, user and source: how often and when last.
-    $groups = @{}
-    $add = {
-        param ([string]$Type, [string]$User, [string]$Source, [string]$Message, [datetime]$Time, [int]$Count = 1)
-        $key = "$Type|$("$User".ToLowerInvariant())|$Source"
-        if (-not $groups.ContainsKey($key)) {
-            $groups[$key] = [PSCustomObject]@{ Type = $Type; Count = 0; User = ConvertTo-SecurityText $User 200; Source = ConvertTo-SecurityText $Source 200; Message = $null; Last = $Time }
-        }
-        $group = $groups[$key]
-        $group.Count += $Count
-        if ($Time -ge $group.Last -or -not $group.Message) { $group.Last = $Time; $group.Message = ConvertTo-SecurityText $Message 500 }
-    }
-
     if ($OnLinux) {
-        $lines = @()
+        $records = New-Object System.Collections.Generic.List[object]
         if (Get-Command -Name journalctl -CommandType Application -ErrorAction SilentlyContinue) {
-            # auth and authpriv: sshd, sudo, useradd, usermod, gpasswd.
+            # auth and authpriv: sshd, sudo, su, useradd, usermod, gpasswd, PAM.
             $epoch = [int64]([DateTimeOffset]$Since).ToUnixTimeSeconds()
-            $lines = @(journalctl -q --no-pager -o short-iso --since "@$epoch" SYSLOG_FACILITY=4 SYSLOG_FACILITY=10 2>$null)
-        }
-        if ($lines.Count -eq 0) {
-            foreach ($path in '/var/log/auth.log', '/var/log/secure') {
-                if (Test-Path -Path $path) { $lines = @(Get-Content -Path $path -Tail 20000 -ErrorAction SilentlyContinue); break }
+            foreach ($line in @(journalctl -q --no-pager -o json --output-fields=MESSAGE,SYSLOG_IDENTIFIER,_PID --since "@$epoch" SYSLOG_FACILITY=4 SYSLOG_FACILITY=10 2>$null | Select-Object -Last $MaxRecords)) {
+                try { $entry = $line | ConvertFrom-Json } catch { continue }
+                # A message that is not valid UTF-8 comes as a list of bytes.
+                $message = if ($entry.MESSAGE -is [string]) { $entry.MESSAGE } else { try { [System.Text.Encoding]::UTF8.GetString([byte[]]@($entry.MESSAGE)) } catch { $null } }
+                if (-not $message) { continue }
+                $records.Add([PSCustomObject]@{
+                        Time       = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]([int64]$entry.__REALTIME_TIMESTAMP / 1000)).UtcDateTime.ToString('o')
+                        Identifier = $entry.SYSLOG_IDENTIFIER
+                        Pid        = if ($entry._PID) { [int]$entry._PID } else { $null }
+                        Message    = ConvertTo-SecurityText $message 2000
+                    })
             }
         }
-        foreach ($line in $lines) {
-            # 2026-10-05T10:00:01+0200 host sshd[123]: ... (journalctl, rsyslog) or "Oct  5 10:00:01 host ..."
-            $time = $null
-            if ($line -match '^(\d{4}-\d{2}-\d{2}T[\d:.]+)([+-]\d{2}:?\d{2})?') {
-                $time = [datetime]$Matches[1]
-            } elseif ($line -match '^([A-Z][a-z]{2})\s+(\d{1,2}) (\d{2}:\d{2}:\d{2})') {
-                $parsed = [datetime]::MinValue
-                if ([datetime]::TryParseExact("$($Matches[1]) $($Matches[2]) $((Get-Date).Year) $($Matches[3])", 'MMM d yyyy HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture, 'AllowWhiteSpaces', [ref]$parsed)) {
-                    $time = if ($parsed -gt (Get-Date).AddDays(1)) { $parsed.AddYears(-1) } else { $parsed }
+        if ($records.Count -eq 0) {
+            # Without a journal: auth.log / secure, "2026-10-05T10:00:01.123+02:00 host sshd[123]: ..." or "Oct  5 10:00:01 host sshd[123]: ...".
+            $path = @('/var/log/auth.log', '/var/log/secure') | Where-Object { Test-Path -Path $_ } | Select-Object -First 1
+            foreach ($line in @(if ($path) { Get-Content -Path $path -Tail $MaxRecords -ErrorAction SilentlyContinue })) {
+                $time = $null
+                $rest = $null
+                if ($line -match '^(\d{4}-\d{2}-\d{2}T[\d:.]+([+-]\d{2}:?\d{2}|Z)?)\s+\S+\s+(.*)$') {
+                    $parsed = [DateTimeOffset]::MinValue
+                    if ([DateTimeOffset]::TryParse($Matches[1], [ref]$parsed)) { $time = $parsed.LocalDateTime }
+                    $rest = $Matches[3]
+                } elseif ($line -match '^([A-Z][a-z]{2})\s+(\d{1,2}) (\d{2}:\d{2}:\d{2})\s+\S+\s+(.*)$') {
+                    $rest = $Matches[4]
+                    $parsed = [datetime]::MinValue
+                    if ([datetime]::TryParseExact("$($Matches[1]) $($Matches[2]) $((Get-Date).Year) $($Matches[3])", 'MMM d yyyy HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture, 'AllowWhiteSpaces', [ref]$parsed)) {
+                        $time = if ($parsed -gt (Get-Date).AddDays(1)) { $parsed.AddYears(-1) } else { $parsed }
+                    }
                 }
-            }
-            if (-not $time -or $time -lt $Since) { continue }
-            if ($line -match 'sshd\[\d+\]: Failed (password|publickey) for (invalid user )?(\S+) from (\S+)') {
-                & $add 'failed_logon' $Matches[3] $Matches[4] "ssh: failed $($Matches[1]) for $($Matches[2])$($Matches[3])" $time
-            } elseif ($line -match 'sudo(\[\d+\])?:\s+(\S+) : (\d+) incorrect password attempts?') {
-                & $add 'sudo_failed' $Matches[2] 'sudo' ($line -replace '^.*?sudo(\[\d+\])?:\s+', '') $time ([int]$Matches[3])
-            } elseif ($line -match 'useradd\[\d+\]: new user: name=([^,\s]+)') {
-                & $add 'account_created' $Matches[1] 'useradd' "New user $($Matches[1])" $time
-            } elseif ($line -match "usermod\[\d+\]: add '([^']+)' to group '(sudo|wheel|admin)'") {
-                & $add 'admin_added' $Matches[1] $Matches[2] "$($Matches[1]) added to group $($Matches[2])" $time
-            } elseif ($line -match 'gpasswd\[\d+\]: user (\S+) added by (\S+) to group (sudo|wheel|admin)') {
-                & $add 'admin_added' $Matches[1] $Matches[2] "$($Matches[2]) added $($Matches[1]) to group $($Matches[3])" $time
+                if (-not $time -or $time -lt $Since -or $rest -notmatch '^([^\s\[:]+)(\[(\d+)\])?:\s?(.*)$') { continue }
+                $records.Add([PSCustomObject]@{
+                        Time       = $time.ToUniversalTime().ToString('o')
+                        Identifier = $Matches[1]
+                        Pid        = if ($Matches[3]) { [int]$Matches[3] } else { $null }
+                        Message    = ConvertTo-SecurityText $Matches[4] 2000
+                    })
             }
         }
-        return $groups.Values
+        return @(@{ source = 'linux.auth'; records = $records.ToArray() })
     }
 
-    $read = {
-        param ([hashtable]$Filter)
-        try { @(Get-WinEvent -FilterHashtable ($Filter + @{ StartTime = $Since }) -MaxEvents 5000 -ErrorAction Stop) } catch { @() }
-    }
-    $data = {
-        param ($Record)
-        $values = @{}
-        foreach ($item in @(([xml]$Record.ToXml()).Event.EventData.Data)) { if ($item.Name) { $values[$item.Name] = "$($item.'#text')" } }
-        $values
-    }
-    foreach ($record in (& $read @{ LogName = 'Security'; Id = 4625, 4720, 4732, 1102 })) {
-        $values = & $data $record
-        switch ($record.Id) {
-            4625 {
-                $source = if ($values['IpAddress'] -and $values['IpAddress'] -ne '-') { $values['IpAddress'] } else { $values['WorkstationName'] }
-                & $add 'failed_logon' $values['TargetUserName'] $source "Failed sign-in (logon type $($values['LogonType']))" $record.TimeCreated
-            }
-            4720 { & $add 'account_created' $values['TargetUserName'] $values['SubjectUserName'] "$($values['SubjectUserName']) created the account $($values['TargetUserName'])" $record.TimeCreated }
-            4732 {
-                if ($values['TargetSid'] -ne 'S-1-5-32-544') { continue }
-                $member = if ($values['MemberName'] -and $values['MemberName'] -ne '-') { $values['MemberName'] } else { try { (New-Object System.Security.Principal.SecurityIdentifier($values['MemberSid'])).Translate([System.Security.Principal.NTAccount]).Value } catch { $values['MemberSid'] } }
-                & $add 'admin_added' $member $values['SubjectUserName'] "$($values['SubjectUserName']) added $member to Administrators" $record.TimeCreated
-            }
-            1102 { & $add 'log_cleared' (([xml]$record.ToXml()).Event.UserData.LogFileCleared.SubjectUserName) 'Security' 'The Security log was cleared' $record.TimeCreated }
-        }
-    }
-    foreach ($record in (& $read @{ LogName = 'System'; Id = 104, 7045 })) {
-        if ($record.Id -eq 104) {
-            & $add 'log_cleared' (([xml]$record.ToXml()).Event.UserData.LogFileCleared.SubjectUserName) 'System' "The $((([xml]$record.ToXml()).Event.UserData.LogFileCleared.Channel)) log was cleared" $record.TimeCreated
-        } elseif ($record.ProviderName -eq 'Service Control Manager') {
-            $values = & $data $record
-            & $add 'service_installed' $values['AccountName'] $values['ServiceName'] "$($values['ServiceName']): $($values['ImagePath'])" $record.TimeCreated
-        }
-    }
-    foreach ($record in (& $read @{ LogName = 'Microsoft-Windows-Windows Defender/Operational'; Id = 1116 })) {
-        $values = & $data $record
-        & $add 'malware_detected' $values['Detection User'] $values['Threat Name'] "$($values['Threat Name']) ($($values['Severity Name'])) in $($values['Path'])" $record.TimeCreated
+    # Windows: the events the parsers may want, each with its EventData (or UserData) as Data;
+    # field names without spaces ("Threat Name" is ThreatName).
+    $logs = @(
+        @{ Source = 'windows.security'; Filter = @{ LogName = 'Security'; Id = 1102, 4625, 4648, 4697, 4698, 4720, 4722, 4724, 4726, 4728, 4732, 4740, 4756 } },
+        @{ Source = 'windows.system'; Filter = @{ LogName = 'System'; Id = 104, 7045 } },
+        @{ Source = 'windows.defender'; Filter = @{ LogName = 'Microsoft-Windows-Windows Defender/Operational'; Id = 1006, 1116, 1117, 5001, 5010, 5012 } }
+    )
+    $result = @()
+    foreach ($log in $logs) {
+        $events = @(try { Get-WinEvent -FilterHashtable ($log.Filter + @{ StartTime = $Since }) -MaxEvents $MaxRecords -ErrorAction Stop } catch { })
+        $records = @(foreach ($record in $events) {
+                $data = @{}
+                try {
+                    $xml = [xml]$record.ToXml()
+                    $items = if ($xml.Event.EventData) { @($xml.Event.EventData.Data) } else { @() }
+                    foreach ($item in $items) {
+                        if ($item -is [System.Xml.XmlElement] -and $item.GetAttribute('Name')) { $data[($item.GetAttribute('Name') -replace '\s', '')] = ConvertTo-SecurityText $item.InnerText 1000 }
+                    }
+                    if ($xml.Event.UserData) {
+                        foreach ($node in @($xml.Event.UserData.ChildNodes)) {
+                            foreach ($child in @($node.ChildNodes)) { if ($child -is [System.Xml.XmlElement]) { $data[$child.LocalName] = ConvertTo-SecurityText $child.InnerText 1000 } }
+                        }
+                    }
+                }
+                catch { }
+                [PSCustomObject]@{
+                    Time     = $record.TimeCreated.ToUniversalTime().ToString('o')
+                    Id       = [int]$record.Id
+                    Provider = $record.ProviderName
+                    Level    = [int]$record.Level
+                    Data     = $data
+                }
+            })
+        if ($records.Count -gt 0) { $result += @{ source = $log.Source; records = $records } }
     }
 
-    return $groups.Values
+    return $result
 }
 
 function Get-SecurityInventory {
@@ -1435,22 +1431,17 @@ function Get-SecurityInventory {
         [bool]$InContainer
     )
 
-    $data = @{}
-    try { $data['software'] = @(Get-SecuritySoftware -OnLinux $OnLinux | Select-Object -First 5000) } catch { }
-    try { $data['processes'] = @(Get-SecurityProcesses -OnLinux $OnLinux -AgentPid $AgentPid) } catch { }
-    try { $data['listening'] = @(Get-SecurityListening -OnLinux $OnLinux | Select-Object -First 1000) } catch { }
-    try { $data['startup'] = @(Get-SecurityStartup -OnLinux $OnLinux | Select-Object -First 500) } catch { }
-    try { $data['admins'] = @(Get-SecurityAdmins -OnLinux $OnLinux | Select-Object -First 200) } catch { }
-    try { $data['posture'] = Get-SecurityPosture -OnLinux $OnLinux -InContainer $InContainer } catch { }
-    try {
-        $data['events'] = @(Get-SecurityEvents -OnLinux $OnLinux -Since $Since | Sort-Object -Property Last -Descending | Select-Object -First 500 | ForEach-Object {
-                $_.Last = $_.Last.ToUniversalTime().ToString('o')
-                $_
-            })
-    }
-    catch { }
+    $inventory = @{}
+    try { $inventory['software'] = @(Get-SecuritySoftware -OnLinux $OnLinux | Select-Object -First 5000) } catch { }
+    try { $inventory['processes'] = @(Get-SecurityProcesses -OnLinux $OnLinux -AgentPid $AgentPid) } catch { }
+    try { $inventory['listening'] = @(Get-SecurityListening -OnLinux $OnLinux | Select-Object -First 1000) } catch { }
+    try { $inventory['startup'] = @(Get-SecurityStartup -OnLinux $OnLinux | Select-Object -First 500) } catch { }
+    try { $inventory['admins'] = @(Get-SecurityAdmins -OnLinux $OnLinux | Select-Object -First 200) } catch { }
+    try { $inventory['posture'] = Get-SecurityPosture -OnLinux $OnLinux -InContainer $InContainer } catch { }
+    $logs = @()
+    try { $logs = @(Get-SecurityLogs -OnLinux $OnLinux -Since $Since) } catch { }
 
-    return $data
+    return @{ inventory = $inventory; logs = $logs }
 }
 
 #endregion
@@ -3264,7 +3255,7 @@ function Start-SecurityCollection {
         $InContainer
     )
 
-    return Start-AgentJob -Name 'security' -Functions 'ConvertTo-SecurityText', 'Get-SecuritySoftware', 'Get-SecurityProcesses', 'Get-SecurityListening', 'Get-SecurityStartup', 'Get-SecurityAdmins', 'Get-SecurityPosture', 'Get-SecurityEvents', 'Get-SecurityInventory' -ArgumentList $OnLinux, $Since, $PID, $InContainer -ScriptBlock {
+    return Start-AgentJob -Name 'security' -Functions 'ConvertTo-SecurityText', 'Get-SecuritySoftware', 'Get-SecurityProcesses', 'Get-SecurityListening', 'Get-SecurityStartup', 'Get-SecurityAdmins', 'Get-SecurityPosture', 'Get-SecurityLogs', 'Get-SecurityInventory' -ArgumentList $OnLinux, $Since, $PID, $InContainer -ScriptBlock {
         param ($OnLinux, $Since, $AgentPid, $InContainer)
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
         return Get-SecurityInventory -OnLinux $OnLinux -Since $Since -AgentPid $AgentPid -InContainer $InContainer
@@ -3296,7 +3287,8 @@ function Send-SecurityInventory {
     )
 
     try {
-        $result = Invoke-MdmApi -Method Post -Path 'device/security' -Body $Data -Token $Token
+        # The server only takes it (into its cache) and processes it afterwards.
+        [void](Invoke-MdmApi -Method Post -Path 'device/security' -Body $Data -Token $Token)
     }
     catch {
         # A server without the scanner: nothing to resend.
@@ -3304,7 +3296,9 @@ function Send-SecurityInventory {
         throw
     }
     @{ since = $StartedAt.ToString('o'); sent_at = (Get-Date).ToString('o') } | ConvertTo-Json -Compress | Set-Content -Path "$AgentDir/security.json" -Encoding UTF8
-    Write-AgentLog ('Security inventory sent: {0} application(s), {1} process(es), {2} port(s), {3} event group(s); {4} new finding(s)' -f @($Data.software).Count, @($Data.processes).Count, @($Data.listening).Count, @($Data.events).Count, $result.opened)
+    $records = 0
+    foreach ($log in @($Data.logs)) { $records += @($log.records).Count }
+    Write-AgentLog ('Security inventory sent: {0} application(s), {1} process(es), {2} port(s), {3} log record(s)' -f @($Data.inventory.software).Count, @($Data.inventory.processes).Count, @($Data.inventory.listening).Count, $records)
 
     return $true
 }

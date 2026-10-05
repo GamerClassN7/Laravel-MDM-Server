@@ -19,13 +19,15 @@ return new class extends Migration
             $table->timestamps();
         });
 
-        // Rules of the scanner (App\Support\SecurityRules): the built-in ones from
-        // resources/security/rules.json and the ones added in the portal.
+        // Rules of the scanner: detection rules (App\Support\SecurityRules) and parsers of raw
+        // logs (App\Support\SecurityParsers); the built-in ones from resources/security/*.json
+        // and the ones added in the portal.
         Schema::create('security_rules', function (Blueprint $table) {
             $table->id();
+            $table->string('kind', 16)->default('detection');
             $table->string('key', 64)->unique();
             $table->string('name', 120);
-            $table->string('severity', 16);
+            $table->string('severity', 16)->nullable();
             $table->string('source', 16);
             $table->string('platform', 16)->default('any');
             $table->json('definition');
