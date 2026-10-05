@@ -107,7 +107,7 @@ class RuleForm extends Component
 
             return;
         }
-        $rule = $this->ruleId ? SecurityRule::query()->where('built_in', false)->findOrFail($this->ruleId) : new SecurityRule(['built_in' => false, 'enabled' => $definition['enabled'] ?? true]);
+        $rule = $this->ruleId ? SecurityRule::query()->custom()->findOrFail($this->ruleId) : new SecurityRule(['origin' => SecurityRule::CUSTOM, 'enabled' => $definition['enabled'] ?? true]);
         $rule->fill(SecurityRule::attributesFor($definition))->save();
         if (! $rule->isParser) {
             SecurityScanner::scanAll();
@@ -120,7 +120,7 @@ class RuleForm extends Component
     public function delete(): void
     {
         Gate::authorize('is-system-admin');
-        SecurityRule::query()->where('built_in', false)->whereKey($this->ruleId)->delete();
+        SecurityRule::query()->custom()->whereKey($this->ruleId)->delete();
         $this->dispatch('securityRuleSaved');
         $this->dispatch('closeModal');
     }

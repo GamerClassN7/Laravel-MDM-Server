@@ -150,8 +150,8 @@ class SecurityScannerTest extends TestCase
         $this->assertSame(count($keys), count(array_unique($keys)), 'Rule and parser keys are unique');
 
         SecurityRule::syncBuiltIn();
-        $this->assertSame(count($rules), SecurityRule::query()->detection()->where('built_in', true)->count());
-        $this->assertSame(count($parsers), SecurityRule::query()->parsers()->where('built_in', true)->count());
+        $this->assertSame(count($rules), SecurityRule::query()->detection()->where('origin', 'bundled')->count());
+        $this->assertSame(count($parsers), SecurityRule::query()->parsers()->where('origin', 'bundled')->count());
         $this->assertFalse(SecurityRule::query()->where('key', 'events.service-installed')->value('enabled'));
     }
 

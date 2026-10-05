@@ -2,10 +2,12 @@
 
 namespace App\Livewire\SecurityScan;
 
+use App\Jobs\SyncSecurityFeed;
 use App\Models\SecurityEvent;
 use App\Models\SecurityFinding;
 use App\Models\SecurityInventory;
 use App\Models\SecurityRule;
+use App\Support\SecurityFeed;
 use App\Support\SecurityInbox;
 use App\Support\SecurityRules;
 use App\Support\SecurityScanner;
@@ -100,6 +102,19 @@ class Page extends Component
         $this->dispatch('openModal', 'security-scan.rule-form', __('Add rule'), ['copyOf' => $id], 'xl');
     }
 
+    /** Takes the rules of the feed now (a job: it waits for the queue worker). */
+    public function updateFeed(): void
+    {
+        Gate::authorize('is-system-admin');
+        if (! SecurityFeed::enabled()) {
+            alert()->warning(__('No rules feed is set (MDM_SECURITY_FEED_URL).'))->now();
+
+            return;
+        }
+        SyncSecurityFeed::dispatch(true);
+        alert()->success(__('Updating the rules.'))->now();
+    }
+
     public function rescan(): void
     {
         Gate::authorize('is-system-admin');
@@ -153,6 +168,7 @@ class Page extends Component
             'parsers' => $this->tab === 'rules' ? SecurityRule::query()->parsers()->orderBy('source')->orderBy('name')->get() : collect(),
             'eventTypes' => $this->tab === 'events' ? SecurityEvent::query()->distinct()->orderBy('type')->pluck('type')->mapWithKeys(fn ($type) => [$type => (new SecurityEvent(['type' => $type]))->label]) : collect(),
             'pending' => SecurityInbox::pending(),
+            'feed' => ['enabled' => SecurityFeed::enabled()] + SecurityFeed::state(),
             'scanned' => SecurityInventory::query()->count(),
             'isAdmin' => Gate::allows('is-system-admin'),
         ])->title(__('Security'));

@@ -18,19 +18,38 @@ use Illuminate\Support\Facades\DB;
  */
 class SecurityRule extends Model
 {
+    public const BUNDLED = 'bundled';
+
+    public const FEED = 'feed';
+
+    public const CUSTOM = 'custom';
+
+    /** Which origin may replace which: a rule of the portal's own is never replaced, the feed is newer than the bundled ones. */
+    private const RANK = [self::BUNDLED => 1, self::FEED => 2, self::CUSTOM => 3];
+
     public const BUILT_IN_PATHS = ['detection' => 'security/rules.json', 'parser' => 'security/parsers.json'];
 
-    protected $fillable = ['kind', 'key', 'name', 'severity', 'source', 'platform', 'definition', 'built_in', 'enabled'];
+    protected $fillable = ['kind', 'key', 'name', 'severity', 'source', 'platform', 'definition', 'origin', 'feed_version', 'enabled'];
 
     protected $casts = [
         'definition' => 'array',
-        'built_in' => 'boolean',
         'enabled' => 'boolean',
     ];
 
     public function findings(): HasMany
     {
         return $this->hasMany(SecurityFinding::class);
+    }
+
+    /** Whether it comes with the portal or its feed: shown, switched on and off, not edited. */
+    public function getBuiltInAttribute(): bool
+    {
+        return $this->origin !== self::CUSTOM;
+    }
+
+    public function scopeCustom(Builder $query): Builder
+    {
+        return $query->where('origin', self::CUSTOM);
     }
 
     public function scopeEnabled(Builder $query): Builder
@@ -99,9 +118,50 @@ class SecurityRule extends Model
     }
 
     /**
-     * The built-in rules and parsers as they are in their files: new ones are added (switched on
-     * unless the file says "enabled": false), changed ones updated (the switch stays), removed
-     * ones deleted with their findings. Done when a file changed since the last time.
+     * Makes the rules of an origin the given definitions: new ones are added (switched on unless the
+     * definition says "enabled": false), changed ones updated (the switch stays), the ones of this origin
+     * that are not given anymore deleted with their findings. A rule of an origin that ranks higher
+     * (custom over feed over bundled) keeps its definition. Invalid definitions are skipped.
+     *
+     * @param  iterable<int, array>  $definitions  each with "kind" set for parsers
+     * @return array{added: int, updated: int, removed: int, skipped: array<int, string>}
+     */
+    public static function apply(iterable $definitions, string $origin, ?string $version = null): array
+    {
+        $result = ['added' => 0, 'updated' => 0, 'removed' => 0, 'skipped' => []];
+        DB::transaction(function () use ($definitions, $origin, $version, &$result) {
+            $keys = [];
+            foreach ($definitions as $definition) {
+                if (($errors = self::errorsOf($definition)) !== []) {
+                    $result['skipped'][] = (is_array($definition) && is_string($definition['key'] ?? null) ? $definition['key'] : '?').': '.implode(' ', $errors);
+
+                    continue;
+                }
+                $keys[] = $definition['key'];
+                $rule = static::query()->firstOrNew(['key' => $definition['key']]);
+                if ($rule->exists && self::RANK[$rule->origin] > self::RANK[$origin]) {
+                    continue;
+                }
+                $rule->fill(self::attributesFor($definition) + ['origin' => $origin, 'feed_version' => $origin === self::FEED ? $version : null]);
+                if (! $rule->exists) {
+                    $rule->enabled = $definition['enabled'] ?? true;
+                    $result['added']++;
+                } elseif ($rule->isDirty()) {
+                    $result['updated']++;
+                }
+                $rule->save();
+            }
+            $gone = static::query()->where('origin', $origin)->whereNotIn('key', $keys)->get();
+            $result['removed'] = $gone->count();
+            $gone->each->delete();
+        });
+
+        return $result;
+    }
+
+    /**
+     * The bundled rules and parsers as they are in their files (resources/security). Done when a file
+     * changed since the last time, or when the rules of another origin made room for a bundled one.
      */
     public static function syncBuiltIn(): void
     {
@@ -110,11 +170,11 @@ class SecurityRule extends Model
             $hashes[$kind] = is_file(resource_path($path)) ? md5_file(resource_path($path)) : null;
         }
         $hash = md5(implode('|', $hashes));
-        if (Cache::get('mdm.security_rules') === $hash && static::query()->where('built_in', true)->exists()) {
+        if (Cache::get('mdm.security_rules') === $hash && static::query()->where('origin', self::BUNDLED)->exists()) {
             return;
         }
 
-        $files = [];
+        $definitions = [];
         foreach (self::BUILT_IN_PATHS as $kind => $path) {
             if ($hashes[$kind] === null) {
                 continue;
@@ -125,35 +185,13 @@ class SecurityRule extends Model
 
                 return;
             }
-            $files[$kind] = $rules;
-        }
-        DB::transaction(function () use ($files) {
-            $keys = [];
-            foreach ($files as $kind => $rules) {
-                foreach ($rules as $definition) {
-                    if ($kind === 'parser' && is_array($definition)) {
-                        $definition = ['kind' => 'parser'] + $definition;
-                    }
-                    if (($errors = self::errorsOf($definition)) !== []) {
-                        report(new \RuntimeException('Built-in security rule '.json_encode($definition['key'] ?? null).': '.implode(' ', $errors)));
-
-                        continue;
-                    }
-                    $keys[] = $definition['key'];
-                    $rule = static::query()->firstOrNew(['key' => $definition['key']]);
-                    // A rule of the portal with the key of a new built-in one keeps its own definition.
-                    if ($rule->exists && ! $rule->built_in) {
-                        continue;
-                    }
-                    $rule->fill(self::attributesFor($definition) + ['built_in' => true]);
-                    if (! $rule->exists) {
-                        $rule->enabled = $definition['enabled'] ?? true;
-                    }
-                    $rule->save();
-                }
+            foreach ($rules as $definition) {
+                $definitions[] = $kind === 'parser' && is_array($definition) ? ['kind' => 'parser'] + $definition : $definition;
             }
-            static::query()->where('built_in', true)->whereNotIn('key', $keys)->get()->each->delete();
-        });
+        }
+        foreach (self::apply($definitions, self::BUNDLED)['skipped'] as $skipped) {
+            report(new \RuntimeException('Bundled security rule '.$skipped));
+        }
         Cache::forever('mdm.security_rules', $hash);
     }
 }

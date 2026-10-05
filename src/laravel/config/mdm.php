@@ -32,6 +32,12 @@ return [
     'detect_public_address' => (bool) env('MDM_DETECT_PUBLIC_ADDRESS', true),
     'public_address_url' => env('MDM_PUBLIC_ADDRESS_URL', 'https://ifconfig.me/ip'),
 
+    // Where the security scanner takes its rules from besides the ones that come with it: a public git
+    // repository (a GitHub address, or the base of the raw files of another host) with a manifest.json,
+    // rules/*.json and parsers/*.json, at a branch or tag. Once a day by a job; empty for none.
+    'security_feed_url' => env('MDM_SECURITY_FEED_URL'),
+    'security_feed_ref' => env('MDM_SECURITY_FEED_REF', 'main'),
+
     // Seconds a signed message may differ from the server clock.
     'signature_max_skew' => 300,
 

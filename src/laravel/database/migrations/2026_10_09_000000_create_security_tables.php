@@ -42,7 +42,9 @@ return new class extends Migration
             $table->string('source', 16);
             $table->string('platform', 16)->default('any');
             $table->json('definition');
-            $table->boolean('built_in')->default(false);
+            // bundled: resources/security/*.json, feed: the rules repository (SyncSecurityFeed), custom: added in the portal.
+            $table->string('origin', 16)->default('custom');
+            $table->string('feed_version', 32)->nullable();
             $table->boolean('enabled')->default(true);
             $table->timestamps();
         });

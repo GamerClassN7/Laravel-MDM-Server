@@ -772,6 +772,19 @@ checks it while you type and shows what it would find on a device before it is s
 }
 ```
 
+**Rules from a git repository.** Besides the bundled rules, a job takes rules from a public git
+repository once a day (and with **Update now**): set `MDM_SECURITY_FEED_URL` (a GitHub address such
+as `https://github.com/you/security-rules`, or the base address of the raw files of another host,
+HTTPS only) and optionally `MDM_SECURITY_FEED_REF` (branch or tag, default `main`). The repository
+has a `manifest.json` with a `version` and the SHA-256 of every file (`{"version": "2026.10.1",
+"files": {"rules/apps/remote.json": "<sha256>", "parsers/linux/su.json": "<sha256>"}}`),
+`rules/**/*.json` (detection rules) and `parsers/**/*.json` (parsers), each file one definition or a
+list. Everything is fetched and checked against the manifest first and applied in one go: an
+unreachable repository, a file that does not match its hash or a manifest that is not one changes
+nothing. Invalid definitions are skipped and listed; rules of the feed that disappeared from it are
+removed. What you switched on or off stays, a rule you added yourself keeps its definition (custom
+over feed over bundled), and a bundled rule the feed replaced comes back when it is dropped.
+
 - `severity`: `critical`, `high`, `medium`, `low` or `info`; `platform`: `any`, `windows` or `linux`.
 - `when`: a condition `{"field", "op", "value"}`, or `{"all": [...]}`, `{"any": [...]}`,
   `{"not": {...}}` (up to 6 levels, 64 conditions). Operators: `eq`, `ne`, `contains`,
