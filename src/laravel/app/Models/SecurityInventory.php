@@ -5,87 +5,147 @@ namespace App\Models;
 use App\Support\SecurityRules;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Carbon;
 use Throwable;
 
 /**
- * The last security inventory of a device (agents 1.17.0+): what the rules of the scanner look
- * at (App\Support\SecurityRules::SOURCES). Events are not kept here, they go to SecurityEvent.
+ * The security inventory of a device (agents 1.17.0+): what the rules of the scanner look at
+ * (App\Support\SecurityRules::SOURCES, without the events). The row holds the state of each
+ * source (a hash of its items), the items are SecurityInventoryItem rows: an agent sends only
+ * the items that changed since the state the server has, the server checks that the result has
+ * the state the agent computed.
  */
 class SecurityInventory extends Model
 {
+    /** The sources an inventory has (events are not part of it). */
+    public const SOURCES = ['software', 'processes', 'listening', 'startup', 'admins', 'posture'];
+
     /** At most this many items per list are kept. */
-    public const LIMITS = ['software' => 5000, 'processes' => 1000, 'listening' => 1000, 'startup' => 500, 'admins' => 200, 'events' => SecurityEvent::MAX_PER_COLLECTION];
+    public const LIMITS = ['software' => 5000, 'processes' => 1000, 'listening' => 1000, 'startup' => 500, 'admins' => 200, 'posture' => 1];
+
+    /** The key of the one item of the posture source. */
+    public const POSTURE_KEY = 'posture';
 
     /** Texts are cut to this many characters (command lines are long). */
     private const MAX_TEXT = 1000;
 
-    protected $fillable = ['device_id', 'data', 'collected_at'];
+    protected $fillable = ['device_id', 'states', 'collected_at'];
 
     protected $casts = [
-        'data' => 'array',
+        'states' => 'array',
         'collected_at' => 'datetime',
     ];
+
+    /** @var array<string, array<int, array>>|null */
+    private ?array $loaded = null;
 
     public function device(): BelongsTo
     {
         return $this->belongsTo(Device::class);
     }
 
-    /**
-     * Only the known lists and fields: scalars (texts cut), numbers of Count and Port as
-     * integers, posture values as booleans, numbers or texts. Events also need a known type.
-     *
-     * @return array{software: array, processes: array, listening: array, startup: array, admins: array, posture: array, events: array}
-     */
-    public static function sanitize(mixed $data): array
+    public function rows(): HasMany
     {
-        $data = is_array($data) ? $data : [];
-        $clean = [];
-        foreach (SecurityRules::SOURCES as $source => $definition) {
-            if ($source === 'posture') {
-                $clean['posture'] = self::posture($data['posture'] ?? null, $definition['fields']);
-
-                continue;
-            }
-            $items = $data[$source] ?? [];
-            // A single item serialized by PowerShell as an object instead of a list.
-            if (is_array($items) && ! array_is_list($items)) {
-                $items = [$items];
-            }
-            $clean[$source] = [];
-            foreach (is_array($items) ? $items : [] as $item) {
-                if (count($clean[$source]) >= self::LIMITS[$source]) {
-                    break;
-                }
-                if (! is_array($item)) {
-                    continue;
-                }
-                $row = [];
-                foreach ($definition['fields'] as $field) {
-                    $row[$field] = self::value($item[$field] ?? null, $field);
-                }
-                if ($source === 'events') {
-                    // Types come from the parsers (built-in ones in SecurityRules::EVENT_TYPES).
-                    if (! is_string($row['Type']) || ! preg_match('/^[a-z][a-z0-9_]{1,31}$/', $row['Type'])) {
-                        continue;
-                    }
-                    $row['Count'] = max(1, (int) $row['Count']);
-                    $row['Last'] = self::time($row['Last']);
-                }
-                $clean[$source][] = $row;
-            }
-        }
-
-        return $clean;
+        return $this->hasMany(SecurityInventoryItem::class, 'device_id', 'device_id');
     }
 
-    private static function posture(mixed $posture, array $fields): array
+    /** The items of one source as the rules see them (posture: its one item); [] for an unknown one. */
+    public function items(string $source): array
+    {
+        return $source === 'posture' ? [$this->lists()['posture']] : ($this->lists()[$source] ?? []);
+    }
+
+    /**
+     * Every list, loaded once: ['software' => [item, ...], ..., 'posture' => [field => value]].
+     * The posture source is one object, not a list.
+     *
+     * @return array<string, array>
+     */
+    public function lists(): array
+    {
+        if ($this->loaded === null) {
+            $this->loaded = array_fill_keys(self::SOURCES, []);
+            foreach ($this->rows()->orderBy('id')->get(['source', 'data']) as $row) {
+                $item = json_decode($row->data, true);
+                if (is_array($item) && isset($this->loaded[$row->source])) {
+                    $this->loaded[$row->source][] = $item;
+                }
+            }
+            $this->loaded['posture'] = $this->loaded['posture'][0] ?? [];
+        }
+
+        return $this->loaded;
+    }
+
+    /** The lists as the views read them (`$inventory->data['software']`). */
+    public function getDataAttribute(): array
+    {
+        return $this->lists();
+    }
+
+    /** The key of an item: tells it apart from the other items of its source. */
+    public static function itemKey(string $source, array $item): string
+    {
+        if ($source === 'posture') {
+            return self::POSTURE_KEY;
+        }
+        $parts = [];
+        foreach (SecurityRules::SOURCES[$source]['key'] as $field) {
+            $parts[] = mb_strtolower(self::canon($item[$field] ?? null));
+        }
+
+        return substr(hash('sha256', implode("\x1f", $parts)), 0, 16);
+    }
+
+    /** The hash of the content of an item (all its fields, in the order of the source). */
+    public static function itemHash(string $source, array $item): string
+    {
+        $parts = [];
+        foreach (SecurityRules::SOURCES[$source]['fields'] as $field) {
+            $parts[] = self::canon($item[$field] ?? null);
+        }
+
+        return substr(hash('sha256', implode("\x1f", $parts)), 0, 16);
+    }
+
+    /**
+     * The state of a source from its items' (key => hash): a hash of the sorted "key:hash" lines.
+     * The agent computes the same one (Get-SecurityStateHash in app.ps1).
+     *
+     * @param  array<string, string>  $hashes
+     */
+    public static function stateOf(array $hashes): string
+    {
+        $keys = array_map('strval', array_keys($hashes));
+        sort($keys, SORT_STRING);
+        $lines = array_map(fn ($key) => $key.':'.$hashes[$key], $keys);
+
+        return hash('sha256', implode("\n", $lines));
+    }
+
+    /** A value as text for hashing: "" for none, true / false, numbers as they are. */
+    private static function canon(mixed $value): string
+    {
+        return match (true) {
+            $value === null => '',
+            is_bool($value) => $value ? 'true' : 'false',
+            is_array($value) => json_encode($value),
+            default => (string) $value,
+        };
+    }
+
+    /**
+     * An item of a source with only its known fields and values: texts cut, Count / Port / days
+     * as integers. The posture source keeps booleans, numbers and texts.
+     */
+    public static function sanitizeItem(string $source, mixed $item): array
     {
         $clean = [];
-        foreach ($fields as $field) {
-            $value = is_array($posture) ? ($posture[$field] ?? null) : null;
-            $clean[$field] = is_bool($value) || is_int($value) || is_float($value) ? $value : self::value($value, $field);
+        $item = is_array($item) ? $item : [];
+        foreach (SecurityRules::SOURCES[$source]['fields'] as $field) {
+            $value = $item[$field] ?? null;
+            $clean[$field] = $source === 'posture' && (is_bool($value) || is_int($value) || is_float($value)) ? $value : self::value($value, $field);
         }
 
         return $clean;
@@ -107,6 +167,41 @@ class SecurityInventory extends Model
         return $text === '' ? null : mb_strimwidth($text, 0, self::MAX_TEXT, '…');
     }
 
+    /**
+     * The events of a collection with only the known fields (type of any shape the parsers make).
+     *
+     * @return array<int, array>
+     */
+    public static function sanitizeEvents(mixed $events): array
+    {
+        $clean = [];
+        $fields = SecurityRules::SOURCES['events']['fields'];
+        if (is_array($events) && ! array_is_list($events)) {
+            $events = [$events];
+        }
+        foreach (is_array($events) ? $events : [] as $event) {
+            if (count($clean) >= SecurityEvent::MAX_PER_COLLECTION) {
+                break;
+            }
+            if (! is_array($event)) {
+                continue;
+            }
+            $row = [];
+            foreach ($fields as $field) {
+                $row[$field] = self::value($event[$field] ?? null, $field);
+            }
+            // Types come from the parsers (built-in ones in SecurityRules::EVENT_TYPES).
+            if (! is_string($row['Type']) || ! preg_match('/^[a-z][a-z0-9_]{1,31}$/', $row['Type'])) {
+                continue;
+            }
+            $row['Count'] = max(1, (int) $row['Count']);
+            $row['Last'] = self::time($row['Last']);
+            $clean[] = $row;
+        }
+
+        return $clean;
+    }
+
     private static function time(mixed $value): string
     {
         try {
@@ -117,11 +212,5 @@ class SecurityInventory extends Model
 
         // Not from the future (a device clock that is off), not older than the retention.
         return $time->min(now())->max(now()->subDays(SecurityEvent::RETENTION_DAYS))->toDateTimeString();
-    }
-
-    /** One list of the inventory ([] for an unknown one). */
-    public function items(string $source): array
-    {
-        return $source === 'posture' ? [$this->data['posture'] ?? []] : ($this->data[$source] ?? []);
     }
 }

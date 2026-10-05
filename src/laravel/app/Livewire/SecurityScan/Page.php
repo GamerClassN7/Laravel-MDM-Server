@@ -6,6 +6,7 @@ use App\Models\SecurityEvent;
 use App\Models\SecurityFinding;
 use App\Models\SecurityInventory;
 use App\Models\SecurityRule;
+use App\Support\SecurityInbox;
 use App\Support\SecurityRules;
 use App\Support\SecurityScanner;
 use Illuminate\Support\Facades\Gate;
@@ -151,7 +152,7 @@ class Page extends Component
             'rules' => $this->tab === 'rules' ? SecurityRule::query()->detection()->withCount(['findings as open_count' => fn ($q) => $q->active()])->orderBy('source')->orderBy('name')->get() : collect(),
             'parsers' => $this->tab === 'rules' ? SecurityRule::query()->parsers()->orderBy('source')->orderBy('name')->get() : collect(),
             'eventTypes' => $this->tab === 'events' ? SecurityEvent::query()->distinct()->orderBy('type')->pluck('type')->mapWithKeys(fn ($type) => [$type => (new SecurityEvent(['type' => $type]))->label]) : collect(),
-            'pending' => \App\Support\SecurityInbox::pending(),
+            'pending' => SecurityInbox::pending(),
             'scanned' => SecurityInventory::query()->count(),
             'isAdmin' => Gate::allows('is-system-admin'),
         ])->title(__('Security'));

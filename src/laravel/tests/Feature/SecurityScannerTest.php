@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\ProcessSecurityCollection;
 use App\Livewire\DeviceDetail;
 use App\Livewire\DeviceSecurity;
 use App\Livewire\SecurityScan\Page;
@@ -9,25 +10,47 @@ use App\Livewire\SecurityScan\RuleForm;
 use App\Models\AlertRule;
 use App\Models\Device;
 use App\Models\NotificationSetting;
+use App\Models\Script;
 use App\Models\SecurityEvent;
 use App\Models\SecurityFinding;
+use App\Models\SecurityInventory;
+use App\Models\SecurityInventoryItem;
 use App\Models\SecurityRule;
 use App\Models\User;
 use App\Support\AlertEvaluator;
+use App\Support\PowerShellCheck;
+use App\Support\SecurityInbox;
 use App\Support\SecurityParsers;
 use App\Support\SecurityRules;
 use App\Support\SecurityScanner;
+use App\Support\SecurityStateMismatch;
 use App\Support\SmartAlerts;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Livewire\Livewire;
 use Tests\Concerns\SignsDeviceRequests;
+use Tests\Concerns\SimulatesSecurityAgent;
 use Tests\TestCase;
 
 /** The security scanner: its rule language, the inventory from the agent, findings and events. */
 class SecurityScannerTest extends TestCase
 {
-    use RefreshDatabase, SignsDeviceRequests;
+    use RefreshDatabase, SignsDeviceRequests, SimulatesSecurityAgent;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // The jobs wait in the database queue until a test runs the worker, as in the Docker image.
+        config(['queue.default' => 'database']);
+    }
+
+    /** Runs the queue worker until the security queue is empty. */
+    private function runWorker(): void
+    {
+        $this->artisan('queue:work', ['--queue' => 'security,default', '--stop-when-empty' => true, '--sleep' => 0, '--tries' => 1, '--quiet' => true]);
+    }
 
     private function device(string $token = 'a', string $platform = 'windows', string $logs = 'on'): Device
     {
@@ -81,15 +104,16 @@ class SecurityScannerTest extends TestCase
     }
 
     /**
-     * Sends a collection as the agent does (inventory and raw logs), which the server only takes
-     * into its cache; then processes what waits. What it opened and resolved.
+     * Sends a collection as the agent does (deltas against what it knows the server has, raw logs);
+     * the job runs after the response. What it opened and resolved.
      */
     private function send(Device $device, array $inventory, string $token = 'a'): array
     {
         $logs = $inventory['logs'] ?? [];
         unset($inventory['logs']);
         $open = SecurityFinding::query()->open()->pluck('id');
-        $this->signedJson('POST', '/api/device/security', ['inventory' => $inventory, 'logs' => $logs], $token)->assertStatus(202)->assertJson(['queued' => true]);
+        $this->agentSend($token, $inventory, $logs)->assertStatus(202)->assertJson(['queued' => true]);
+        $this->runWorker();
 
         return [
             'opened' => SecurityFinding::query()->open()->whereNotIn('id', $open)->count(),
@@ -221,33 +245,35 @@ class SecurityScannerTest extends TestCase
     public function test_collections_are_taken_into_the_cache_and_processed_by_a_job(): void
     {
         $device = $this->device();
-        \Illuminate\Support\Facades\Queue::fake();
-        $payload = ['inventory' => $this->inventory(['logs' => null])];
-        $this->signedJson('POST', '/api/device/security', $payload, 'a')->assertStatus(202)->assertJson(['queued' => true]);
+        Queue::fake();
+        $inventory = $this->inventory();
+        unset($inventory['logs']);
+        $this->agentSend('a', $inventory)->assertStatus(202)->assertJson(['queued' => true]);
+        $payload = $this->lastCollection;
 
         // Nothing is parsed or stored in the request: the job waits on the security queue.
-        \Illuminate\Support\Facades\Queue::assertPushedOn('security', \App\Jobs\ProcessSecurityCollection::class, function ($job) use ($device, $payload) {
-            return $job->deviceId === $device->id && \App\Support\SecurityInbox::read($job->cacheKey) === json_encode($payload);
+        Queue::assertPushedOn('security', ProcessSecurityCollection::class, function ($job) use ($device, $payload) {
+            return $job->deviceId === $device->id && SecurityInbox::read($job->cacheKey) === json_encode($payload);
         });
         $this->assertSame(0, SecurityFinding::query()->count());
         $this->assertNull($device->securityInventory()->first());
 
         // The cache holds it encrypted and compressed, not as a readable JSON.
-        $job = \Illuminate\Support\Facades\Queue::pushed(\App\Jobs\ProcessSecurityCollection::class)->first();
-        $this->assertStringNotContainsString('AnyDesk', (string) \Illuminate\Support\Facades\Cache::get($job->cacheKey));
+        $job = Queue::pushed(ProcessSecurityCollection::class)->first();
+        $this->assertStringNotContainsString('AnyDesk', (string) Cache::get($job->cacheKey));
 
         // The worker runs it: findings open and the payload leaves the cache.
         $job->handle();
         $this->assertContains('software.remote-access', $this->openKeys($device));
-        $this->assertNull(\App\Support\SecurityInbox::read($job->cacheKey));
+        $this->assertNull(SecurityInbox::read($job->cacheKey));
 
         // The same job again (a retry after the work was done) and one of a device that is gone do nothing.
         $job->handle();
         $gone = $this->device('gone');
-        $key = \App\Support\SecurityInbox::push($gone, json_encode(['inventory' => $this->inventory()]));
+        $key = SecurityInbox::push($gone, json_encode(['collection_id' => 'x', 'sources' => $this->agentSources('gone', $inventory)['sources']]));
         $gone->delete();
-        (new \App\Jobs\ProcessSecurityCollection($gone->id, $key))->handle();
-        $this->assertNull(\App\Support\SecurityInbox::read($key));
+        (new ProcessSecurityCollection($gone->id, $key))->handle();
+        $this->assertNull(SecurityInbox::read($key));
     }
 
     public function test_logs_are_only_taken_from_agents_that_send_them(): void
@@ -271,16 +297,16 @@ class SecurityScannerTest extends TestCase
 
     public function test_installations_start_with_a_script_that_turns_the_logs_on(): void
     {
-        $script = \App\Models\Script::query()->where('name', 'Allow security logs')->firstOrFail();
+        $script = Script::query()->where('name', 'Allow security logs')->firstOrFail();
 
         // Like Allow network scans: a run only detects, an admin starts the remediation per device.
         $this->assertTrue($script->manual_remediation);
         $this->assertSame('all', $script->platform);
-        $this->assertSame($script->fingerprint, \App\Models\Script::fingerprintOf('all', 60, $script->detection, $script->remediation));
-        $this->assertSame([], \App\Support\PowerShellCheck::errors($script->detection));
-        $this->assertSame([], \App\Support\PowerShellCheck::errors($script->remediation));
-        $this->assertTrue(\App\Support\PowerShellCheck::exits($script->detection, 0));
-        $this->assertTrue(\App\Support\PowerShellCheck::exits($script->detection, 1));
+        $this->assertSame($script->fingerprint, Script::fingerprintOf('all', 60, $script->detection, $script->remediation));
+        $this->assertSame([], PowerShellCheck::errors($script->detection));
+        $this->assertSame([], PowerShellCheck::errors($script->remediation));
+        $this->assertTrue(PowerShellCheck::exits($script->detection, 0));
+        $this->assertTrue(PowerShellCheck::exits($script->detection, 1));
         $this->assertStringContainsString("security_logs -NotePropertyValue 'on'", $script->remediation);
     }
 
@@ -353,12 +379,122 @@ class SecurityScannerTest extends TestCase
         $this->assertSame('40 failed sign-ins of Administrator from 203.0.113.7', $bruteForce->fresh()->message);
     }
 
+    public function test_only_what_changed_is_sent_and_every_collection_is_checked(): void
+    {
+        $device = $this->device();
+        $inventory = $this->inventory(['logs' => []]);
+        unset($inventory['logs']);
+
+        // The first collection is whole.
+        $first = $this->agentSend('a', $inventory)->assertStatus(202);
+        $this->runWorker();
+        $this->assertTrue(collect($this->lastCollection['sources'])->every(fn ($source) => $source['full']));
+        $this->assertSame(4, SecurityInventoryItem::query()->where('device_id', $device->id)->where('source', 'software')->count());
+        $this->assertSame($first->json('ack.software'), $device->securityInventory()->first()->states['software']);
+        $fullSize = strlen(json_encode($this->lastCollection));
+
+        // Nothing changed: only the states are sent.
+        $this->agentSend('a', $inventory)->assertStatus(202);
+        $this->runWorker();
+        $this->assertTrue(collect($this->lastCollection['sources'])->every(fn ($source) => array_keys($source) === ['source', 'state']));
+        $this->assertLessThan(1200, strlen(json_encode($this->lastCollection)));
+        $this->assertLessThan($fullSize / 2, strlen(json_encode($this->lastCollection)));
+
+        // One program installed, one removed: one upsert and one remove, the rest of the source stays.
+        $changed = $inventory;
+        $changed['software'][] = ['Name' => 'Firefox', 'Version' => '131.0', 'Source' => 'registry'];
+        array_shift($changed['software']);
+        $this->agentSend('a', $changed)->assertStatus(202);
+        $this->runWorker();
+        $software = collect($this->lastCollection['sources'])->firstWhere('source', 'software');
+        $this->assertCount(1, $software['upsert']);
+        $this->assertCount(1, $software['remove']);
+        $this->assertCount(1, collect($this->lastCollection['sources'])->filter(fn ($source) => isset($source['upsert'])));
+        $names = SecurityInventoryItem::query()->where('device_id', $device->id)->where('source', 'software')->pluck('data')->map(fn ($data) => json_decode($data, true)['Name'])->sort()->values()->all();
+        $this->assertSame(['7-Zip 24.09 (x64)', 'Age of Empires II', 'Firefox', 'WinRAR 6.02 (64-bit)'], $names);
+        $this->assertNotContains('software.remote-access', $this->openKeys($device));
+
+        // The same collection sent again (the ack got lost) is acknowledged and not processed twice.
+        $id = $this->lastCollection['collection_id'];
+        Queue::fake();
+        $this->signedJson('POST', '/api/device/security', $this->lastCollection, 'a')->assertStatus(202)->assertJson(['duplicate' => true]);
+        Queue::assertNothingPushed();
+    }
+
+    public function test_a_delta_that_does_not_follow_the_stored_state_is_refused_whole(): void
+    {
+        $device = $this->device();
+        $inventory = $this->inventory(['logs' => []]);
+        unset($inventory['logs']);
+        $this->agentSend('a', $inventory)->assertStatus(202);
+        $this->runWorker();
+        $before = SecurityInventoryItem::query()->where('device_id', $device->id)->count();
+
+        // The server lost its state (a restored backup): the delta is refused before anything is stored
+        // and the agent sends that source whole.
+        $device->securityInventory()->update(['states' => json_encode(['software' => str_repeat('0', 64)] + $device->securityInventory()->first()->states)]);
+        $changed = $inventory;
+        $changed['software'][] = ['Name' => 'Firefox', 'Version' => '131.0'];
+        $changed['processes'][] = ['Name' => 'evil', 'Path' => '/tmp/evil', 'CommandLine' => '/tmp/evil'];
+        $response = $this->agentSend('a', $changed)->assertStatus(202);
+        $this->runWorker();
+        $this->assertTrue(collect($this->lastCollection['sources'])->firstWhere('source', 'software')['full']);
+        $this->assertSame($before + 2, SecurityInventoryItem::query()->where('device_id', $device->id)->count());
+
+        // A delta that claims a state its items do not add up to stores nothing, not even its other sources.
+        ['sources' => $sources] = $this->agentSources('a', $changed);
+        $bad = [['source' => 'processes', 'base' => $device->securityInventory()->first()->states['processes'], 'state' => str_repeat('b', 64), 'upsert' => [], 'remove' => [], 'full' => false]];
+        $count = SecurityInventoryItem::query()->count();
+        $this->expectException(SecurityStateMismatch::class);
+        try {
+            SecurityScanner::ingest($device->fresh(), $bad);
+        } finally {
+            $this->assertSame($count, SecurityInventoryItem::query()->count());
+        }
+    }
+
+    public function test_without_a_queue_the_job_runs_after_the_response(): void
+    {
+        config(['queue.default' => 'sync']);
+        $device = $this->device();
+        $inventory = $this->inventory();
+        unset($inventory['logs']);
+        $this->agentSend('a', $inventory)->assertStatus(202);
+        $this->assertContains('software.remote-access', $this->openKeys($device));
+    }
+
+    public function test_the_state_hashes_match_the_agent(): void
+    {
+        // tests/fixtures/security-state.json is made by the agent (Get-SecurityItemKey, Get-SecurityItemHash,
+        // Get-SecurityStateHash in app.ps1): the server must compute the same ones.
+        $fixture = json_decode(file_get_contents(base_path('tests/fixtures/security-state.json')), true);
+        $maps = [];
+        foreach ($fixture['items'] as $entry) {
+            $this->assertSame($entry['key'], SecurityInventory::itemKey($entry['source'], $entry['item']), $entry['source'].' key');
+            $this->assertSame($entry['hash'], SecurityInventory::itemHash($entry['source'], $entry['item']), $entry['source'].' hash');
+            $maps[$entry['source']][$entry['key']] = $entry['hash'];
+        }
+        foreach ($maps as $source => $map) {
+            $this->assertSame($fixture['states'][$source], SecurityInventory::stateOf($map), $source.' state');
+        }
+        // The fields the agent hashes are the ones of the server's sources.
+        $agent = file_get_contents(base_path('../powershell/app.ps1'));
+        foreach (SecurityInventory::SOURCES as $source) {
+            $this->assertStringContainsString('    '.str_pad($source, 9).' = @('.implode(', ', array_map(fn ($field) => "'$field'", SecurityRules::SOURCES[$source]['fields'])).')', $agent, $source.' fields');
+            if ($source !== 'posture') {
+                $this->assertStringContainsString('    '.str_pad($source, 9).' = @('.implode(', ', array_map(fn ($field) => "'$field'", SecurityRules::SOURCES[$source]['key'])).')', $agent, $source.' key fields');
+            }
+        }
+    }
+
     public function test_the_endpoint_needs_a_signing_agent(): void
     {
         $device = $this->device();
-        $this->signedJson('POST', '/api/device/security', ['inventory' => $this->inventory()], 'wrong')->assertUnauthorized();
+        $this->signedJson('POST', '/api/device/security', ['collection_id' => 'abcdefabcdefabcdef', 'sources' => []], 'wrong')->assertUnauthorized();
+        // Not a collection: no id, sources of an unknown kind.
         $this->signedJson('POST', '/api/device/security', [], 'a')->assertStatus(422);
-        $this->assertSame(0, \App\Support\SecurityInbox::pending());
+        $this->signedJson('POST', '/api/device/security', ['collection_id' => 'abcdefabcdefabcdef', 'sources' => [['source' => 'events', 'state' => str_repeat('a', 64)]]], 'a')->assertStatus(422);
+        $this->signedJson('POST', '/api/device/security', ['collection_id' => 'abcdefabcdefabcdef', 'sources' => [['source' => 'software', 'state' => 'nope']]], 'a')->assertStatus(422);
         $this->assertSame(0, SecurityFinding::query()->count());
     }
 

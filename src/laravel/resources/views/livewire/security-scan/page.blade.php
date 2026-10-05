@@ -1,3 +1,7 @@
+@use('App\Livewire\SecurityScan\Page')
+@use('App\Models\Device')
+@use('App\Models\SecurityEvent')
+@use('App\Support\SecurityRules')
 <div>
     <div class="container-xl">
         <div class="page-header">
@@ -21,10 +25,10 @@
         <div class="row g-3 mb-4">
             @foreach ($counts as $level => $count)
                 <div class="col-6 col-md">
-                    <button class="card card-body w-100 text-start py-2 {{ $severity === $level ? 'border-'.\App\Support\SecurityRules::SEVERITY_COLORS[$level] : '' }}" type="button"
+                    <button class="card card-body w-100 text-start py-2 {{ $severity === $level ? 'border-'.SecurityRules::SEVERITY_COLORS[$level] : '' }}" type="button"
                         wire:click="$set('severity', '{{ $severity === $level ? '' : $level }}'); $set('tab', 'findings'); $set('status', 'open')">
                         <div class="small text-body-secondary">{{ __(ucfirst($level)) }}</div>
-                        <div class="fs-4 fw-semibold {{ $count > 0 ? 'text-'.\App\Support\SecurityRules::SEVERITY_COLORS[$level].'-emphasis' : 'text-body-tertiary' }}">{{ $count }}</div>
+                        <div class="fs-4 fw-semibold {{ $count > 0 ? 'text-'.SecurityRules::SEVERITY_COLORS[$level].'-emphasis' : 'text-body-tertiary' }}">{{ $count }}</div>
                     </button>
                 </div>
             @endforeach
@@ -44,7 +48,7 @@
 
         @if ($scanned === 0)
             <div class="alert alert-info small">
-                <i class="fas fa-info-circle me-1"></i>{{ __('No device has sent a security inventory yet: it needs agent :version or newer (collected hourly, or now with Sync).', ['version' => \App\Models\Device::SECURITY_VERSION]) }}
+                <i class="fas fa-info-circle me-1"></i>{{ __('No device has sent a security inventory yet: it needs agent :version or newer (collected hourly, or now with Sync).', ['version' => Device::SECURITY_VERSION]) }}
             </div>
         @endif
 
@@ -56,7 +60,7 @@
                         <option value="{{ $value }}">{{ $label }}</option>
                     @endforeach
                 </select>
-                <span class="small text-muted align-self-center">{{ __('Kept :days days.', ['days' => \App\Models\SecurityEvent::RETENTION_DAYS]) }}</span>
+                <span class="small text-muted align-self-center">{{ __('Kept :days days.', ['days' => SecurityEvent::RETENTION_DAYS]) }}</span>
             </div>
             <div class="card overflow-hidden">
                 <div class="table-responsive">
@@ -197,7 +201,7 @@
                 </div>
                 <select class="form-select form-select-sm w-auto" wire:model.live="severity" aria-label="{{ __('Severity') }}">
                     <option value="">{{ __('All severities') }}</option>
-                    @foreach (array_keys(\App\Support\SecurityRules::SEVERITIES) as $level)
+                    @foreach (array_keys(SecurityRules::SEVERITIES) as $level)
                         <option value="{{ $level }}">{{ __(ucfirst($level)) }}</option>
                     @endforeach
                 </select>
@@ -223,8 +227,8 @@
                     @endforelse
                 </div>
             </div>
-            @if ($findings->count() >= \App\Livewire\SecurityScan\Page::LIMIT)
-                <div class="small text-muted mt-2">{{ __('The first :count are shown, narrow the search.', ['count' => \App\Livewire\SecurityScan\Page::LIMIT]) }}</div>
+            @if ($findings->count() >= Page::LIMIT)
+                <div class="small text-muted mt-2">{{ __('The first :count are shown, narrow the search.', ['count' => Page::LIMIT]) }}</div>
             @endif
         @endif
     </div>

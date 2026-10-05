@@ -3,6 +3,7 @@
 namespace App\Livewire;
 
 use App\Models\Device;
+use App\Models\SecurityEvent;
 use App\Models\SecurityFinding;
 use App\Models\SecurityInventory;
 use Livewire\Attributes\On;
@@ -41,7 +42,7 @@ class DeviceSecurity extends Component
             'device' => $device,
             'inventory' => $inventory,
             'findings' => $device->securityFindings()->with(['rule', 'acknowledger'])->open()->bySeverity()->get(),
-            'events' => \App\Models\SecurityEvent::query()->where('device_id', $device->id)->latest('occurred_at')->limit(20)->get(),
+            'events' => SecurityEvent::query()->where('device_id', $device->id)->latest('occurred_at')->limit(20)->get(),
         ]);
     }
 }

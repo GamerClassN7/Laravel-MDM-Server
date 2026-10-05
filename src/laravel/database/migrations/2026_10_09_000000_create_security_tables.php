@@ -8,15 +8,26 @@ return new class extends Migration
 {
     public function up(): void
     {
-        // The last security inventory of a device (agents 1.17.0+): software, processes,
-        // listening ports, startup items, administrators and security settings. Its own table:
-        // it is large and only the scanner and the Security tab read it.
+        // The security inventory of a device (agents 1.17.0+): software, processes, listening ports,
+        // startup items, administrators and security settings. One row per device with the state
+        // (hash) of each source that was applied, and one row per item: agents send only what
+        // changed (App\Support\SecurityScanner::applyDeltas).
         Schema::create('security_inventories', function (Blueprint $table) {
             $table->id();
             $table->foreignId('device_id')->unique()->constrained()->cascadeOnDelete();
-            $table->longText('data');
+            $table->json('states');
             $table->timestamp('collected_at');
             $table->timestamps();
+        });
+
+        Schema::create('security_inventory_items', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('device_id')->constrained()->cascadeOnDelete();
+            $table->string('source', 16);
+            $table->string('item_key', 32);
+            $table->string('item_hash', 32);
+            $table->text('data');
+            $table->unique(['device_id', 'source', 'item_key']);
         });
 
         // Rules of the scanner: detection rules (App\Support\SecurityRules) and parsers of raw
@@ -80,6 +91,7 @@ return new class extends Migration
         Schema::dropIfExists('security_events');
         Schema::dropIfExists('security_findings');
         Schema::dropIfExists('security_rules');
+        Schema::dropIfExists('security_inventory_items');
         Schema::dropIfExists('security_inventories');
     }
 };

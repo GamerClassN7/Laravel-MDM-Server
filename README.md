@@ -677,6 +677,14 @@ features of its agent (remediation scripts, network discovery, security inventor
 health, Wake-on-LAN, pings) as On / Off, read only. The inventory (software, ports, settings) is
 sent either way.
 
+The agent sends the inventory as **deltas**: for each source (software, processes, ports, startup,
+administrators, settings) it keeps the state (a hash of the hashes of its items) the server last
+acknowledged and sends only the items that changed, or just the state when nothing did (a
+collection with one new package is under 1 KB instead of 20 KB or more). The server applies all
+deltas of a collection in one transaction and checks that the result has the state the agent
+computed; a delta that does not follow what the server has is refused (`409`, nothing stored) and
+the agent sends that source whole. A collection sent twice (`collection_id`) is processed once.
+
 Taking a collection is cheap: the server only puts it into its cache (compressed and encrypted
 with the app key) and answers `202`. A job on the `security` queue parses, stores and scans it (the
 queue worker of the Docker image; without a worker, `QUEUE_ENABLED=false`, it runs right after the

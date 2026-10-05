@@ -2848,6 +2848,7 @@ function Invoke-MdmApi {
         $exception = New-Object System.Exception("$Path failed: HTTP $([int]$response.StatusCode) $code")
         $exception.Data['MdmError'] = $code
         $exception.Data['MdmStatus'] = [int]$response.StatusCode
+        $exception.Data['MdmBody'] = $data
         throw $exception
     }
 }
@@ -3289,8 +3290,124 @@ function Get-SecurityState {
     }
 }
 
+# The fields of every source of the security inventory and the ones that tell its items apart
+# (App\Support\SecurityRules::SOURCES on the server): an item's key and hash come from them.
+$SecurityFields = @{
+    software  = @('Name', 'Version', 'Publisher', 'Source')
+    processes = @('Name', 'Path', 'CommandLine', 'User', 'Count')
+    listening = @('Protocol', 'Address', 'Port', 'Process', 'Path')
+    startup   = @('Name', 'Command', 'Location', 'User')
+    admins    = @('Name', 'Source', 'Enabled')
+    posture   = @('FirewallEnabled', 'AntivirusName', 'AntivirusEnabled', 'AntivirusUpToDate', 'RealTimeProtection', 'DiskEncrypted', 'SecureBoot', 'RdpEnabled', 'RdpNla', 'Smb1Enabled', 'UacEnabled', 'GuestEnabled', 'AutoLogon', 'SshRootLogin', 'SshPasswordAuthentication', 'AutomaticUpdates', 'DaysSinceUpdate')
+}
+$SecurityKeyFields = @{
+    software  = @('Name', 'Source')
+    processes = @('Name', 'Path', 'CommandLine')
+    listening = @('Protocol', 'Address', 'Port')
+    startup   = @('Name', 'Location')
+    admins    = @('Name')
+}
+
+function ConvertTo-SecurityCanon ($Value) {
+    # A value as text for hashing, the same as the server: "" for none, true / false, numbers as they are.
+    if ($null -eq $Value) { return '' }
+    if ($Value -is [bool]) { return $(if ($Value) { 'true' } else { 'false' }) }
+    return [string]::Format([System.Globalization.CultureInfo]::InvariantCulture, '{0}', $Value)
+}
+
+function Get-SecurityShortHash ([string]$Text) {
+    return (Get-Sha256Hex -Bytes ([System.Text.Encoding]::UTF8.GetBytes($Text))).Substring(0, 16)
+}
+
+function Get-SecurityItemKey ([string]$Source, $Item) {
+    # Tells an item apart from the others of its source (posture is one item).
+    if ($Source -eq 'posture') { return 'posture' }
+    $parts = foreach ($field in $SecurityKeyFields[$Source]) { (ConvertTo-SecurityCanon $Item.$field).ToLowerInvariant() }
+    return Get-SecurityShortHash ($parts -join [string][char]0x1f)
+}
+
+function Get-SecurityItemHash ([string]$Source, $Item) {
+    # The content of an item: all its fields in the order of its source.
+    $parts = foreach ($field in $SecurityFields[$Source]) { ConvertTo-SecurityCanon $Item.$field }
+    return Get-SecurityShortHash ($parts -join [string][char]0x1f)
+}
+
+function Get-SecurityStateHash ($Map) {
+    # The state of a source: a hash of its sorted "key:hash" lines (the server computes the same).
+    $keys = [string[]]@($Map.Keys)
+    [Array]::Sort($keys, [System.StringComparer]::Ordinal)
+    $lines = foreach ($key in $keys) { "${key}:$($Map[$key])" }
+    return Get-Sha256Hex -Bytes ([System.Text.Encoding]::UTF8.GetBytes(($lines -join "`n")))
+}
+
+function Get-SecurityStateFile {
+    # What the server acknowledged for each source: its state and the hash of each item (security-state.json).
+    try {
+        $raw = Get-Content -Path "$AgentDir/security-state.json" -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
+    }
+    catch {
+        return @{}
+    }
+    $state = @{}
+    foreach ($property in $raw.PSObject.Properties) {
+        $items = @{}
+        foreach ($item in $property.Value.items.PSObject.Properties) { $items[$item.Name] = "$($item.Value)" }
+        $state[$property.Name] = @{ state = "$($property.Value.state)"; items = $items }
+    }
+    return $state
+}
+
+function Get-SecurityDeltas {
+    # The sources of a collection: only what changed against the state the server acknowledged
+    # ({source, state} when nothing did, {source, base, state, upsert, remove} otherwise, the whole
+    # source with full: true when there is no state or the server asked for it).
+    param (
+        [Parameter(Mandatory = $true)]
+        $Inventory,
+        [Parameter(Mandatory = $true)]
+        $Acknowledged,
+        [string[]]
+        $Whole = @()
+    )
+
+    $sources = New-Object System.Collections.Generic.List[object]
+    $pending = @{}
+    foreach ($source in 'software', 'processes', 'listening', 'startup', 'admins', 'posture') {
+        if (-not $Inventory.ContainsKey($source)) { continue }
+        $items = if ($source -eq 'posture') { @($Inventory[$source]) } else { @($Inventory[$source]) }
+        $rows = @{}
+        $map = @{}
+        foreach ($item in $items) {
+            if ($null -eq $item) { continue }
+            $key = Get-SecurityItemKey $source $item
+            $hash = Get-SecurityItemHash $source $item
+            $rows[$key] = @($key, $hash, $item)
+            $map[$key] = $hash
+        }
+        $state = Get-SecurityStateHash $map
+        $previous = $Acknowledged[$source]
+        $delta = [ordered]@{ source = $source; state = $state }
+        if (-not $previous -or $Whole -contains $source) {
+            $delta['full'] = $true
+            $delta['upsert'] = @($rows.Values | ForEach-Object { , $_ })
+        }
+        elseif ($previous.state -ne $state) {
+            $delta['base'] = $previous.state
+            $delta['upsert'] = @($map.Keys | Where-Object { $previous.items[$_] -ne $map[$_] } | ForEach-Object { , $rows[$_] })
+            $delta['remove'] = @($previous.items.Keys | Where-Object { -not $map.ContainsKey($_) })
+        }
+        $sources.Add($delta)
+        $pending[$source] = @{ state = $state; items = $map }
+    }
+
+    return @{ Sources = $sources.ToArray(); Pending = $pending }
+}
+
 function Send-SecurityInventory {
-    # The security inventory to the server (its scanner runs the rules). Returns whether it was taken.
+    # The security collection to the server (its scanner runs the rules): the inventory as deltas
+    # against what the server acknowledged, the raw log records. A delta the server does not follow
+    # (409) is sent again with those sources whole. The state is kept only once it is acknowledged.
+    # Returns whether it was taken.
     param (
         [Parameter(Mandatory = $true)]
         $Data,
@@ -3302,19 +3419,43 @@ function Send-SecurityInventory {
         $Token
     )
 
-    try {
-        # The server only takes it (into its cache) and processes it afterwards.
-        [void](Invoke-MdmApi -Method Post -Path 'device/security' -Body $Data -Token $Token)
+    $acknowledged = Get-SecurityStateFile
+    $whole = @()
+    $sentBytes = 0
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        $deltas = Get-SecurityDeltas -Inventory $Data.inventory -Acknowledged $acknowledged -Whole $whole
+        $body = @{ collection_id = [guid]::NewGuid().ToString(); sources = $deltas.Sources; logs = @($Data.logs) }
+        try {
+            $response = Invoke-MdmApi -Method Post -Path 'device/security' -Body $body -Token $Token
+            break
+        }
+        catch {
+            $status = $_.Exception.Data['MdmStatus']
+            # A server without the scanner: nothing to resend.
+            if ($status -in 403, 404) { return $true }
+            if ($status -eq 409 -and $attempt -eq 1) {
+                $whole = @($_.Exception.Data['MdmBody'].resync)
+                Write-AgentLog "Security inventory: the server asked for $($whole -join ', ') whole"
+                continue
+            }
+            throw
+        }
     }
-    catch {
-        # A server without the scanner: nothing to resend.
-        if ($_.Exception.Data['MdmStatus'] -in 403, 404) { return $true }
-        throw
+
+    # Acknowledged: this is what the server has now.
+    $kept = @{}
+    foreach ($property in $response.ack.PSObject.Properties) {
+        if ($deltas.Pending.ContainsKey($property.Name) -and $deltas.Pending[$property.Name].state -eq $property.Value) { $kept[$property.Name] = $deltas.Pending[$property.Name] }
     }
+    foreach ($source in $acknowledged.Keys) { if (-not $kept.ContainsKey($source)) { $kept[$source] = $acknowledged[$source] } }
+    $kept | ConvertTo-Json -Depth 4 -Compress | Set-Content -Path "$AgentDir/security-state.json" -Encoding UTF8
     @{ since = $StartedAt.ToString('o'); sent_at = (Get-Date).ToString('o') } | ConvertTo-Json -Compress | Set-Content -Path "$AgentDir/security.json" -Encoding UTF8
+
+    $changed = 0
+    foreach ($delta in $deltas.Sources) { $changed += @($delta.upsert).Count + @($delta.remove).Count }
     $records = 0
     foreach ($log in @($Data.logs)) { $records += @($log.records).Count }
-    Write-AgentLog ('Security inventory sent: {0} application(s), {1} process(es), {2} port(s), {3} log record(s)' -f @($Data.inventory.software).Count, @($Data.inventory.processes).Count, @($Data.inventory.listening).Count, $records)
+    Write-AgentLog ('Security collection sent: {0} changed item(s) of {1} source(s), {2} log record(s)' -f $changed, @($deltas.Sources).Count, $records)
 
     return $true
 }

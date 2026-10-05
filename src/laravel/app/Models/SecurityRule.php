@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\SecurityParsers;
 use App\Support\SecurityRules;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
@@ -51,7 +52,7 @@ class SecurityRule extends Model
     public static function errorsOf(mixed $definition): array
     {
         return is_array($definition) && ($definition['kind'] ?? null) === 'parser'
-            ? \App\Support\SecurityParsers::errors($definition)
+            ? SecurityParsers::errors($definition)
             : SecurityRules::errors($definition);
     }
 
@@ -94,7 +95,7 @@ class SecurityRule extends Model
 
     public function getSourceLabelAttribute(): string
     {
-        return __(SecurityRules::SOURCES[$this->source]['label'] ?? \App\Support\SecurityParsers::LOG_SOURCES[$this->source]['label'] ?? $this->source);
+        return __(SecurityRules::SOURCES[$this->source]['label'] ?? SecurityParsers::LOG_SOURCES[$this->source]['label'] ?? $this->source);
     }
 
     /**

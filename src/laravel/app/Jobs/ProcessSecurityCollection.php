@@ -3,10 +3,12 @@
 namespace App\Jobs;
 
 use App\Models\Device;
+use App\Models\SecurityInventory;
 use App\Models\SecurityRule;
 use App\Support\SecurityInbox;
 use App\Support\SecurityParsers;
 use App\Support\SecurityScanner;
+use App\Support\SecurityStateMismatch;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -65,11 +67,17 @@ class ProcessSecurityCollection implements ShouldQueue
             // while the portal takes them: whatever else arrives is dropped.
             $logs = $device->securityLogs && SecurityScanner::logsAllowed();
             $events = $logs ? SecurityParsers::run($payload['logs'] ?? [], $parsers) : [];
-            // Events another agent parsed itself are taken as they are.
-            if ($logs && is_array($payload['events'] ?? null)) {
-                $events = array_merge($events, $payload['events']);
+            try {
+                SecurityScanner::ingest($device, SecurityScanner::normalizeSources($payload['sources'] ?? []) ?? [], SecurityInventory::sanitizeEvents($events));
+            } catch (SecurityStateMismatch $e) {
+                // Nothing was stored. The agent's next collection is refused with the sources to
+                // send whole (SecurityScanner::mismatches); retrying this one would fail again.
+                Log::info($e->getMessage());
+                Cache::forget($this->cacheKey);
+                $this->fail($e);
+
+                return;
             }
-            SecurityScanner::ingest($device, ['events' => $events] + ($payload['inventory'] ?? []));
         }
         Cache::forget($this->cacheKey);
     }

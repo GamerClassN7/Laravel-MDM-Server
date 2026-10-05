@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\MassPrunable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Str;
 
 /**
  * What an agent saw happen since its previous collection (failed sign-ins, accounts created,
@@ -41,7 +42,7 @@ class SecurityEvent extends Model
 
     public function getLabelAttribute(): string
     {
-        return __(SecurityRules::EVENT_TYPES[$this->type] ?? \Illuminate\Support\Str::headline($this->type));
+        return __(SecurityRules::EVENT_TYPES[$this->type] ?? Str::headline($this->type));
     }
 
     /**

@@ -5,10 +5,12 @@ namespace App\Models;
 use App\Support\AgentScript;
 use Carbon\CarbonInterval;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 
 class Device extends Model
@@ -567,7 +569,7 @@ class Device extends Model
             $feature('network_discovery', __('Network discovery'), __('Reports devices it sees in its networks and scans them on request.'), 'network_discovery', $discovery !== null && $discovery !== 'off',
                 $discovery === 'scan' ? __('ARP table and scans') : ($discovery === 'neighbours' ? __('ARP table') : null), $has(self::NETWORK_DISCOVERY_VERSION) ? null : self::NETWORK_DISCOVERY_VERSION),
             $feature('security_inventory', __('Security inventory'), __('Software, programs, open ports and settings for the security checks, every hour.'), null, $this->securityInventory()->exists(),
-                ($collected = $this->securityInventory()->value('collected_at')) ? __('last :time', ['time' => \Illuminate\Support\Carbon::parse($collected)->diffForHumans()]) : null, $has(self::SECURITY_VERSION) ? null : self::SECURITY_VERSION),
+                ($collected = $this->securityInventory()->value('collected_at')) ? __('last :time', ['time' => Carbon::parse($collected)->diffForHumans()]) : null, $has(self::SECURITY_VERSION) ? null : self::SECURITY_VERSION),
             $feature('security_logs', __('Security logs'), __('Sends sign-in and system log records, so the sign-in checks (password guessing, new administrators) work.'), 'security_logs', $this->securityLogs, null, $has(self::SECURITY_VERSION) ? null : self::SECURITY_VERSION),
             $feature('disk_health', __('Disk health'), __('S.M.A.R.T. values of the disks, every hour.'), null, $disk !== null && $this->virtualization === null,
                 match (true) {
@@ -613,7 +615,7 @@ class Device extends Model
         return $this->hasMany(ScriptRun::class);
     }
 
-    public function securityInventory(): \Illuminate\Database\Eloquent\Relations\HasOne
+    public function securityInventory(): HasOne
     {
         return $this->hasOne(SecurityInventory::class);
     }
@@ -1288,13 +1290,13 @@ class Device extends Model
                 continue;
             }
             $near = PingResult::query()->where('device_id', $id)
-                ->whereBetween('created_at', [\Illuminate\Support\Carbon::createFromTimestamp($at - 10, config('app.timezone')), \Illuminate\Support\Carbon::createFromTimestamp($at + 10, config('app.timezone'))])->exists();
+                ->whereBetween('created_at', [Carbon::createFromTimestamp($at - 10, config('app.timezone')), Carbon::createFromTimestamp($at + 10, config('app.timezone'))])->exists();
             if ($near) {
                 continue;
             }
             $up = filter_var($result['up'] ?? false, FILTER_VALIDATE_BOOLEAN);
             $rtt = is_numeric($result['rtt'] ?? null) ? max(0, min(60000, round((float) $result['rtt'], 1))) : null;
-            PingResult::query()->insert(['device_id' => $id, 'up' => $up, 'rtt' => $up ? $rtt : null, 'relay_id' => $relay->id, 'created_at' => \Illuminate\Support\Carbon::createFromTimestamp($at, config('app.timezone'))]);
+            PingResult::query()->insert(['device_id' => $id, 'up' => $up, 'rtt' => $up ? $rtt : null, 'relay_id' => $relay->id, 'created_at' => Carbon::createFromTimestamp($at, config('app.timezone'))]);
             $touched[$id] = true;
             $taken++;
         }

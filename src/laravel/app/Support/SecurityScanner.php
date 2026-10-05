@@ -6,6 +6,7 @@ use App\Models\Device;
 use App\Models\SecurityEvent;
 use App\Models\SecurityFinding;
 use App\Models\SecurityInventory;
+use App\Models\SecurityInventoryItem;
 use App\Models\SecurityRule;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -39,17 +40,149 @@ class SecurityScanner
     }
 
     /**
-     * A collection (SecurityInbox: the logs already parsed into events): the inventory is kept,
-     * the events recorded, then scanned.
+     * The sources of a collection as an agent sends them, cleaned: each {source, state} (unchanged),
+     * {source, base, state, upsert: [[key, hash, item], ...], remove: [key, ...]} (a delta) or
+     * {source, full: true, state, upsert: [...]} (everything). Null when something is not right.
      *
-     * @return array{opened: int, resolved: int}
+     * @return array<int, array>|null
      */
-    public static function ingest(Device $device, mixed $payload): array
+    public static function normalizeSources(mixed $sources): ?array
     {
-        $clean = SecurityInventory::sanitize($payload);
-        $events = $clean['events'];
-        unset($clean['events']);
-        SecurityInventory::query()->updateOrCreate(['device_id' => $device->id], ['data' => $clean, 'collected_at' => now()]);
+        if (! is_array($sources) || ! array_is_list($sources) || count($sources) > count(SecurityInventory::SOURCES)) {
+            return null;
+        }
+        $clean = [];
+        $isKey = fn ($key) => is_string($key) && (preg_match('/^[0-9a-f]{16}$/', $key) || $key === SecurityInventory::POSTURE_KEY);
+        foreach ($sources as $delta) {
+            $source = is_array($delta) ? ($delta['source'] ?? null) : null;
+            if (! in_array($source, SecurityInventory::SOURCES, true) || isset($clean[$source])
+                || ! is_string($delta['state'] ?? null) || ! preg_match('/^[0-9a-f]{64}$/', $delta['state'])
+                || (isset($delta['base']) && (! is_string($delta['base']) || ! preg_match('/^[0-9a-f]{64}$/', $delta['base'])))) {
+                return null;
+            }
+            $upsert = [];
+            foreach ($delta['upsert'] ?? [] as $row) {
+                if (! is_array($row) || count($row) !== 3 || ! $isKey($row[0]) || ! is_string($row[1]) || ! preg_match('/^[0-9a-f]{16}$/', $row[1]) || ! is_array($row[2])) {
+                    return null;
+                }
+                $upsert[] = [$row[0], $row[1], SecurityInventory::sanitizeItem($source, $row[2])];
+            }
+            $remove = array_values(array_filter($delta['remove'] ?? [], $isKey));
+            if (count($upsert) > SecurityInventory::LIMITS[$source] || count($remove) > SecurityInventory::LIMITS[$source] * 2) {
+                return null;
+            }
+            $clean[$source] = [
+                'source' => $source,
+                'state' => $delta['state'],
+                'base' => $delta['base'] ?? null,
+                'full' => (bool) ($delta['full'] ?? false),
+                'upsert' => $upsert,
+                'remove' => $remove,
+            ];
+        }
+
+        return array_values($clean);
+    }
+
+    /**
+     * The sources whose delta does not follow what the server has stored (the agent sends them
+     * whole next): checked when a collection comes in, before anything is stored.
+     *
+     * @param  array<int, array>  $sources  from normalizeSources
+     * @return array<int, string>
+     */
+    public static function mismatches(Device $device, array $sources): array
+    {
+        $states = SecurityInventory::query()->where('device_id', $device->id)->value('states');
+        $states = is_array($states) ? $states : (is_string($states) ? (json_decode($states, true) ?: []) : []);
+        $wrong = [];
+        foreach ($sources as $delta) {
+            if (! self::follows($states[$delta['source']] ?? null, $delta)) {
+                $wrong[] = $delta['source'];
+            }
+        }
+
+        return $wrong;
+    }
+
+    /** Whether a delta applies to a stored state (everything does; an unchanged source needs the same state). */
+    private static function follows(?string $stored, array $delta): bool
+    {
+        if ($delta['full']) {
+            return true;
+        }
+        return self::unchanged($delta) ? $stored === $delta['state'] : $stored === $delta['base'];
+    }
+
+    /** A source the agent reports only by its state: nothing changed since the state the server has. */
+    private static function unchanged(array $delta): bool
+    {
+        return ! $delta['full'] && $delta['base'] === null && $delta['upsert'] === [] && $delta['remove'] === [];
+    }
+
+    /**
+     * Applies the deltas of a collection in one transaction: a source is only changed when its
+     * stored state is the one the delta follows, and the result must have the state the agent
+     * computed (otherwise nothing of the collection is stored).
+     *
+     * @param  array<int, array>  $sources  from normalizeSources
+     * @throws SecurityStateMismatch
+     */
+    public static function applyDeltas(Device $device, array $sources): void
+    {
+        DB::transaction(function () use ($device, $sources) {
+            $inventory = SecurityInventory::query()->where('device_id', $device->id)->lockForUpdate()->first()
+                ?? new SecurityInventory(['device_id' => $device->id, 'states' => []]);
+            $states = $inventory->states ?? [];
+
+            foreach ($sources as $delta) {
+                $source = $delta['source'];
+                if (! self::follows($states[$source] ?? null, $delta)) {
+                    throw new SecurityStateMismatch($source);
+                }
+                if (self::unchanged($delta)) {
+                    // Unchanged: the stored state is the agent's state (checked above).
+                    continue;
+                }
+                $items = SecurityInventoryItem::query()->where('device_id', $device->id)->where('source', $source);
+                if ($delta['full']) {
+                    (clone $items)->delete();
+                }
+                foreach (array_chunk($delta['remove'], 500) as $keys) {
+                    (clone $items)->whereIn('item_key', $keys)->delete();
+                }
+                $rows = array_map(fn ($row) => [
+                    'device_id' => $device->id, 'source' => $source, 'item_key' => $row[0], 'item_hash' => $row[1], 'data' => json_encode($row[2], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                ], $delta['upsert']);
+                foreach (array_chunk($rows, 200) as $chunk) {
+                    SecurityInventoryItem::query()->upsert($chunk, ['device_id', 'source', 'item_key'], ['item_hash', 'data']);
+                }
+                // What is stored must add up to the state the agent has.
+                $hashes = (clone $items)->pluck('item_hash', 'item_key')->all();
+                if (count($hashes) > SecurityInventory::LIMITS[$source] || SecurityInventory::stateOf($hashes) !== $delta['state']) {
+                    throw new SecurityStateMismatch($source, 'does not add up to the state of the agent');
+                }
+                $states[$source] = $delta['state'];
+            }
+
+            $inventory->states = $states;
+            $inventory->collected_at = now();
+            $inventory->save();
+        });
+    }
+
+    /**
+     * A collection (SecurityInbox: the inventory deltas, the logs already parsed into events):
+     * applied, the events recorded, then scanned.
+     *
+     * @param  array<int, array>  $sources  from normalizeSources
+     * @param  array<int, array>  $events  from SecurityInventory::sanitizeEvents
+     * @return array{opened: int, resolved: int}
+     * @throws SecurityStateMismatch
+     */
+    public static function ingest(Device $device, array $sources, array $events = []): array
+    {
+        self::applyDeltas($device, $sources);
         SecurityEvent::record($device, $events);
 
         return self::scan($device, $events);

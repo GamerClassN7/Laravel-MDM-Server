@@ -1,3 +1,5 @@
+@use('App\Support\SecurityParsers')
+@use('App\Support\SecurityRules')
 {{-- A rule in JSON beside a short reference, checked while typing and tried on a device. --}}
 <form wire:submit="save">
     <div class="row g-4">
@@ -79,7 +81,7 @@
             <div class="fw-medium mb-1">{{ __('Logs and their fields') }}</div>
             <table class="table table-sm small mb-0">
                 <tbody>
-                    @foreach (\App\Support\SecurityParsers::LOG_SOURCES as $source => $definition)
+                    @foreach (SecurityParsers::LOG_SOURCES as $source => $definition)
                         <tr>
                             <td class="text-nowrap"><code>{{ $source }}</code></td>
                             <td class="text-muted">{{ implode(', ', $definition['fields']) }}</td>
@@ -91,19 +93,19 @@
             <div class="fw-medium mb-1">{{ __('Keys') }}</div>
             <ul class="ps-3 text-muted">
                 <li><code>key</code>, <code>name</code>, <code>description</code>, <code>remediation</code></li>
-                <li><code>severity</code>: {{ implode(', ', array_keys(\App\Support\SecurityRules::SEVERITIES)) }}</li>
-                <li><code>platform</code>: {{ implode(', ', \App\Support\SecurityRules::PLATFORMS) }}</li>
+                <li><code>severity</code>: {{ implode(', ', array_keys(SecurityRules::SEVERITIES)) }}</li>
+                <li><code>platform</code>: {{ implode(', ', SecurityRules::PLATFORMS) }}</li>
                 <li><code>source</code>: {{ __('which list it looks at, below') }}</li>
                 <li><code>when</code>: <code>{"field": "Name", "op": "contains", "value": "…"}</code>, {{ __('grouped with') }} <code>{"all": […]}</code>, <code>{"any": […]}</code>, <code>{"not": {…}}</code></li>
                 <li><code>message</code>: {{ __('with {Field} placeholders') }}</li>
                 <li><code>threshold</code>: {{ __('one finding when at least N items match ({count}, {items})') }}</li>
             </ul>
             <div class="fw-medium mb-1">{{ __('Operators') }}</div>
-            <div class="text-muted mb-3"><code>{{ implode(' ', \App\Support\SecurityRules::OPERATORS) }}</code><br>{{ __('Texts ignore case; matches is a regular expression.') }}</div>
+            <div class="text-muted mb-3"><code>{{ implode(' ', SecurityRules::OPERATORS) }}</code><br>{{ __('Texts ignore case; matches is a regular expression.') }}</div>
             <div class="fw-medium mb-1">{{ __('Sources and their fields') }}</div>
             <table class="table table-sm small mb-0">
                 <tbody>
-                    @foreach (\App\Support\SecurityRules::SOURCES as $source => $definition)
+                    @foreach (SecurityRules::SOURCES as $source => $definition)
                         <tr>
                             <td class="text-nowrap"><code>{{ $source }}</code></td>
                             <td class="text-muted">{{ implode(', ', $definition['fields']) }}</td>
@@ -111,7 +113,7 @@
                     @endforeach
                     <tr>
                         <td class="text-nowrap text-muted">{{ __('Event types') }}</td>
-                        <td class="text-muted">{{ implode(', ', array_keys(\App\Support\SecurityRules::EVENT_TYPES)) }} {{ __('(and the ones of your parsers)') }}</td>
+                        <td class="text-muted">{{ implode(', ', array_keys(SecurityRules::EVENT_TYPES)) }} {{ __('(and the ones of your parsers)') }}</td>
                     </tr>
                 </tbody>
             </table>

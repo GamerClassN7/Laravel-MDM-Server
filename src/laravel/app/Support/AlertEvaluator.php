@@ -6,6 +6,7 @@ use App\Models\AlertEvent;
 use App\Models\AlertRule;
 use App\Models\Device;
 use App\Models\ScriptRun;
+use App\Models\SecurityFinding;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -226,7 +227,7 @@ class AlertEvaluator
 
     private function checkSecurity(Device $device): array
     {
-        $findings = \App\Models\SecurityFinding::query()->with('rule')->active()->atLeast('high')
+        $findings = SecurityFinding::query()->with('rule')->active()->atLeast('high')
             ->where('device_id', $device->id)->bySeverity()->get();
 
         return [

@@ -4,8 +4,11 @@ use App\Models\Device;
 use App\Models\DeviceCommand;
 use App\Models\Enrolment;
 use App\Models\ScriptRun;
+use App\Support\SecurityInbox;
+use App\Support\SecurityScanner;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 
@@ -126,19 +129,37 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         return response()->noContent();
     });
 
-    // The security inventory and the raw logs since the previous collection (agents 1.17.0+,
-    // hourly). Only put into the cache here: a queued job parses, stores and scans it
-    // (App\Support\SecurityInbox).
+    // The security inventory as deltas against the state the server has (hash per source), and the
+    // raw logs since the previous collection (agents 1.17.0+, hourly). Only checked and put into
+    // the cache here: a queued job parses, stores and scans it (App\Support\SecurityInbox).
+    // 409 {resync: [sources]} when a delta does not follow the stored state: nothing is taken, the
+    // agent sends those sources whole. 202 {ack: {source: state}} when it is taken; a collection
+    // sent twice (collection_id) is acknowledged again and processed once.
     Route::post('/device/security', function (Request $request) {
         /** @var Device $device */
         $device = $request->user();
         abort_unless($device->signsRequests, 403);
         $body = $request->getContent();
-        abort_if(strlen($body) > App\Support\SecurityInbox::MAX_BYTES, 413);
+        abort_if(strlen($body) > SecurityInbox::MAX_BYTES, 413);
         abort_unless(json_validate($body) && str_starts_with(ltrim($body), '{'), 422);
-        App\Support\SecurityInbox::push($device, $body);
+        $payload = json_decode($body, true);
+        $sources = SecurityScanner::normalizeSources($payload['sources'] ?? []);
+        $id = $payload['collection_id'] ?? null;
+        abort_if($sources === null || ! is_string($id) || ! preg_match('/^[0-9a-f-]{16,64}$/i', $id), 422);
 
-        return response()->json(['queued' => true], 202);
+        $ack = ['ack' => collect($sources)->pluck('state', 'source')->all()];
+        // Sent again after a timeout: acknowledged, not processed twice.
+        if (! Cache::add("mdm.security_collection.{$device->id}.{$id}", 1, SecurityInbox::TTL)) {
+            return response()->json(['queued' => true, 'duplicate' => true] + $ack, 202);
+        }
+        if ($wrong = SecurityScanner::mismatches($device, $sources)) {
+            Cache::forget("mdm.security_collection.{$device->id}.{$id}");
+
+            return response()->json(['resync' => $wrong], 409);
+        }
+        SecurityInbox::push($device, $body);
+
+        return response()->json(['queued' => true] + $ack, 202);
     });
 
     // Samples the agent collected while it could not reach the server (agents 1.11.0+): they fill

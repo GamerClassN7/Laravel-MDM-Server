@@ -1,3 +1,4 @@
+@use('App\Models\Device')
 {{-- Findings of the scanner, then the inventory they come from (one list at a time). --}}
 <div x-data="{ list: 'posture', search: '' }">
     @php
@@ -32,7 +33,7 @@
     </div>
 
     @if ($inventory === null)
-        <div class="small text-muted">{{ __('No security inventory yet: it needs agent :version or newer.', ['version' => \App\Models\Device::SECURITY_VERSION]) }}</div>
+        <div class="small text-muted">{{ __('No security inventory yet: it needs agent :version or newer.', ['version' => Device::SECURITY_VERSION]) }}</div>
     @else
         <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
             <div class="d-flex flex-wrap gap-1">
