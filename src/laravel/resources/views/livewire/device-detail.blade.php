@@ -17,6 +17,10 @@
             ->whereIn('id', \App\Models\ScriptRun::query()->selectRaw('max(id)')->where('device_id', $selectedDevice->id)->groupBy('script_id'))
             ->latest('id')->get();
         $failedScripts = $scriptRuns->whereIn('status', ['failed', 'error', 'rejected'])->count();
+        // Security inventory (agents 1.17.0+) and the scanner's findings that need attention.
+        $hasSecurity = $selectedDevice->securityInventory()->exists();
+        $securityFindings = $selectedDevice->securityFindings()->active()->get();
+        $securitySevere = $securityFindings->whereIn('severity', ['critical', 'high'])->count();
         // The tab from the URL (?tab=), or the first one this device has.
         $tabs = array_keys(array_filter([
             'drives' => !empty($selectedDevice->drives),
@@ -26,6 +30,7 @@
             'docker' => $docker !== null,
             'health' => $diskHealth !== null,
             'scripts' => $scriptRuns->isNotEmpty(),
+            'security' => $hasSecurity || $securityFindings->isNotEmpty(),
             'history' => $history->isNotEmpty(),
             'agent' => ! $selectedDevice->isPingOnly,
         ]));
@@ -202,6 +207,16 @@
                         <i class="fas fa-scroll me-2"></i>{{ __('Scripts') }}
                         @if ($failedScripts > 0)
                             <x-badge class="ms-1" color="danger" size="sm" variant="subtle" title="{{ __('Failed') }}">{{ $failedScripts }}</x-badge>
+                        @endif
+                    </button>
+                </li>
+            @endif
+            @if ($hasSecurity || $securityFindings->isNotEmpty())
+                <li class="nav-item" role="presentation">
+                    <button aria-controls="security-tab-pane" aria-selected="{{ $activeTab === 'security' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'security' ? 'active' : '' }}" x-on:click="$wire.tab = 'security'" data-bs-target="#security-tab-pane" data-bs-toggle="tab" id="security-tab" role="tab" type="button">
+                        <i class="fas fa-shield-alt me-2"></i>{{ __('Security') }}
+                        @if ($securityFindings->isNotEmpty())
+                            <x-badge class="ms-1" :color="$securitySevere > 0 ? 'danger' : 'warning'" size="sm" variant="subtle" title="{{ __('Findings') }}">{{ $securityFindings->count() }}</x-badge>
                         @endif
                     </button>
                 </li>
@@ -572,6 +587,13 @@
                     @endunless
                 </div>
             @endif
+
+            @if ($hasSecurity || $securityFindings->isNotEmpty())
+                <div aria-labelledby="security-tab" class="tab-pane fade {{ $activeTab === 'security' ? 'show active' : '' }}" id="security-tab-pane" role="tabpanel" tabindex="0">
+                    @livewire('device-security', ['deviceId' => $selectedDevice->id], key('device-security-'.$selectedDevice->id))
+                </div>
+            @endif
+
             @if ($history->isNotEmpty())
                 <div aria-labelledby="history-tab" class="tab-pane fade {{ $activeTab === 'history' ? 'show active' : '' }}" id="history-tab-pane" role="tabpanel" tabindex="0">
                     <div class="table-responsive">
@@ -646,26 +668,6 @@
                                     <x-badge color="secondary" size="sm" variant="subtle">{{ __('Needs :version', ['version' => \App\Models\Device::TRACKING_VERSION]) }}</x-badge>
                                 @endif
                             </div>
-                            <div class="{{ $row }}">
-                                <span class="small text-body-secondary">{{ __('Remediation scripts') }}</span>
-                                <x-badge :color="$selectedDevice->scriptsEnabled ? 'success' : 'secondary'" size="sm" variant="subtle">{{ $selectedDevice->scriptsEnabled ? __('Allowed') : __('Disabled on the device') }}</x-badge>
-                            </div>
-                            <div class="{{ $row }}" title="{{ __('network_discovery in config.json on the device: off, neighbours (its ARP table) or scan (also scans of its networks on request)') }}">
-                                <span class="small text-body-secondary">{{ __('Network discovery') }}</span>
-                                @switch ($selectedDevice->networkDiscovery)
-                                    @case('scan')
-                                        <x-badge color="success" size="sm" variant="subtle">{{ __('ARP table and scans') }}</x-badge>
-                                        @break
-                                    @case('neighbours')
-                                        <x-badge color="success" size="sm" variant="subtle">{{ __('ARP table') }}</x-badge>
-                                        @break
-                                    @case('off')
-                                        <x-badge color="secondary" size="sm" variant="subtle">{{ __('Disabled on the device') }}</x-badge>
-                                        @break
-                                    @default
-                                        <x-badge color="secondary" size="sm" variant="subtle">{{ __('Needs :version', ['version' => \App\Models\Device::NETWORK_DISCOVERY_VERSION]) }}</x-badge>
-                                @endswitch
-                            </div>
                         </div>
                     </div>
 
@@ -689,6 +691,32 @@
                                 </span>
                                 <x-badge :color="$selectedDevice->connectedViaApi ? 'success' : 'secondary'" icon="fas fa-exchange-alt" size="sm" variant="subtle">{{ $selectedDevice->connectedViaApi ? __('Reporting') : __('Inactive') }}</x-badge>
                             </div>
+                        </div>
+                    </div>
+
+                    @php $features = $selectedDevice->features; @endphp
+                    <div class="col-12">
+                        <div class="card card-body">
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <span class="icon-tile bg-primary-subtle text-primary-emphasis"><i class="fas fa-sliders-h"></i></span>
+                                <span class="fw-semibold me-auto">{{ __('Features') }}</span>
+                                <span class="small text-body-secondary">{{ __(':on of :count on', ['on' => collect($features)->where('on', true)->count(), 'count' => count($features)]) }}</span>
+                            </div>
+                            @foreach ($features as $feature)
+                                <div class="{{ $row }}" wire:key="feature-{{ $feature['key'] }}">
+                                    <span class="min-w-0">
+                                        <span class="d-block">{{ $feature['label'] }}</span>
+                                        <span class="small text-body-secondary d-block">{{ $feature['description'] }}@if ($feature['setting']) <code class="small ms-1">{{ $feature['setting'] }}</code>@endif</span>
+                                    </span>
+                                    <span class="d-flex align-items-center gap-2 text-nowrap">
+                                        @if ($feature['detail'])
+                                            <span class="small text-body-secondary">{{ $feature['detail'] }}</span>
+                                        @endif
+                                        <x-badge :color="$feature['on'] ? 'success' : 'secondary'" size="sm" variant="subtle">{{ $feature['on'] ? __('On') : __('Off') }}</x-badge>
+                                    </span>
+                                </div>
+                            @endforeach
+                            <div class="small text-body-secondary border-top pt-2">{{ __('Read only. Features with a key are set on the device itself in config.json (or with the install parameters); the portal cannot change them.') }}</div>
                         </div>
                     </div>
 

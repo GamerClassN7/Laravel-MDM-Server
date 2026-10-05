@@ -87,7 +87,8 @@ USER app
 ENV APP_ENV=production \
     APP_DEBUG=false \
     REVERB_ENABLED=true \
-    SCHEDULER_ENABLED=true
+    SCHEDULER_ENABLED=true \
+    QUEUE_ENABLED=true
 
 VOLUME ["/var/www/storage"]
 EXPOSE 8000

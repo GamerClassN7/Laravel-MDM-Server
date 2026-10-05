@@ -1,0 +1,118 @@
+[
+    {
+        "key": "linux.sshd-failed",
+        "name": "sshd: failed sign-in",
+        "source": "linux.auth",
+        "when": {"field": "Identifier", "op": "in", "value": ["sshd", "sshd-session"]},
+        "pattern": "^Failed (?<method>password|publickey) for (invalid user )?(?<user>\\S+) from (?<ip>\\S+)",
+        "event": {"type": "failed_logon", "user": "{user}", "source": "{ip}", "message": "ssh: failed {method} for {user}"}
+    },
+    {
+        "key": "linux.sudo-failed",
+        "name": "sudo: wrong password",
+        "source": "linux.auth",
+        "when": {"field": "Identifier", "op": "eq", "value": "sudo"},
+        "pattern": "^\\s*(?<user>\\S+) : (?<count>\\d+) incorrect password attempts?",
+        "event": {"type": "sudo_failed", "user": "{user}", "source": "sudo", "message": "{Message}", "count": "{count}"}
+    },
+    {
+        "key": "linux.useradd",
+        "name": "useradd: new user",
+        "source": "linux.auth",
+        "when": {"field": "Identifier", "op": "eq", "value": "useradd"},
+        "pattern": "^new user: name=(?<user>[^,\\s]+)",
+        "event": {"type": "account_created", "user": "{user}", "source": "useradd", "message": "New user {user}"}
+    },
+    {
+        "key": "linux.usermod-admin",
+        "name": "usermod: added to sudo / wheel / admin",
+        "source": "linux.auth",
+        "when": {"field": "Identifier", "op": "eq", "value": "usermod"},
+        "pattern": "^add '(?<user>[^']+)' to group '(?<group>sudo|wheel|admin)'",
+        "event": {"type": "admin_added", "user": "{user}", "source": "{group}", "message": "{user} added to group {group}"}
+    },
+    {
+        "key": "linux.gpasswd-admin",
+        "name": "gpasswd: added to sudo / wheel / admin",
+        "source": "linux.auth",
+        "when": {"field": "Identifier", "op": "eq", "value": "gpasswd"},
+        "pattern": "^user (?<user>\\S+) added by (?<by>\\S+) to group (?<group>sudo|wheel|admin)",
+        "event": {"type": "admin_added", "user": "{user}", "source": "{by}", "message": "{by} added {user} to group {group}"}
+    },
+    {
+        "key": "windows.4625-failed-logon",
+        "name": "4625: failed sign-in",
+        "source": "windows.security",
+        "when": {"field": "Id", "op": "eq", "value": 4625},
+        "event": {"type": "failed_logon", "user": "{Data.TargetUserName}", "source": "{Data.IpAddress|Data.WorkstationName}", "message": "Failed sign-in (logon type {Data.LogonType})"}
+    },
+    {
+        "key": "windows.4720-account-created",
+        "name": "4720: account created",
+        "source": "windows.security",
+        "when": {"field": "Id", "op": "eq", "value": 4720},
+        "event": {"type": "account_created", "user": "{Data.TargetUserName}", "source": "{Data.SubjectUserName}", "message": "{Data.SubjectUserName} created the account {Data.TargetUserName}"}
+    },
+    {
+        "key": "windows.4740-account-locked",
+        "name": "4740: account locked out",
+        "source": "windows.security",
+        "when": {"field": "Id", "op": "eq", "value": 4740},
+        "event": {"type": "account_locked", "user": "{Data.TargetUserName}", "source": "{Data.TargetDomainName}", "message": "{Data.TargetUserName} was locked out (caller {Data.TargetDomainName})"}
+    },
+    {
+        "key": "windows.4732-admin-added",
+        "name": "4732: added to Administrators",
+        "source": "windows.security",
+        "when": {"all": [
+            {"field": "Id", "op": "eq", "value": 4732},
+            {"field": "Data.TargetSid", "op": "eq", "value": "S-1-5-32-544"}
+        ]},
+        "event": {"type": "admin_added", "user": "{Data.MemberName|Data.MemberSid}", "source": "{Data.SubjectUserName}", "message": "{Data.SubjectUserName} added {Data.MemberName|Data.MemberSid} to Administrators"}
+    },
+    {
+        "key": "windows.4698-task-created",
+        "name": "4698: scheduled task created",
+        "source": "windows.security",
+        "when": {"field": "Id", "op": "eq", "value": 4698},
+        "event": {"type": "task_created", "user": "{Data.SubjectUserName}", "source": "{Data.TaskName}", "message": "{Data.SubjectUserName} created the task {Data.TaskName}"}
+    },
+    {
+        "key": "windows.1102-log-cleared",
+        "name": "1102: Security log cleared",
+        "source": "windows.security",
+        "when": {"field": "Id", "op": "eq", "value": 1102},
+        "event": {"type": "log_cleared", "user": "{Data.SubjectUserName}", "source": "Security", "message": "The Security log was cleared"}
+    },
+    {
+        "key": "windows.104-log-cleared",
+        "name": "104: event log cleared",
+        "source": "windows.system",
+        "when": {"field": "Id", "op": "eq", "value": 104},
+        "event": {"type": "log_cleared", "user": "{Data.SubjectUserName}", "source": "{Data.Channel}", "message": "The {Data.Channel} log was cleared"}
+    },
+    {
+        "key": "windows.7045-service-installed",
+        "name": "7045: service installed",
+        "source": "windows.system",
+        "when": {"all": [
+            {"field": "Id", "op": "eq", "value": 7045},
+            {"field": "Provider", "op": "eq", "value": "Service Control Manager"}
+        ]},
+        "event": {"type": "service_installed", "user": "{Data.AccountName}", "source": "{Data.ServiceName}", "message": "{Data.ServiceName}: {Data.ImagePath}"}
+    },
+    {
+        "key": "windows.defender-1116-detected",
+        "name": "Defender 1116: malware detected",
+        "source": "windows.defender",
+        "when": {"field": "Id", "op": "in", "value": [1116, 1006]},
+        "event": {"type": "malware_detected", "user": "{Data.DetectionUser}", "source": "{Data.ThreatName}", "message": "{Data.ThreatName} ({Data.SeverityName}) in {Data.Path}"}
+    },
+    {
+        "key": "windows.defender-5001-disabled",
+        "name": "Defender 5001: real-time protection turned off",
+        "source": "windows.defender",
+        "when": {"field": "Id", "op": "in", "value": [5001, 5010, 5012]},
+        "event": {"type": "protection_disabled", "user": "", "source": "Microsoft Defender", "message": "Microsoft Defender protection was turned off (event {Id})"}
+    }
+]

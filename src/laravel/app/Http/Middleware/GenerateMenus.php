@@ -34,6 +34,10 @@ class GenerateMenus
                 'fas fa-project-diagram',
                 'networks',
             ],
+            'Security' => [
+                'fas fa-shield-alt',
+                'security',
+            ],
             'Notifications' => [
                 'fas fa-bell',
                 'notifications',

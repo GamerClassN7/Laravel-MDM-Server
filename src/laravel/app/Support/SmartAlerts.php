@@ -152,6 +152,20 @@ class SmartAlerts
             ];
         }
 
+        // Open findings of the security scanner nobody acknowledged (from medium severity).
+        $findings = $device->securityFindings()->active()->atLeast('medium')->bySeverity()->get();
+        if ($findings->isNotEmpty()) {
+            $severe = $findings->whereIn('severity', ['critical', 'high'])->isNotEmpty();
+            $alerts[] = [
+                'key' => 'security',
+                'severity' => $severe ? 'danger' : 'warning',
+                'icon' => 'fas fa-shield-alt',
+                'title' => trans_choice(':count security finding|:count security findings', $findings->count()),
+                'message' => $findings->take(3)->pluck('message')->implode(' · ').($findings->count() > 3 ? ' …' : ''),
+                'tab' => 'security',
+            ];
+        }
+
         // Errors from the agent's log (agents 1.13.2+), newest first.
         $errors = $device->recentAgentErrors;
         if ($errors !== []) {

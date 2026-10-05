@@ -1,11 +1,13 @@
 <?php
 
+use App\Jobs\SyncSecurityFeed;
 use App\Models\DeviceCommand;
 use App\Models\DeviceMetric;
+use App\Support\SecurityFeed;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
 
-Schedule::command('model:prune', ['--model' => [DeviceMetric::class, DeviceCommand::class, App\Models\PingResult::class, App\Models\NetworkNeighbour::class]])->daily();
+Schedule::command('model:prune', ['--model' => [DeviceMetric::class, DeviceCommand::class, App\Models\PingResult::class, App\Models\NetworkNeighbour::class, App\Models\SecurityEvent::class]])->daily();
 
 // Commands the device never finished (it went offline, the agent was stopped) are given up.
 Schedule::call(fn () => DeviceCommand::expireStale())->everyFiveMinutes()->name('mdm:expire-commands');
@@ -18,6 +20,9 @@ Schedule::call(fn () => App\Models\Device::announceNewlyOffline())->everyMinute(
 
 // Alert rules (App\Models\AlertRule): opens and resolves alerts, notifies their users.
 Schedule::call(fn () => App\Support\AlertEvaluator::run())->everyMinute()->name('mdm:alerts')->withoutOverlapping();
+
+// The rules of the security rules feed (MDM_SECURITY_FEED_URL), once a day when one is set.
+Schedule::job(new SyncSecurityFeed)->dailyAt('03:17')->name('mdm:security-feed')->when(fn () => SecurityFeed::enabled());
 
 // Creates the server signing key when it does not exist yet and shows its fingerprint.
 Artisan::command('mdm:signing-key', function () {

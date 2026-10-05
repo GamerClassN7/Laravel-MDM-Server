@@ -6,6 +6,7 @@ use App\Models\AlertEvent;
 use App\Models\AlertRule;
 use App\Models\Device;
 use App\Models\ScriptRun;
+use App\Models\SecurityFinding;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -104,6 +105,7 @@ class AlertEvaluator
             ],
             'services' => $this->checkServices($device),
             'scripts' => $this->checkScripts($device),
+            'security' => $this->checkSecurity($device),
             default => null,
         };
     }
@@ -220,6 +222,21 @@ class AlertEvaluator
             'active' => $failed->isNotEmpty(),
             'value' => (float) $failed->count(),
             'message' => __('Remediations failed on :device: :scripts.', ['device' => $device->displayName, 'scripts' => $failed->map(fn ($run) => $run->script?->name)->filter()->implode(', ')]),
+        ];
+    }
+
+    private function checkSecurity(Device $device): array
+    {
+        $findings = SecurityFinding::query()->with('rule')->active()->atLeast('high')
+            ->where('device_id', $device->id)->bySeverity()->get();
+
+        return [
+            'active' => $findings->isNotEmpty(),
+            'value' => (float) $findings->count(),
+            'message' => __('Security findings on :device: :findings.', [
+                'device' => $device->displayName,
+                'findings' => $findings->take(5)->map(fn ($finding) => $finding->message)->implode('; ').($findings->count() > 5 ? ' …' : ''),
+            ]),
         ];
     }
 

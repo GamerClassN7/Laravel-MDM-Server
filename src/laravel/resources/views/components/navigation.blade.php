@@ -24,6 +24,8 @@
                             <div class="nav-link-title">{{ __($item->title) }}</div>
                             @if ($item->route === 'notifications' && ($firing = \App\Models\AlertEvent::firingCountFor(auth()->user())) > 0)
                                 <span class="badge rounded-pill text-bg-danger ms-auto nav-collapsed-hide" title="{{ trans_choice(':count alert firing|:count alerts firing', $firing, ['count' => $firing]) }}">{{ $firing }}</span>
+                            @elseif ($item->route === 'security' && ($severe = \App\Models\SecurityFinding::severeCount()) > 0)
+                                <span class="badge rounded-pill text-bg-danger ms-auto nav-collapsed-hide" title="{{ trans_choice(':count severe security finding|:count severe security findings', $severe, ['count' => $severe]) }}">{{ $severe }}</span>
                             @endif
                         </a>
                     </li>
