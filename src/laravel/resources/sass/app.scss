@@ -132,8 +132,8 @@ label.mdm-tag {
     }
 }
 
-// The bottom navigation has up to seven entries (Dashboard ... Scripts and Profile): in one row, the
-// labels as small as it takes, never on a second line.
+// The bottom navigation has up to six entries (Dashboard ... Scripts): in one row, the labels as
+// small as it takes, never on a second line. The profile is in the menu of the header.
 @include mobile() {
     .layout-nav-mobile {
         padding-left: .25rem;
@@ -147,7 +147,7 @@ label.mdm-tag {
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-            font-size: clamp(7px, 2.1vw, 10px);
+            font-size: clamp(7px, 2.5vw, 10px);
             letter-spacing: -.03em;
         }
     }
