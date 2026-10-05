@@ -181,8 +181,7 @@
                                                         <div class="text-truncate fw-medium">{{ $neighbour['hostname'] ?: $neighbour['ip'] }}</div>
                                                         {{-- Wraps on phones instead of cutting the MAC address. --}}
                                                         <div class="text-body-secondary text-break" style="font-size: .75rem">
-                                                            @if ($neighbour['hostname'])<span>{{ $neighbour['ip'] }}</span> · @endif<span class="font-monospace">{{ $neighbour['mac'] }}</span>
-                                                            @if ($neighbour['random']) · <span title="{{ __('A private address the device made up for this network: it may change.') }}">{{ __('random MAC') }}</span>@endif
+                                                            @if ($neighbour['hostname'])<span>{{ $neighbour['ip'] }}</span> · @endif<x-mac :mac="$neighbour['mac']" />
                                                         </div>
                                                     </div>
                                                     <button class="btn btn-sm btn-outline-primary nm-icon-btn" type="button" wire:click="add({{ $neighbour['id'] }})" aria-label="{{ __('Add') }}" title="{{ __('Add as a ping-only device (it follows its MAC address to a new IP)') }}"><i class="fas fa-plus"></i></button>
@@ -221,7 +220,7 @@
                         @foreach ($ignored as $neighbour)
                             <li class="d-flex align-items-center gap-2 py-1" wire:key="ignored-{{ $neighbour->id }}">
                                 <span class="fw-medium">{{ $neighbour->ip }}</span>
-                                <span class="text-body-secondary text-truncate">{{ collect([$neighbour->hostname, $neighbour->mac, $neighbour->network, __('last seen :time', ['time' => $neighbour->last_seen_at->diffForHumans()])])->filter()->implode(' · ') }}</span>
+                                <span class="text-body-secondary text-truncate">{{ collect([$neighbour->hostname, $neighbour->mac.(\App\Support\MacVendor::lookup($neighbour->mac) ? ' ('.\App\Support\MacVendor::lookup($neighbour->mac).')' : ''), $neighbour->network, __('last seen :time', ['time' => $neighbour->last_seen_at->diffForHumans()])])->filter()->implode(' · ') }}</span>
                                 <button class="btn btn-sm btn-link p-0 ms-auto" type="button" wire:click="restore({{ $neighbour->id }})">{{ __('Show again') }}</button>
                             </li>
                         @endforeach
