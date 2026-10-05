@@ -4023,12 +4023,13 @@ function Find-LocalNetwork {
 
 function Get-NetworkDiscovery {
     # network_discovery in config.json: off, neighbours (the default: the ARP table goes with the
-    # report) or scan (also scans on request). Anything else is off.
+    # report) or scan (also scans on request). "none" and false mean off, as does anything else.
     param ($Config = (Get-AgentConfig))
 
     $level = $Config['network_discovery']
     if ($null -eq $level) { return 'neighbours' }
-    if (@('off', 'neighbours', 'scan') -contains "$level") { return "$level" }
+    if (@('off', 'none', 'false') -contains "$level") { return 'off' }
+    if (@('neighbours', 'scan') -contains "$level") { return "$level".ToLowerInvariant() }
     return 'off'
 }
 
