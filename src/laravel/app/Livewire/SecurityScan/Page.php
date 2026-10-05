@@ -164,7 +164,7 @@ class Page extends Component
             'counts' => collect(SecurityRules::SEVERITIES)->map(fn ($rank, $severity) => (int) ($active[$severity] ?? 0)),
             'findings' => $this->tab === 'findings' ? $this->findings()->bySeverity()->limit(self::LIMIT)->get() : collect(),
             'events' => $events,
-            'rules' => $this->tab === 'rules' ? SecurityRule::query()->detection()->withCount(['findings as open_count' => fn ($q) => $q->active()])->orderBy('source')->orderBy('name')->get() : collect(),
+            'rules' => $this->tab === 'rules' ? SecurityRule::query()->detection()->addSelect(['open_count' => SecurityFinding::query()->active()->selectRaw('count(distinct device_id)')->whereColumn('security_rule_id', 'security_rules.id')])->orderBy('source')->orderBy('name')->get() : collect(),
             'parsers' => $this->tab === 'rules' ? SecurityRule::query()->parsers()->orderBy('source')->orderBy('name')->get() : collect(),
             'eventTypes' => $this->tab === 'events' ? SecurityEvent::query()->distinct()->orderBy('type')->pluck('type')->mapWithKeys(fn ($type) => [$type => (new SecurityEvent(['type' => $type]))->label]) : collect(),
             'pending' => SecurityInbox::pending(),

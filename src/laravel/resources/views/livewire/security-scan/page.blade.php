@@ -7,7 +7,7 @@
         <div class="page-header">
             <div class="me-auto min-w-0">
                 <h1>{{ __('Security') }}</h1>
-                <div class="text-muted">{{ __('Rules look at what the agents report: installed software, processes, open ports, startup items, administrators, security settings and events.') }}</div>
+                <div class="text-muted">{{ __('Checks look at what the agents report: installed software, processes, open ports, startup items, administrators, security settings and events.') }}</div>
             </div>
             @if ($isAdmin)
                 <div class="d-flex gap-2">
@@ -15,7 +15,7 @@
                         <span class="spinner-border spinner-border-sm me-2" wire:loading wire:target="rescan"></span><i class="fas fa-sync me-2" wire:loading.remove wire:target="rescan"></i>{{ __('Scan again') }}
                     </button>
                     <button class="btn btn-primary" type="button" wire:click="addRule">
-                        <i class="fas fa-plus me-2"></i>{{ __('Add rule') }}
+                        <i class="fas fa-plus me-2"></i>{{ __('Add check') }}
                     </button>
                 </div>
             @endif
@@ -35,7 +35,7 @@
         </div>
 
         <ul class="nav nav-tabs mb-4" role="tablist">
-            @foreach (['findings' => __('Findings'), 'events' => __('Events'), 'rules' => __('Rules')] as $value => $label)
+            @foreach (['findings' => __('Findings'), 'events' => __('Events'), 'rules' => __('Checks')] as $value => $label)
                 <li class="nav-item" role="presentation">
                     <button class="nav-link {{ $tab === $value ? 'active' : '' }}" role="tab" type="button" aria-selected="{{ $tab === $value ? 'true' : 'false' }}" wire:click="$set('tab', '{{ $value }}')">{{ $label }}</button>
                 </li>
@@ -100,11 +100,11 @@
                     <table class="table align-middle mb-0">
                         <thead>
                             <tr class="small text-body-secondary">
-                                <th class="ps-3">{{ __('Rule') }}</th>
+                                <th class="ps-3">{{ __('Check') }}</th>
                                 <th>{{ __('Severity') }}</th>
                                 <th class="d-none d-md-table-cell">{{ __('Looks at') }}</th>
                                 <th class="d-none d-md-table-cell">{{ __('Platform') }}</th>
-                                <th class="text-end">{{ __('Open') }}</th>
+                                <th class="text-end">{{ __('Found on') }}</th>
                                 <th>{{ __('On') }}</th>
                                 <th class="pe-3"><span class="visually-hidden">{{ __('Actions') }}</span></th>
                             </tr>
@@ -124,7 +124,7 @@
                                     <td><x-badge :color="$rule->severityColor" size="sm" variant="subtle">{{ __(ucfirst($rule->severity)) }}</x-badge></td>
                                     <td class="d-none d-md-table-cell small">{{ $rule->sourceLabel }}</td>
                                     <td class="d-none d-md-table-cell small">{{ $rule->platform === 'any' ? __('All') : ucfirst($rule->platform) }}</td>
-                                    <td class="text-end small">{{ $rule->open_count ?: '—' }}</td>
+                                    <td class="text-end small">{{ $rule->open_count ? trans_choice(':count device|:count devices', $rule->open_count) : '—' }}</td>
                                     <td>
                                         <div class="form-check form-switch m-0">
                                             <input aria-label="{{ __('Enabled') }}" class="form-check-input" type="checkbox" wire:click="toggleRule({{ $rule->id }})" @checked($rule->enabled) @disabled(! $isAdmin)>
@@ -142,6 +142,29 @@
                     </table>
                 </div>
             </div>
+            <details class="mt-4" @if ($parsers->isNotEmpty() && request()->query('advanced')) open @endif>
+                <summary class="fw-medium">{{ __('Advanced') }} <span class="small text-muted fw-normal">{{ __('feed, log parsers and JSON') }}</span></summary>
+                <div class="mt-3">
+                <div class="card card-body mb-4">
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        <div class="me-auto">
+                            <div class="fw-medium">{{ __('Checks feed') }}</div>
+                            @if (! $feed['enabled'])
+                                <div class="small text-muted">{{ __('No feed is set (MDM_SECURITY_FEED_URL): only the bundled checks are used.') }}</div>
+                            @elseif (isset($feed['version']))
+                                <div class="small text-muted">
+                                    {{ __('Version :version', ['version' => $feed['version']]) }}@isset($feed['checked_at']), {{ __('checked :time', ['time' => \Illuminate\Support\Carbon::parse($feed['checked_at'])->diffForHumans()]) }}@endisset
+                                    @if (! ($feed['ok'] ?? true))<span class="text-danger"> · {{ $feed['error'] }}</span>@endif
+                                </div>
+                            @else
+                                <div class="small text-muted">{{ __('Not fetched yet.') }}</div>
+                            @endif
+                        </div>
+                        @if ($isAdmin && $feed['enabled'])
+                            <button class="btn btn-sm btn-light" type="button" wire:click="updateFeed">{{ __('Update now') }}</button>
+                        @endif
+                    </div>
+                </div>
             <div class="d-flex align-items-center mt-4 mb-2">
                 <h2 class="h6 fw-semibold mb-0 me-auto">{{ __('Log parsers') }}</h2>
                 @if ($isAdmin)
@@ -190,8 +213,10 @@
                 </div>
             </div>
             <div class="small text-muted mt-2">
-                {{ __('Built-in rules come from resources/security/rules.json and parsers.json; switch them off or copy one to change it. Inventory findings are resolved when the next inventory no longer matches, event findings when you acknowledge them.') }}
+                {{ __('Built-in checks come from resources/security/rules.json and parsers.json; switch them off or copy one to change it. Inventory findings are resolved when the next inventory no longer matches, event findings when you acknowledge them.') }}
             </div>
+                </div>
+            </details>
         @else
             <div class="d-flex flex-wrap gap-2 mb-3">
                 <div class="btn-group btn-group-sm" role="group">

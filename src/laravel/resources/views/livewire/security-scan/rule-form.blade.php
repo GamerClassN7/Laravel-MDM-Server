@@ -5,9 +5,12 @@
     <div class="row g-4">
         <div class="col-12 col-lg-7">
             @if ($readOnly)
-                <div class="alert alert-info small py-2">{{ __('A built-in rule: switch it off on the Rules tab, or copy it to change it.') }}</div>
+                <div class="alert alert-info small py-2">{{ __('A built-in rule: switch it off in the list, or copy it to change it.') }}</div>
             @endif
-            <textarea class="form-control font-monospace small @error('json') is-invalid @enderror" rows="22" spellcheck="false" wire:model.live.debounce.500ms="json" @readonly($readOnly) aria-label="{{ __('Rule (JSON)') }}"></textarea>
+            {{-- Ace editor (steelants/form) like the remediation scripts; it grows with the text. --}}
+            <div x-init="$nextTick(() => $el.querySelector('.ace-editor')?.env?.editor?.setOptions({ minLines: 14, maxLines: 28, showPrintMargin: false, readOnly: @js($readOnly) }))">
+                <x-form::ace id="rule-json" label="{{ $isParser ? __('Parser (JSON)') : __('Rule (JSON)') }}" language="json" theme="tomorrow_night" wire:model.live.debounce.500ms="json" />
+            </div>
             @error('json') <div class="small text-danger mt-1">{{ $message }}</div> @enderror
             @if ($problems !== [])
                 <ul class="small text-danger mt-2 mb-0 ps-3">
