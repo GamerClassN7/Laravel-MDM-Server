@@ -86,6 +86,13 @@ else
     export BROADCAST_CONNECTION
 fi
 
+# Background jobs run in the queue worker of this container (database queue). Without the worker
+# (QUEUE_ENABLED=false) they run once the response has been sent, unless a queue is configured.
+if [ "${QUEUE_ENABLED:-true}" != "true" ]; then
+    : "${QUEUE_CONNECTION:=sync}"
+    export QUEUE_CONNECTION
+fi
+
 # Logs go to a file in the storage volume (storage/logs, shown in System > Logs) and to the
 # container output (docker logs). The channel comes from the environment or from a mounted .env
 # (the environment would otherwise hide it), daily files by default; stderr is added next to it.

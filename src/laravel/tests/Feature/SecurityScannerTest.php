@@ -90,8 +90,6 @@ class SecurityScannerTest extends TestCase
         unset($inventory['logs']);
         $open = SecurityFinding::query()->open()->pluck('id');
         $this->signedJson('POST', '/api/device/security', ['inventory' => $inventory, 'logs' => $logs], $token)->assertStatus(202)->assertJson(['queued' => true]);
-        \App\Support\SecurityInbox::drain();
-        $this->assertSame(0, \App\Support\SecurityInbox::pending());
 
         return [
             'opened' => SecurityFinding::query()->open()->whereNotIn('id', $open)->count(),
@@ -220,24 +218,36 @@ class SecurityScannerTest extends TestCase
         $this->assertNotEmpty(SecurityParsers::errors(['kind' => 'parser', 'key' => 'x.y', 'name' => 'X', 'source' => 'linux.auth', 'pattern' => 'x', 'event' => ['type' => 'X Y', 'extra' => '']]));
     }
 
-    public function test_collections_wait_in_the_cache_until_they_are_processed(): void
+    public function test_collections_are_taken_into_the_cache_and_processed_by_a_job(): void
     {
         $device = $this->device();
-        $this->withoutDefer();
-        \App\Support\SecurityInbox::push($device, json_encode(['inventory' => $this->inventory(['logs' => null])]));
-        \App\Support\SecurityInbox::push($device, '{"inventory": {"software": []}}');
-        $gone = $this->device('gone');
-        \App\Support\SecurityInbox::push($gone, json_encode(['inventory' => $this->inventory()]));
-        $gone->delete();
-        $this->assertSame(3, \App\Support\SecurityInbox::pending());
-        $this->assertSame(0, SecurityFinding::query()->count());
+        \Illuminate\Support\Facades\Queue::fake();
+        $payload = ['inventory' => $this->inventory(['logs' => null])];
+        $this->signedJson('POST', '/api/device/security', $payload, 'a')->assertStatus(202)->assertJson(['queued' => true]);
 
-        // In order: the second collection has no AnyDesk anymore; the device that is gone is skipped.
-        $this->assertSame(3, \App\Support\SecurityInbox::drain());
-        $this->assertSame(0, \App\Support\SecurityInbox::pending());
-        $this->assertNotContains('software.remote-access', $this->openKeys($device));
-        $this->assertSame(1, SecurityFinding::query()->whereHas('rule', fn ($q) => $q->where('key', 'software.remote-access'))->whereNotNull('resolved_at')->count());
-        $this->assertSame(0, \App\Support\SecurityInbox::drain());
+        // Nothing is parsed or stored in the request: the job waits on the security queue.
+        \Illuminate\Support\Facades\Queue::assertPushedOn('security', \App\Jobs\ProcessSecurityCollection::class, function ($job) use ($device, $payload) {
+            return $job->deviceId === $device->id && \App\Support\SecurityInbox::read($job->cacheKey) === json_encode($payload);
+        });
+        $this->assertSame(0, SecurityFinding::query()->count());
+        $this->assertNull($device->securityInventory()->first());
+
+        // The cache holds it encrypted and compressed, not as a readable JSON.
+        $job = \Illuminate\Support\Facades\Queue::pushed(\App\Jobs\ProcessSecurityCollection::class)->first();
+        $this->assertStringNotContainsString('AnyDesk', (string) \Illuminate\Support\Facades\Cache::get($job->cacheKey));
+
+        // The worker runs it: findings open and the payload leaves the cache.
+        $job->handle();
+        $this->assertContains('software.remote-access', $this->openKeys($device));
+        $this->assertNull(\App\Support\SecurityInbox::read($job->cacheKey));
+
+        // The same job again (a retry after the work was done) and one of a device that is gone do nothing.
+        $job->handle();
+        $gone = $this->device('gone');
+        $key = \App\Support\SecurityInbox::push($gone, json_encode(['inventory' => $this->inventory()]));
+        $gone->delete();
+        (new \App\Jobs\ProcessSecurityCollection($gone->id, $key))->handle();
+        $this->assertNull(\App\Support\SecurityInbox::read($key));
     }
 
     public function test_an_inventory_opens_findings_and_the_next_one_resolves_them(): void

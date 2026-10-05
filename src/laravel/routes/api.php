@@ -127,8 +127,8 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
     });
 
     // The security inventory and the raw logs since the previous collection (agents 1.17.0+,
-    // hourly). Only put into the cache here: parsing, storing and scanning come after the
-    // response (App\Support\SecurityInbox).
+    // hourly). Only put into the cache here: a queued job parses, stores and scans it
+    // (App\Support\SecurityInbox).
     Route::post('/device/security', function (Request $request) {
         /** @var Device $device */
         $device = $request->user();
@@ -137,7 +137,6 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         abort_if(strlen($body) > App\Support\SecurityInbox::MAX_BYTES, 413);
         abort_unless(json_validate($body) && str_starts_with(ltrim($body), '{'), 422);
         App\Support\SecurityInbox::push($device, $body);
-        defer(fn () => App\Support\SecurityInbox::drain(), 'security-inbox');
 
         return response()->json(['queued' => true], 202);
     });
