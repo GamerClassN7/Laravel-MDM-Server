@@ -484,6 +484,9 @@ class FleetFeaturesTest extends TestCase
         Device::query()->whereKey($sleeping->id)->update(['public_ip' => '1.1.1.1']);
         Device::query()->whereKey($relay->id)->update(['public_ip' => '2.2.2.2']);
         $this->assertNull($sleeping->fresh()->wakeRelay());
+        // An agent in the server's own network reaches it over a private address: that tells nothing.
+        Device::query()->whereKey($relay->id)->update(['public_ip' => '192.168.1.5']);
+        $this->assertSame($relay->id, $sleeping->fresh()->wakeRelay()[0]->id);
         Device::query()->whereKey($relay->id)->update(['public_ip' => '1.1.1.1']);
 
         $this->actingAs(User::factory()->create());
