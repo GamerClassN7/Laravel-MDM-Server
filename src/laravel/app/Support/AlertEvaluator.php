@@ -288,7 +288,7 @@ class AlertEvaluator
             $message = __(':device appeared in :network (:details), seen by :agent.', [
                 'device' => $neighbour->displayName,
                 'network' => $neighbour->network,
-                'details' => collect([$neighbour->hostname ? $neighbour->ip : null, $neighbour->mac])->filter()->implode(', '),
+                'details' => collect([$neighbour->hostname ? $neighbour->ip : null, $neighbour->mac, \App\Support\MacVendor::lookup($neighbour->mac)])->filter()->implode(', '),
                 'agent' => $agent->displayName,
             ]);
             $rule->events()->create([

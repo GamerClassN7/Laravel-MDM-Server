@@ -487,6 +487,9 @@ class FleetFeaturesTest extends TestCase
         // An agent in the server's own network reaches it over a private address: that tells nothing.
         Device::query()->whereKey($relay->id)->update(['public_ip' => '192.168.1.5']);
         $this->assertSame($relay->id, $sleeping->fresh()->wakeRelay()[0]->id);
+        // Both reaching the server over private addresses of the same LAN: nothing tells them apart.
+        Device::query()->whereKey($sleeping->id)->update(['public_ip' => '192.168.1.180']);
+        $this->assertSame($relay->id, $sleeping->fresh()->wakeRelay()[0]->id);
         Device::query()->whereKey($relay->id)->update(['public_ip' => '1.1.1.1']);
 
         $this->actingAs(User::factory()->create());
