@@ -69,7 +69,7 @@ class ShowDevices extends Component
         if ($value) {
             Enrolment::Where('expire_at', '<', CarbonImmutable::now())->delete();
 
-            $this->enrollmentCode = mt_rand(1000, 9999);
+            $this->enrollmentCode = Enrolment::generateCode();
             $this->enrollmentCodeExpiration = CarbonImmutable::now()->add(15, 'min');
 
             $enrolment = new Enrolment();

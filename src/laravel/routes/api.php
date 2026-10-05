@@ -10,6 +10,7 @@ use App\Support\SecurityScanner;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 
@@ -56,10 +57,15 @@ Route::middleware(['device.signature', 'auth:api'])->post('/device', function (R
     ]);
 });
 
-Route::middleware('device.signature')->post('/device/register', function (Request $request) {
+Route::middleware(['device.signature', 'throttle:10,1'])->post('/device/register', function (Request $request) {
     $invitation = Enrolment::where('code', (string) $request->json('enrolment_code'))->where('expire_at', '>', CarbonImmutable::now())->first();
 
     if (null === $invitation) {
+        // Too many wrong codes (guessing): the open ones are dropped, a new one is made on the page.
+        if (RateLimiter::attempt('enrolment-failures', Enrolment::MAX_FAILURES, fn () => true, 900) === false) {
+            Enrolment::query()->delete();
+        }
+
         return response()->json(['error' => 'invalid_enrolment_code'], 422);
     }
 

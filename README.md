@@ -814,7 +814,7 @@ automatically. The package comes from the `packistry` Composer repository config
 
 ### Installation
 
-Click **Add device** in the portal. It shows the enrolment code and ready-made install commands with
+Click **Add device** in the portal. It shows the enrolment code (8 random characters, valid for 15 minutes; registering is limited to 10 tries a minute per client, and after 20 wrong codes in 15 minutes all open codes are dropped) and ready-made install commands with
 a copy button:
 
 - **Windows PowerShell** – run in PowerShell as Administrator,

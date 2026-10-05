@@ -21,7 +21,10 @@
                  @else
                      <div class="badge bg-secondary">OPcache: {{ __('Not loaded') }}</div>
                  @endif
-                 <button onclick="confirm('{{ __('Do you really want to clear all data in cache?') }}') ? window.location.href = '{{ route('system.cache.clear') }}' : false" class="btn btn-danger">{{ __('Clear cashes') }}</button>
+                 <form method="POST" action="{{ route('system.cache.clear') }}" class="d-inline" onsubmit="return confirm('{{ __('Do you really want to clear all data in cache?') }}')">
+                     @csrf
+                     <button type="submit" class="btn btn-danger">{{ __('Clear cashes') }}</button>
+                 </form>
              </div>
         </div>
 

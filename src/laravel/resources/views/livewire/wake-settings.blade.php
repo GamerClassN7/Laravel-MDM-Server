@@ -4,7 +4,7 @@
         <div class="col-12">
             <label class="form-label" for="wake-settings-mac">{{ __('MAC address') }}</label>
             <input class="form-control font-monospace @error('mac') is-invalid @enderror" id="wake-settings-mac" placeholder="{{ $reportedMacs[0] ?? 'AA:BB:CC:DD:EE:FF' }}" type="text" wire:model="mac">
-            <div class="form-text">{{ __('Reported') }}: <span class="font-monospace">{{ $reportedMacs === [] ? '–' : implode(', ', $reportedMacs) }}</span></div>
+            <div class="form-text">{{ __('Reported') }}: @forelse ($reportedMacs as $reported)<x-mac :mac="$reported" />@if (! $loop->last), @endif @empty<span class="font-monospace">–</span>@endforelse</div>
         </div>
         <div class="col-8">
             <label class="form-label" for="wake-settings-address">{{ __('IPv4 address') }}</label>

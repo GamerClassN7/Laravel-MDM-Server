@@ -413,7 +413,7 @@
                                         </div>
                                     @endforeach
                                     @if ($network['Mac'])
-                                        <div class="small text-body-tertiary font-monospace" title="{{ __('MAC address') }}">{{ $network['Mac'] }}</div>
+                                        <x-mac :mac="$network['Mac']" class="d-block small text-body-tertiary" title="{{ __('MAC address') }}" />
                                     @endif
                                 </div>
                                 {{-- On phones only the icon (its text in the tooltip). --}}

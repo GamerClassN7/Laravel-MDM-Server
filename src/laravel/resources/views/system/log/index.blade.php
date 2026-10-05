@@ -2,7 +2,10 @@
     <div class="container-xl">
         <div class="page-header">
             <h1 class="hide-mobile">{{ __('Logs')}}</h1>
-            <button onclick="confirm('{{ __('Do you really want to clear all logs?') }}') ? window.location.href = '{{ route('system.log.clear') }}' : false" class="btn btn-danger">{{ __('Clear logs') }}</button>
+            <form method="POST" action="{{ route('system.log.clear') }}" onsubmit="return confirm('{{ __('Do you really want to clear all logs?') }}')">
+                @csrf
+                <button type="submit" class="btn btn-danger">{{ __('Clear logs') }}</button>
+            </form>
         </div>
 
         <div class="row g-3 mb-4">
@@ -41,9 +44,10 @@
                                 <a href='{{ route('system.log.download', ['file' => $item['fileName']]) }}' class="btn btn-primary">
                                     <i class="fa fa-download"></i>
                                 </a>
-                                <a href='{{ route('system.log.delete', ['file' => $item['fileName']]) }}' onclick="return confirm('{{ __('Are you sure?') }}')" class="btn btn-danger">
-                                    <i class="fa fa-trash"></i>
-                                </a>
+                                <form method="POST" action="{{ route('system.log.delete', ['file' => $item['fileName']]) }}" class="d-inline" onsubmit="return confirm('{{ __('Are you sure?') }}')">
+                                    @csrf
+                                    <button type="submit" class="btn btn-danger"><i class="fa fa-trash"></i></button>
+                                </form>
                             </td>
                         </tr>
                     @endforeach
