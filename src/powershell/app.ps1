@@ -124,7 +124,7 @@ $ReverbKey = "$($LegacyOptions['ReverbKey'])"
 # Not left for the functions (they would see them through dynamic scoping).
 Remove-Variable -Name i, name, value -ErrorAction SilentlyContinue
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.17.0'
+$AgentVersion = '1.17.1'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow', 'scanNetwork')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -4870,7 +4870,10 @@ function Invoke-PowerAction {
         } elseif ($Restart) {
             Restart-Computer -Force -ErrorAction Stop
         } else {
-            Stop-Computer -Force -ErrorAction Stop
+            # As the Start menu turns off: /hybrid keeps Fast Startup (a full shutdown, which Stop-Computer
+            # does, leaves many network cards unable to wake the PC; without Fast Startup it is a normal one).
+            $output = & shutdown.exe /s /hybrid /f /t 0 /d p:4:1 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "shutdown /hybrid: exit $LASTEXITCODE $output" }
         }
         return $null
     }
