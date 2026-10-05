@@ -543,9 +543,11 @@ physical device (not of virtual machines) and says why it cannot wake it now.
 
 The button says why it cannot wake a device (no known network card, no relay in the network). The
 device has to allow it: Wake-on-LAN enabled in the BIOS / UEFI and for the network card (on Windows
-in the adapter's *Power Management* and *Advanced* settings), usually only over a cable. On
-Windows, *Fast Startup* often prevents waking after **Turn off**. It does not cross VLANs or
-routers.
+in the adapter's *Power Management* and *Advanced* settings), usually only over a cable. **Turn off** on Windows shuts down like the Start menu does (`shutdown /s /hybrid`, agents
+1.17.1+), so it wakes the same way as a PC turned off by hand; a full shutdown (`Stop-Computer`,
+`shutdown /s`), which older agents did, leaves many network cards unable to wake it. If it still
+will not wake, check the card's *Wake on Magic Packet* / *Shutdown Wake-On-Lan* setting, the BIOS
+(ErP / Deep Sleep off) and that it is on a cable. It does not cross VLANs or routers.
 
 ### Ping-only devices
 
