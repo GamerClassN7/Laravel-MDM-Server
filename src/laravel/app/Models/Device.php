@@ -38,6 +38,9 @@ class Device extends Model
     /** Agents from this version report their neighbours (ARP table) and scan networks (network_discovery). */
     public const NETWORK_DISCOVERY_VERSION = '1.16.0';
 
+    /** Agents from this version collect the security inventory (App\Support\SecurityScanner). */
+    public const SECURITY_VERSION = '1.17.0';
+
     /** At most this many ping-only devices per agent. */
     public const MAX_PING_TARGETS = 32;
 
@@ -561,6 +564,16 @@ class Device extends Model
     public function scriptRuns(): HasMany
     {
         return $this->hasMany(ScriptRun::class);
+    }
+
+    public function securityInventory(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(SecurityInventory::class);
+    }
+
+    public function securityFindings(): HasMany
+    {
+        return $this->hasMany(SecurityFinding::class);
     }
 
     /** Agents 1.7.0+ register a key and sign every request; older ones only get the agent update. */

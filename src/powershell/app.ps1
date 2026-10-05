@@ -98,7 +98,8 @@ $ReportInterval = 300
 $HeartbeatInterval = 30
 $InventoryInterval = 21600
 $HealthInterval = 3600
-foreach ($name in 'ReportInterval', 'HeartbeatInterval', 'InventoryInterval', 'HealthInterval') {
+$SecurityInterval = 3600
+foreach ($name in 'ReportInterval', 'HeartbeatInterval', 'InventoryInterval', 'HealthInterval', 'SecurityInterval') {
     $value = 0
     if ($LegacyOptions.ContainsKey($name) -and [int]::TryParse("$($LegacyOptions[$name])", [ref]$value) -and $value -gt 0) {
         Set-Variable -Name $name -Value $value
@@ -114,7 +115,7 @@ $ReverbKey = "$($LegacyOptions['ReverbKey'])"
 # Not left for the functions (they would see them through dynamic scoping).
 Remove-Variable -Name i, name, value -ErrorAction SilentlyContinue
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.16.0'
+$AgentVersion = '1.17.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow', 'scanNetwork')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -897,6 +898,562 @@ function Get-LinuxDiskHealth {
 
     return @{ disks = @($disks) }
 }
+
+#region Security inventory
+
+# What the security scanner of the portal looks at (agents 1.17.0+, hourly, in a job at idle
+# priority): installed software, processes, listening ports, startup items, administrators,
+# security settings and the security events since the previous collection. The rules run on the
+# server (Security page), the agent only collects. Every part is optional: one that fails is left out.
+
+function ConvertTo-SecurityText ($Value, [int]$Max = 1000) {
+    $text = "$Value".Trim()
+    if ($text.Length -gt $Max) { $text = $text.Substring(0, $Max) }
+    if ($text) { $text } else { $null }
+}
+
+function Get-SecuritySoftware {
+    param ([bool]$OnLinux)
+
+    if ($OnLinux) {
+        if (Get-Command -Name dpkg-query -CommandType Application -ErrorAction SilentlyContinue) {
+            dpkg-query -W -f '${db:Status-Abbrev}\t${Package}\t${Version}\t${Maintainer}\n' 2>$null | ForEach-Object {
+                $parts = $_ -split "`t"
+                if ($parts.Count -ge 4 -and $parts[0] -like 'i*') {
+                    [PSCustomObject]@{ Name = $parts[1]; Version = $parts[2]; Publisher = ConvertTo-SecurityText $parts[3] 200; Source = 'dpkg' }
+                }
+            }
+        } elseif (Get-Command -Name rpm -CommandType Application -ErrorAction SilentlyContinue) {
+            rpm -qa --queryformat '%{NAME}\t%{VERSION}-%{RELEASE}\t%{VENDOR}\n' 2>$null | ForEach-Object {
+                $parts = $_ -split "`t"
+                if ($parts.Count -ge 3) { [PSCustomObject]@{ Name = $parts[0]; Version = $parts[1]; Publisher = ConvertTo-SecurityText $parts[2] 200; Source = 'rpm' } }
+            }
+        }
+        if (Get-Command -Name snap -CommandType Application -ErrorAction SilentlyContinue) {
+            snap list 2>$null | Select-Object -Skip 1 | ForEach-Object {
+                $parts = $_.Trim() -split '\s+'
+                if ($parts.Count -ge 2) { [PSCustomObject]@{ Name = $parts[0]; Version = $parts[1]; Publisher = if ($parts.Count -ge 5) { $parts[4] } else { $null }; Source = 'snap' } }
+            }
+        }
+        if (Get-Command -Name flatpak -CommandType Application -ErrorAction SilentlyContinue) {
+            flatpak list --app --system --columns=application,version,origin 2>$null | ForEach-Object {
+                $parts = $_ -split "`t"
+                if ($parts[0]) { [PSCustomObject]@{ Name = $parts[0]; Version = if ($parts.Count -ge 2) { $parts[1] } else { $null }; Publisher = $null; Source = 'flatpak' } }
+            }
+        }
+        return
+    }
+
+    # Programs and Features: machine-wide (64 and 32 bit) and per user (the loaded profiles).
+    $paths = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
+    $paths += @(Get-ChildItem -Path Registry::HKEY_USERS -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^S-1-5-21-[\d-]+$' } |
+            ForEach-Object { "Registry::HKEY_USERS\$($_.PSChildName)\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" })
+    Get-ItemProperty -Path $paths -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -and $_.SystemComponent -ne 1 -and -not $_.ParentKeyName } |
+        ForEach-Object {
+            [PSCustomObject]@{
+                Name      = ConvertTo-SecurityText $_.DisplayName 300
+                Version   = ConvertTo-SecurityText $_.DisplayVersion 100
+                Publisher = ConvertTo-SecurityText $_.Publisher 200
+                Source    = if ($_.PSPath -match 'HKEY_USERS') { 'registry (user)' } else { 'registry' }
+            }
+        } | Sort-Object -Property Name, Version, Source -Unique
+}
+
+function Get-SecurityProcesses {
+    param (
+        [bool]$OnLinux,
+        # The agent: it and what it starts (jobs, winget, ...) are left out.
+        [int]$AgentPid
+    )
+
+    $processes = @()
+    if ($OnLinux) {
+        $users = @{}
+        foreach ($line in @(Get-Content -Path /etc/passwd -ErrorAction SilentlyContinue)) {
+            $entry = $line -split ':'
+            if ($entry.Count -ge 3) { $users[$entry[2]] = $entry[0] }
+        }
+        foreach ($dir in @(Get-ChildItem -Path /proc -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d+$' })) {
+            try {
+                $commandLine = ([System.IO.File]::ReadAllText("$($dir.FullName)/cmdline") -replace "`0", ' ').Trim()
+                # Kernel threads have no command line.
+                if (-not $commandLine) { continue }
+                $status = [System.IO.File]::ReadAllText("$($dir.FullName)/status")
+                $parent = if ($status -match '(?m)^PPid:\s*(\d+)') { [int]$Matches[1] } else { 0 }
+                $uid = if ($status -match '(?m)^Uid:\s*(\d+)') { $Matches[1] } else { $null }
+                $exe = Get-Item -Path "$($dir.FullName)/exe" -Force -ErrorAction SilentlyContinue
+                $path = if ($exe) { if ($exe.PSObject.Properties['LinkTarget'] -and $exe.LinkTarget) { $exe.LinkTarget } else { "$($exe.Target)" } } else { $null }
+                $processes += [PSCustomObject]@{
+                    Id          = [int]$dir.Name
+                    Parent      = $parent
+                    Name        = ([System.IO.File]::ReadAllText("$($dir.FullName)/comm")).Trim()
+                    Path        = $path
+                    CommandLine = $commandLine
+                    User        = if ($users.ContainsKey($uid)) { $users[$uid] } else { $uid }
+                }
+            }
+            catch {
+                # Ended meanwhile.
+            }
+        }
+    } else {
+        $owners = @{}
+        try { foreach ($process in @(Get-Process -IncludeUserName -ErrorAction SilentlyContinue)) { $owners[$process.Id] = $process.UserName } } catch { }
+        $processes = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine -ErrorAction SilentlyContinue | ForEach-Object {
+                [PSCustomObject]@{
+                    Id          = [int]$_.ProcessId
+                    Parent      = [int]$_.ParentProcessId
+                    Name        = $_.Name
+                    Path        = $_.ExecutablePath
+                    CommandLine = $_.CommandLine
+                    User        = $owners[[int]$_.ProcessId]
+                }
+            })
+    }
+
+    # The agent's own process tree; on Windows also the System Idle Process and System.
+    $system = if ($OnLinux) { 0 } else { 4 }
+    $excluded = @{}
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue($AgentPid)
+    while ($queue.Count -gt 0) {
+        $id = $queue.Dequeue()
+        if ($excluded.ContainsKey($id)) { continue }
+        $excluded[$id] = $true
+        foreach ($process in $processes) {
+            if ($process.Parent -eq $id -and $process.Id -ne $id -and $process.Id -gt $system) { $queue.Enqueue($process.Id) }
+        }
+    }
+
+    # One item per program and command line (browsers run dozens of the same).
+    $processes | Where-Object { -not $excluded.ContainsKey($_.Id) -and $_.Id -gt $system } |
+        Group-Object -Property Name, Path, CommandLine | Select-Object -First 1000 | ForEach-Object {
+            $first = $_.Group[0]
+            [PSCustomObject]@{
+                Name        = ConvertTo-SecurityText $first.Name 260
+                Path        = ConvertTo-SecurityText $first.Path 500
+                CommandLine = ConvertTo-SecurityText $first.CommandLine 1000
+                User        = ConvertTo-SecurityText (@($_.Group | Where-Object { $_.User } | Select-Object -ExpandProperty User -Unique) -join ', ') 200
+                Count       = $_.Count
+            }
+        }
+}
+
+function Get-SecurityListening {
+    param ([bool]$OnLinux)
+
+    if ($OnLinux) {
+        if (-not (Get-Command -Name ss -CommandType Application -ErrorAction SilentlyContinue)) { return }
+        # tcp LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:* users:(("systemd-resolve",pid=600,fd=14))
+        ss -H -tulpn 2>$null | ForEach-Object {
+            $parts = $_.Trim() -split '\s+', 7
+            if ($parts.Count -lt 5 -or $parts[4] -notmatch '^(.*):(\d+|\*)$') { return }
+            $address = $Matches[1] -replace '%.*$', '' -replace '^\[|\]$', ''
+            $port = $Matches[2]
+            if ($port -eq '*') { return }
+            [PSCustomObject]@{
+                Protocol = $parts[0]
+                Address  = $address
+                Port     = [int]$port
+                Process  = if ($parts.Count -ge 7 -and $parts[6] -match 'users:\(\("([^"]+)"') { $Matches[1] } else { $null }
+                Path     = $null
+            }
+        } | Sort-Object -Property Protocol, Address, Port -Unique
+        return
+    }
+
+    $names = @{}
+    $paths = @{}
+    foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
+        $names[$process.Id] = $process.ProcessName
+        try { $paths[$process.Id] = $process.Path } catch { }
+    }
+    $rows = @()
+    $rows += @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
+            [PSCustomObject]@{ Protocol = 'tcp'; Address = "$($_.LocalAddress)"; Port = [int]$_.LocalPort; Process = $names[[int]$_.OwningProcess]; Path = $paths[[int]$_.OwningProcess] }
+        })
+    # UDP without the ephemeral ports of clients (DNS lookups and the like).
+    $rows += @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -lt 49152 } | ForEach-Object {
+            [PSCustomObject]@{ Protocol = 'udp'; Address = "$($_.LocalAddress)"; Port = [int]$_.LocalPort; Process = $names[[int]$_.OwningProcess]; Path = $paths[[int]$_.OwningProcess] }
+        })
+    $rows | Sort-Object -Property Protocol, Address, Port -Unique
+}
+
+function Get-SecurityStartup {
+    param ([bool]$OnLinux)
+
+    if ($OnLinux) {
+        # Cron jobs (system and users), custom systemd units, rc.local, desktop autostart.
+        $files = @('/etc/crontab', '/etc/rc.local') + @(Get-ChildItem -Path /etc/cron.d, /var/spool/cron/crontabs, /var/spool/cron -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
+        foreach ($file in ($files | Select-Object -Unique)) {
+            if (-not (Test-Path -Path $file -PathType Leaf)) { continue }
+            $number = 0
+            foreach ($line in @(Get-Content -Path $file -ErrorAction SilentlyContinue)) {
+                $number++
+                $text = $line.Trim()
+                if (-not $text -or $text.StartsWith('#') -or $text -match '^[A-Za-z_][A-Za-z0-9_]*\s*=') { continue }
+                if ($file -eq '/etc/rc.local' -and $text -match '^(exit 0|#!)') { continue }
+                [PSCustomObject]@{
+                    Name     = Split-Path -Leaf $file
+                    Command  = ConvertTo-SecurityText $text
+                    Location = "${file}:$number"
+                    User     = if ($file -like '/var/spool/cron/*') { Split-Path -Leaf $file } else { $null }
+                }
+            }
+        }
+        foreach ($unit in @(Get-ChildItem -Path /etc/systemd/system -Filter '*.service' -File -ErrorAction SilentlyContinue)) {
+            $exec = @(Select-String -Path $unit.FullName -Pattern '^\s*ExecStart\s*=\s*(.+)$' -ErrorAction SilentlyContinue | ForEach-Object { $_.Matches[0].Groups[1].Value.Trim() })
+            $user = Select-String -Path $unit.FullName -Pattern '^\s*User\s*=\s*(.+)$' -ErrorAction SilentlyContinue | Select-Object -First 1
+            foreach ($command in $exec) {
+                [PSCustomObject]@{ Name = $unit.BaseName; Command = ConvertTo-SecurityText $command; Location = $unit.FullName; User = if ($user) { $user.Matches[0].Groups[1].Value.Trim() } else { 'root' } }
+            }
+        }
+        foreach ($entry in @(Get-ChildItem -Path /etc/xdg/autostart/*.desktop, /home/*/.config/autostart/*.desktop -File -ErrorAction SilentlyContinue)) {
+            $exec = Select-String -Path $entry.FullName -Pattern '^Exec\s*=\s*(.+)$' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($exec) {
+                [PSCustomObject]@{ Name = $entry.BaseName; Command = ConvertTo-SecurityText $exec.Matches[0].Groups[1].Value; Location = $entry.FullName; User = if ($entry.FullName -match '^/home/([^/]+)/') { $Matches[1] } else { $null } }
+            }
+        }
+        return
+    }
+
+    # Run keys of the machine and the loaded user profiles, the Startup folders and the scheduled
+    # tasks that are not Windows' own.
+    $keys = @(
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'; User = $null },
+        @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'; User = $null },
+        @{ Path = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'; User = $null }
+    )
+    foreach ($hive in @(Get-ChildItem -Path Registry::HKEY_USERS -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^S-1-5-21-[\d-]+$' })) {
+        $user = try { (New-Object System.Security.Principal.SecurityIdentifier($hive.PSChildName)).Translate([System.Security.Principal.NTAccount]).Value } catch { $hive.PSChildName }
+        $keys += @{ Path = "Registry::HKEY_USERS\$($hive.PSChildName)\Software\Microsoft\Windows\CurrentVersion\Run"; User = $user }
+        $keys += @{ Path = "Registry::HKEY_USERS\$($hive.PSChildName)\Software\Microsoft\Windows\CurrentVersion\RunOnce"; User = $user }
+    }
+    foreach ($key in $keys) {
+        $item = Get-ItemProperty -Path $key.Path -ErrorAction SilentlyContinue
+        if (-not $item) { continue }
+        foreach ($property in $item.PSObject.Properties) {
+            if ($property.Name -like 'PS*') { continue }
+            [PSCustomObject]@{ Name = $property.Name; Command = ConvertTo-SecurityText $property.Value; Location = ($key.Path -replace '^Registry::', '' -replace '^HKEY_USERS\\S-1-5-21-[\d-]+', 'HKCU'); User = $key.User }
+        }
+    }
+    $folders = @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp") + @(Get-ChildItem -Path "$env:SystemDrive\Users\*\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup" -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
+    foreach ($file in @(Get-ChildItem -Path $folders -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'desktop.ini' })) {
+        $target = $null
+        if ($file.Extension -eq '.lnk') {
+            try { $target = (New-Object -ComObject WScript.Shell).CreateShortcut($file.FullName); $target = "$($target.TargetPath) $($target.Arguments)" } catch { $target = $null }
+        }
+        [PSCustomObject]@{ Name = $file.Name; Command = ConvertTo-SecurityText $(if ($target) { $target } else { $file.FullName }); Location = $file.DirectoryName; User = if ($file.FullName -match '\\Users\\([^\\]+)\\') { $Matches[1] } else { $null } }
+    }
+    foreach ($task in @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskPath -notlike '\Microsoft\*' -and $_.State -ne 'Disabled' })) {
+        foreach ($action in @($task.Actions | Where-Object { $_.Execute })) {
+            [PSCustomObject]@{ Name = $task.TaskName; Command = ConvertTo-SecurityText "$($action.Execute) $($action.Arguments)"; Location = "Task Scheduler $($task.TaskPath)"; User = $task.Principal.UserId }
+        }
+    }
+}
+
+function Get-SecurityAdmins {
+    param ([bool]$OnLinux)
+
+    if ($OnLinux) {
+        # uid 0 and the members of the groups that may use sudo.
+        $shells = @{}
+        foreach ($line in @(Get-Content -Path /etc/passwd -ErrorAction SilentlyContinue)) {
+            $entry = $line -split ':'
+            if ($entry.Count -lt 7) { continue }
+            $shells[$entry[0]] = $entry[6]
+            if ($entry[2] -eq '0') { [PSCustomObject]@{ Name = $entry[0]; Source = 'uid 0'; Enabled = $entry[6] -notmatch '(nologin|false)$' } }
+        }
+        foreach ($group in 'sudo', 'wheel', 'admin') {
+            $entry = "$(getent group $group 2>$null)" -split ':'
+            if ($entry.Count -lt 4 -or -not $entry[3]) { continue }
+            foreach ($name in ($entry[3] -split ',' | Where-Object { $_ })) {
+                [PSCustomObject]@{ Name = $name; Source = "group $group"; Enabled = -not ("$($shells[$name])" -match '(nologin|false)$') }
+            }
+        }
+        return
+    }
+
+    $sid = 'S-1-5-32-544'
+    $members = @()
+    try {
+        $members = @(Get-LocalGroupMember -SID $sid -ErrorAction Stop | ForEach-Object { @{ Name = "$($_.Name)"; Source = "$($_.PrincipalSource)"; Sid = "$($_.SID)" } })
+    }
+    catch {
+        # Get-LocalGroupMember fails on members it cannot resolve (removed domain or Entra ID accounts).
+        try {
+            $group = (New-Object System.Security.Principal.SecurityIdentifier($sid)).Translate([System.Security.Principal.NTAccount]).Value.Split('\')[-1]
+            $members = @(([ADSI]"WinNT://./$group,group").psbase.Invoke('Members') | ForEach-Object {
+                    $path = $_.GetType().InvokeMember('ADsPath', 'GetProperty', $null, $_, $null)
+                    @{ Name = ($path -replace '^WinNT://', '' -replace '/', '\'); Source = if ($path -match "^WinNT://$([regex]::Escape($env:COMPUTERNAME))/") { 'Local' } else { 'Domain' }; Sid = $null }
+                })
+        }
+        catch { }
+    }
+    $local = @{}
+    try { foreach ($user in @(Get-LocalUser -ErrorAction Stop)) { $local["$($user.SID)"] = $user.Enabled } } catch { }
+    foreach ($member in $members) {
+        [PSCustomObject]@{ Name = $member.Name; Source = $member.Source; Enabled = if ($member.Sid -and $local.ContainsKey($member.Sid)) { [bool]$local[$member.Sid] } else { $null } }
+    }
+}
+
+function Get-SecurityPosture {
+    param (
+        [bool]$OnLinux,
+        [bool]$InContainer
+    )
+
+    $posture = @{}
+    if ($OnLinux) {
+        $firewall = $null
+        if (Get-Command -Name ufw -CommandType Application -ErrorAction SilentlyContinue) {
+            $firewall = "$(ufw status 2>$null)" -match 'Status: active'
+        }
+        if (-not $firewall -and (Get-Command -Name firewall-cmd -CommandType Application -ErrorAction SilentlyContinue)) {
+            $firewall = "$(firewall-cmd --state 2>$null)".Trim() -eq 'running'
+        }
+        if (-not $firewall -and (Get-Command -Name iptables -CommandType Application -ErrorAction SilentlyContinue)) {
+            # A policy or a rule that drops or rejects incoming traffic (iptables-nft also shows nftables).
+            $rules = @(iptables -S INPUT 2>$null)
+            if ($LASTEXITCODE -eq 0) { $firewall = [bool]($rules -match '^-P INPUT (DROP|REJECT)|-j (DROP|REJECT)') }
+        }
+        if (-not $firewall -and (Get-Command -Name nft -CommandType Application -ErrorAction SilentlyContinue)) {
+            $ruleset = "$(nft list ruleset 2>$null)"
+            if ($LASTEXITCODE -eq 0) { $firewall = $ruleset -match 'hook input[^}]*(policy drop|\sdrop|\sreject)' }
+        }
+        $posture.FirewallEnabled = if ($InContainer) { $null } else { $firewall }
+        if (-not $InContainer -and (Get-Command -Name findmnt -CommandType Application -ErrorAction SilentlyContinue)) {
+            $root = "$(findmnt -n -o SOURCE / 2>$null)".Trim() -replace '\[.*\]$', ''
+            if ($root -and (Get-Command -Name lsblk -CommandType Application -ErrorAction SilentlyContinue)) {
+                $types = @(lsblk -s -n -o TYPE $root 2>$null)
+                if ($LASTEXITCODE -eq 0) { $posture.DiskEncrypted = [bool]($types -match 'crypt') }
+            }
+        }
+        $efi = @(Get-ChildItem -Path '/sys/firmware/efi/efivars/SecureBoot-*' -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($efi) {
+            try { $bytes = [System.IO.File]::ReadAllBytes($efi[0].FullName); $posture.SecureBoot = $bytes[-1] -eq 1 } catch { }
+        }
+        $sshd = Get-Command -Name sshd -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($sshd -and (Test-Path -Path /etc/ssh/sshd_config)) {
+            $config = @(& $sshd.Source -T 2>$null)
+            if ($LASTEXITCODE -eq 0) {
+                foreach ($line in $config) {
+                    if ($line -match '^permitrootlogin\s+(\S+)') { $posture.SshRootLogin = $Matches[1] -replace '^without-password$', 'prohibit-password' }
+                    if ($line -match '^passwordauthentication\s+(\S+)') { $posture.SshPasswordAuthentication = $Matches[1] -eq 'yes' }
+                }
+            }
+        }
+        if (Test-Path -Path /etc/apt/apt.conf.d) {
+            $periodic = (Get-Content -Path /etc/apt/apt.conf.d/* -Raw -ErrorAction SilentlyContinue) -join "`n"
+            $posture.AutomaticUpdates = $periodic -match 'APT::Periodic::Unattended-Upgrade\s+"(1|true)"'
+            # The last upgrade apt recorded (its history is rotated monthly, the older ones are gzipped).
+            foreach ($log in @(Get-ChildItem -Path /var/log/apt/history.log* -File -ErrorAction SilentlyContinue | Sort-Object -Property LastWriteTime -Descending)) {
+                try {
+                    $text = if ($log.Extension -eq '.gz') {
+                        $stream = New-Object System.IO.Compression.GZipStream([System.IO.File]::OpenRead($log.FullName), [System.IO.Compression.CompressionMode]::Decompress)
+                        try { (New-Object System.IO.StreamReader($stream)).ReadToEnd() } finally { $stream.Dispose() }
+                    } else { [System.IO.File]::ReadAllText($log.FullName) }
+                }
+                catch { continue }
+                $last = $null
+                foreach ($block in ($text -split '(?m)^\s*$')) {
+                    if ($block -match '(?m)^Upgrade:' -and $block -match '(?m)^Start-Date:\s*(\d{4}-\d{2}-\d{2})') { $last = [datetime]$Matches[1] }
+                }
+                if ($last) { $posture.DaysSinceUpdate = [int]((Get-Date) - $last).TotalDays; break }
+            }
+        }
+        return $posture
+    }
+
+    try {
+        $profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop)
+        $posture.FirewallEnabled = $profiles.Count -gt 0 -and -not (@($profiles | ForEach-Object { "$($_.Enabled)" }) -contains 'False')
+    }
+    catch { }
+
+    # The antivirus Windows Security Center knows (workstations), Microsoft Defender's own status.
+    $defender = try { Get-MpComputerStatus -ErrorAction Stop } catch { $null }
+    $products = @(try { Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -ErrorAction Stop } catch { })
+    $active = $null
+    foreach ($product in $products) {
+        $state = '{0:X6}' -f [int]$product.productState
+        $item = @{ Name = "$($product.displayName)"; Enabled = @('10', '11') -contains $state.Substring(2, 2); UpToDate = $state.Substring(4, 2) -eq '00' }
+        if (-not $active -or ($item.Enabled -and -not $active.Enabled) -or ($item.Enabled -and $active.Name -match 'Defender')) { $active = $item }
+    }
+    if ($active -and -not ($active.Name -match 'Defender' -and $defender)) {
+        $posture.AntivirusName = $active.Name
+        $posture.AntivirusEnabled = $active.Enabled
+        $posture.AntivirusUpToDate = $active.UpToDate
+    } elseif ($defender) {
+        $posture.AntivirusName = 'Microsoft Defender Antivirus'
+        # Passive (another antivirus protects the device) or not running: not known to be off.
+        if (-not "$($defender.AMRunningMode)" -or "$($defender.AMRunningMode)" -eq 'Normal') {
+            $posture.AntivirusEnabled = [bool]$defender.AntivirusEnabled
+            $posture.RealTimeProtection = [bool]$defender.RealTimeProtectionEnabled
+            $posture.AntivirusUpToDate = $defender.AntivirusSignatureAge -le 7
+        }
+    } elseif ($products.Count -eq 0 -and (Get-CimInstance -ClassName Win32_OperatingSystem -Property ProductType).ProductType -eq 1) {
+        # A workstation that knows no antivirus at all.
+        $posture.AntivirusEnabled = $false
+    }
+
+    try {
+        $volume = Get-CimInstance -Namespace root/cimv2/Security/MicrosoftVolumeEncryption -ClassName Win32_EncryptableVolume -Filter "DriveLetter = '$env:SystemDrive'" -ErrorAction Stop
+        if ($volume) { $posture.DiskEncrypted = [int]$volume.ProtectionStatus -eq 1 }
+    }
+    catch { }
+    try { $posture.SecureBoot = [bool](Confirm-SecureBootUEFI -ErrorAction Stop) } catch { }
+
+    $terminal = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -ErrorAction SilentlyContinue
+    if ($terminal) { $posture.RdpEnabled = [int]$terminal.fDenyTSConnections -eq 0 }
+    $rdp = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -ErrorAction SilentlyContinue
+    if ($rdp -and $null -ne $rdp.UserAuthentication) { $posture.RdpNla = [int]$rdp.UserAuthentication -eq 1 }
+    try { $posture.Smb1Enabled = [bool](Get-SmbServerConfiguration -ErrorAction Stop).EnableSMB1Protocol } catch { }
+    $system = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue
+    if ($system) { $posture.UacEnabled = $null -eq $system.EnableLUA -or [int]$system.EnableLUA -ne 0 }
+    try {
+        $guest = Get-LocalUser -ErrorAction Stop | Where-Object { "$($_.SID)" -like '*-501' } | Select-Object -First 1
+        if ($guest) { $posture.GuestEnabled = [bool]$guest.Enabled }
+    }
+    catch { }
+    $winlogon = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -ErrorAction SilentlyContinue
+    if ($winlogon) { $posture.AutoLogon = "$($winlogon.AutoAdminLogon)" -eq '1' -and $null -ne $winlogon.PSObject.Properties['DefaultPassword'] }
+    $au = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -ErrorAction SilentlyContinue
+    $posture.AutomaticUpdates = -not ($au -and [int]$au.NoAutoUpdate -eq 1)
+    $installed = @(Get-HotFix -ErrorAction SilentlyContinue | Where-Object { $_.InstalledOn } | Sort-Object -Property InstalledOn -Descending | Select-Object -First 1)
+    if ($installed) { $posture.DaysSinceUpdate = [int]((Get-Date) - $installed[0].InstalledOn).TotalDays }
+
+    return $posture
+}
+
+function Get-SecurityEvents {
+    param (
+        [bool]$OnLinux,
+        [datetime]$Since
+    )
+
+    # Grouped by type, user and source: how often and when last.
+    $groups = @{}
+    $add = {
+        param ([string]$Type, [string]$User, [string]$Source, [string]$Message, [datetime]$Time, [int]$Count = 1)
+        $key = "$Type|$("$User".ToLowerInvariant())|$Source"
+        if (-not $groups.ContainsKey($key)) {
+            $groups[$key] = [PSCustomObject]@{ Type = $Type; Count = 0; User = ConvertTo-SecurityText $User 200; Source = ConvertTo-SecurityText $Source 200; Message = $null; Last = $Time }
+        }
+        $group = $groups[$key]
+        $group.Count += $Count
+        if ($Time -ge $group.Last -or -not $group.Message) { $group.Last = $Time; $group.Message = ConvertTo-SecurityText $Message 500 }
+    }
+
+    if ($OnLinux) {
+        $lines = @()
+        if (Get-Command -Name journalctl -CommandType Application -ErrorAction SilentlyContinue) {
+            # auth and authpriv: sshd, sudo, useradd, usermod, gpasswd.
+            $epoch = [int64]([DateTimeOffset]$Since).ToUnixTimeSeconds()
+            $lines = @(journalctl -q --no-pager -o short-iso --since "@$epoch" SYSLOG_FACILITY=4 SYSLOG_FACILITY=10 2>$null)
+        }
+        if ($lines.Count -eq 0) {
+            foreach ($path in '/var/log/auth.log', '/var/log/secure') {
+                if (Test-Path -Path $path) { $lines = @(Get-Content -Path $path -Tail 20000 -ErrorAction SilentlyContinue); break }
+            }
+        }
+        foreach ($line in $lines) {
+            # 2026-10-05T10:00:01+0200 host sshd[123]: ... (journalctl, rsyslog) or "Oct  5 10:00:01 host ..."
+            $time = $null
+            if ($line -match '^(\d{4}-\d{2}-\d{2}T[\d:.]+)([+-]\d{2}:?\d{2})?') {
+                $time = [datetime]$Matches[1]
+            } elseif ($line -match '^([A-Z][a-z]{2})\s+(\d{1,2}) (\d{2}:\d{2}:\d{2})') {
+                $parsed = [datetime]::MinValue
+                if ([datetime]::TryParseExact("$($Matches[1]) $($Matches[2]) $((Get-Date).Year) $($Matches[3])", 'MMM d yyyy HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture, 'AllowWhiteSpaces', [ref]$parsed)) {
+                    $time = if ($parsed -gt (Get-Date).AddDays(1)) { $parsed.AddYears(-1) } else { $parsed }
+                }
+            }
+            if (-not $time -or $time -lt $Since) { continue }
+            if ($line -match 'sshd\[\d+\]: Failed (password|publickey) for (invalid user )?(\S+) from (\S+)') {
+                & $add 'failed_logon' $Matches[3] $Matches[4] "ssh: failed $($Matches[1]) for $($Matches[2])$($Matches[3])" $time
+            } elseif ($line -match 'sudo(\[\d+\])?:\s+(\S+) : (\d+) incorrect password attempts?') {
+                & $add 'sudo_failed' $Matches[2] 'sudo' ($line -replace '^.*?sudo(\[\d+\])?:\s+', '') $time ([int]$Matches[3])
+            } elseif ($line -match 'useradd\[\d+\]: new user: name=([^,\s]+)') {
+                & $add 'account_created' $Matches[1] 'useradd' "New user $($Matches[1])" $time
+            } elseif ($line -match "usermod\[\d+\]: add '([^']+)' to group '(sudo|wheel|admin)'") {
+                & $add 'admin_added' $Matches[1] $Matches[2] "$($Matches[1]) added to group $($Matches[2])" $time
+            } elseif ($line -match 'gpasswd\[\d+\]: user (\S+) added by (\S+) to group (sudo|wheel|admin)') {
+                & $add 'admin_added' $Matches[1] $Matches[2] "$($Matches[2]) added $($Matches[1]) to group $($Matches[3])" $time
+            }
+        }
+        return $groups.Values
+    }
+
+    $read = {
+        param ([hashtable]$Filter)
+        try { @(Get-WinEvent -FilterHashtable ($Filter + @{ StartTime = $Since }) -MaxEvents 5000 -ErrorAction Stop) } catch { @() }
+    }
+    $data = {
+        param ($Record)
+        $values = @{}
+        foreach ($item in @(([xml]$Record.ToXml()).Event.EventData.Data)) { if ($item.Name) { $values[$item.Name] = "$($item.'#text')" } }
+        $values
+    }
+    foreach ($record in (& $read @{ LogName = 'Security'; Id = 4625, 4720, 4732, 1102 })) {
+        $values = & $data $record
+        switch ($record.Id) {
+            4625 {
+                $source = if ($values['IpAddress'] -and $values['IpAddress'] -ne '-') { $values['IpAddress'] } else { $values['WorkstationName'] }
+                & $add 'failed_logon' $values['TargetUserName'] $source "Failed sign-in (logon type $($values['LogonType']))" $record.TimeCreated
+            }
+            4720 { & $add 'account_created' $values['TargetUserName'] $values['SubjectUserName'] "$($values['SubjectUserName']) created the account $($values['TargetUserName'])" $record.TimeCreated }
+            4732 {
+                if ($values['TargetSid'] -ne 'S-1-5-32-544') { continue }
+                $member = if ($values['MemberName'] -and $values['MemberName'] -ne '-') { $values['MemberName'] } else { try { (New-Object System.Security.Principal.SecurityIdentifier($values['MemberSid'])).Translate([System.Security.Principal.NTAccount]).Value } catch { $values['MemberSid'] } }
+                & $add 'admin_added' $member $values['SubjectUserName'] "$($values['SubjectUserName']) added $member to Administrators" $record.TimeCreated
+            }
+            1102 { & $add 'log_cleared' (([xml]$record.ToXml()).Event.UserData.LogFileCleared.SubjectUserName) 'Security' 'The Security log was cleared' $record.TimeCreated }
+        }
+    }
+    foreach ($record in (& $read @{ LogName = 'System'; Id = 104, 7045 })) {
+        if ($record.Id -eq 104) {
+            & $add 'log_cleared' (([xml]$record.ToXml()).Event.UserData.LogFileCleared.SubjectUserName) 'System' "The $((([xml]$record.ToXml()).Event.UserData.LogFileCleared.Channel)) log was cleared" $record.TimeCreated
+        } elseif ($record.ProviderName -eq 'Service Control Manager') {
+            $values = & $data $record
+            & $add 'service_installed' $values['AccountName'] $values['ServiceName'] "$($values['ServiceName']): $($values['ImagePath'])" $record.TimeCreated
+        }
+    }
+    foreach ($record in (& $read @{ LogName = 'Microsoft-Windows-Windows Defender/Operational'; Id = 1116 })) {
+        $values = & $data $record
+        & $add 'malware_detected' $values['Detection User'] $values['Threat Name'] "$($values['Threat Name']) ($($values['Severity Name'])) in $($values['Path'])" $record.TimeCreated
+    }
+
+    return $groups.Values
+}
+
+function Get-SecurityInventory {
+    param (
+        [bool]$OnLinux,
+        [datetime]$Since,
+        [int]$AgentPid,
+        [bool]$InContainer
+    )
+
+    $data = @{}
+    try { $data['software'] = @(Get-SecuritySoftware -OnLinux $OnLinux | Select-Object -First 5000) } catch { }
+    try { $data['processes'] = @(Get-SecurityProcesses -OnLinux $OnLinux -AgentPid $AgentPid) } catch { }
+    try { $data['listening'] = @(Get-SecurityListening -OnLinux $OnLinux | Select-Object -First 1000) } catch { }
+    try { $data['startup'] = @(Get-SecurityStartup -OnLinux $OnLinux | Select-Object -First 500) } catch { }
+    try { $data['admins'] = @(Get-SecurityAdmins -OnLinux $OnLinux | Select-Object -First 200) } catch { }
+    try { $data['posture'] = Get-SecurityPosture -OnLinux $OnLinux -InContainer $InContainer } catch { }
+    try {
+        $data['events'] = @(Get-SecurityEvents -OnLinux $OnLinux -Since $Since | Sort-Object -Property Last -Descending | Select-Object -First 500 | ForEach-Object {
+                $_.Last = $_.Last.ToUniversalTime().ToString('o')
+                $_
+            })
+    }
+    catch { }
+
+    return $data
+}
+
+#endregion
 
 function Get-PowerShellHosts {
     param (
@@ -2696,6 +3253,60 @@ function Start-HealthCollection {
             return @{ error = $_.Exception.Message }
         }
     }
+}
+
+function Start-SecurityCollection {
+    param (
+        # Events from this time on (the start of the previous collection that was sent).
+        [datetime]
+        $Since,
+        [bool]
+        $InContainer
+    )
+
+    return Start-AgentJob -Name 'security' -Functions 'ConvertTo-SecurityText', 'Get-SecuritySoftware', 'Get-SecurityProcesses', 'Get-SecurityListening', 'Get-SecurityStartup', 'Get-SecurityAdmins', 'Get-SecurityPosture', 'Get-SecurityEvents', 'Get-SecurityInventory' -ArgumentList $OnLinux, $Since, $PID, $InContainer -ScriptBlock {
+        param ($OnLinux, $Since, $AgentPid, $InContainer)
+        try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
+        return Get-SecurityInventory -OnLinux $OnLinux -Since $Since -AgentPid $AgentPid -InContainer $InContainer
+    }
+}
+
+function Get-SecurityState {
+    # When the last collection that reached the server started: the next one reads the events from then.
+    try {
+        $state = Get-Content -Path "$AgentDir/security.json" -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
+        return @{ Since = [datetime]$state.since; SentAt = [datetime]$state.sent_at }
+    }
+    catch {
+        return $null
+    }
+}
+
+function Send-SecurityInventory {
+    # The security inventory to the server (its scanner runs the rules). Returns whether it was taken.
+    param (
+        [Parameter(Mandatory = $true)]
+        $Data,
+        [Parameter(Mandatory = $true)]
+        [datetime]
+        $StartedAt,
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Token
+    )
+
+    try {
+        $result = Invoke-MdmApi -Method Post -Path 'device/security' -Body $Data -Token $Token
+    }
+    catch {
+        # A server without the scanner: nothing to resend.
+        if ($_.Exception.Data['MdmStatus'] -in 403, 404) { return $true }
+        throw
+    }
+    @{ since = $StartedAt.ToString('o'); sent_at = (Get-Date).ToString('o') } | ConvertTo-Json -Compress | Set-Content -Path "$AgentDir/security.json" -Encoding UTF8
+    Write-AgentLog ('Security inventory sent: {0} application(s), {1} process(es), {2} port(s), {3} event group(s); {4} new finding(s)' -f @($Data.software).Count, @($Data.processes).Count, @($Data.listening).Count, @($Data.events).Count, $result.opened)
+
+    return $true
 }
 
 function Get-CachedInventory {
@@ -4668,6 +5279,11 @@ function Start-Agent {
         Write-AgentLog "Running in a $($virtualization.Type) ($($virtualization.Name)), disk health is not collected"
     }
     $healthJob = $null
+    # Security inventory (hourly): the first one a few minutes after start, so it does not add to the load during boot.
+    $securityState = Get-SecurityState
+    $nextSecurity = if ($securityState -and $securityState.SentAt -le (Get-Date)) { $securityState.SentAt.AddSeconds($SecurityInterval) } else { (Get-Date).AddMinutes(3) }
+    $securityJob = $null
+    $securityStarted = $null
     $lastReport = [DateTime]::MinValue
     $realtime = $null
     $nextConnect = Get-Date
@@ -4752,6 +5368,7 @@ function Start-Agent {
                 $script:SyncRequest.InventoryDone = $false
                 if (-not $inventoryJob) { $nextInventory = Get-Date }
                 if (-not $virtualization -and -not $healthJob) { $nextHealth = Get-Date }
+                if (-not $securityJob) { $nextSecurity = Get-Date }
             }
             if (-not $inventoryJob -and (Get-Date) -ge $nextInventory) {
                 Write-AgentLog 'Inventory collection started'
@@ -4774,6 +5391,32 @@ function Start-Agent {
             if (-not $healthJob -and (Get-Date) -ge $nextHealth) {
                 $healthJob = Start-HealthCollection -Previous $health.Data
                 $nextHealth = (Get-Date).AddSeconds($HealthInterval)
+            }
+
+            if ($securityJob -and $securityJob.State -ne 'Running') {
+                try {
+                    if ($securityJob.State -eq 'Completed') {
+                        $data = Receive-Job -Job $securityJob | Select-Object -Last 1
+                        [void](Send-SecurityInventory -Data $data -StartedAt $securityStarted -Token $Token)
+                    } else {
+                        Write-AgentLog "Security inventory failed: $($securityJob.ChildJobs[0].JobStateInfo.Reason)" -IsError
+                    }
+                }
+                catch {
+                    # Sent again with the next collection (the events since the last one that was taken).
+                    Write-AgentLog "Security inventory not sent: $($_.Exception.Message)" -ErrorRecord $_
+                    $nextSecurity = (Get-Date).AddMinutes(10)
+                }
+                Remove-Job -Job $securityJob -Force
+                $securityJob = $null
+            }
+            if (-not $securityJob -and (Get-Date) -ge $nextSecurity) {
+                # Events since the last collection the server took, at most a day back.
+                $state = Get-SecurityState
+                $since = if ($state -and $state.Since -gt (Get-Date).AddDays(-1)) { $state.Since } else { (Get-Date).AddDays(-1) }
+                $securityStarted = Get-Date
+                $securityJob = Start-SecurityCollection -Since $since -InContainer ($virtualization -and $virtualization.Type -eq 'container')
+                $nextSecurity = (Get-Date).AddSeconds($SecurityInterval)
             }
 
             if ($script:SyncRequest -and $script:SyncRequest.Phase -eq 'collecting' -and $script:SyncRequest.InventoryDone -and -not $healthJob) {

@@ -6,6 +6,8 @@
                     <i class="nav-link-ico {{ $item->icon }}"></i>
                     @if ($item->route === 'notifications' && ($firing = \App\Models\AlertEvent::firingCountFor(auth()->user())) > 0)
                         <span class="position-absolute badge rounded-pill text-bg-danger" style="top: .25rem; left: 55%">{{ $firing }}</span>
+                    @elseif ($item->route === 'security' && ($severe = \App\Models\SecurityFinding::severeCount()) > 0)
+                        <span class="position-absolute badge rounded-pill text-bg-danger" style="top: .25rem; left: 55%">{{ $severe }}</span>
                     @endif
                     <span class="nav-link-content">{{ __($item->title) }}</span>
                 </a>

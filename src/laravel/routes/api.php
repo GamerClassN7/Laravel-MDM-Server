@@ -126,6 +126,17 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         return response()->noContent();
     });
 
+    // The security inventory and the events since the previous one (agents 1.17.0+, hourly):
+    // kept and scanned with the rules of the Security page.
+    Route::post('/device/security', function (Request $request) {
+        /** @var Device $device */
+        $device = $request->user();
+        abort_unless($device->signsRequests, 403);
+        $result = App\Support\SecurityScanner::ingest($device, $request->json()->all());
+
+        return response()->json($result);
+    });
+
     // Samples the agent collected while it could not reach the server (agents 1.11.0+): they fill
     // the gap in the CPU and memory history.
     Route::post('/device/metrics/backfill', function (Request $request) {

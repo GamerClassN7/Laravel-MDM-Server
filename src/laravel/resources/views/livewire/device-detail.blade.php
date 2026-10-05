@@ -17,6 +17,10 @@
             ->whereIn('id', \App\Models\ScriptRun::query()->selectRaw('max(id)')->where('device_id', $selectedDevice->id)->groupBy('script_id'))
             ->latest('id')->get();
         $failedScripts = $scriptRuns->whereIn('status', ['failed', 'error', 'rejected'])->count();
+        // Security inventory (agents 1.17.0+) and the scanner's findings that need attention.
+        $hasSecurity = $selectedDevice->securityInventory()->exists();
+        $securityFindings = $selectedDevice->securityFindings()->active()->get();
+        $securitySevere = $securityFindings->whereIn('severity', ['critical', 'high'])->count();
         // The tab from the URL (?tab=), or the first one this device has.
         $tabs = array_keys(array_filter([
             'drives' => !empty($selectedDevice->drives),
@@ -26,6 +30,7 @@
             'docker' => $docker !== null,
             'health' => $diskHealth !== null,
             'scripts' => $scriptRuns->isNotEmpty(),
+            'security' => $hasSecurity || $securityFindings->isNotEmpty(),
             'history' => $history->isNotEmpty(),
             'agent' => ! $selectedDevice->isPingOnly,
         ]));
@@ -202,6 +207,16 @@
                         <i class="fas fa-scroll me-2"></i>{{ __('Scripts') }}
                         @if ($failedScripts > 0)
                             <x-badge class="ms-1" color="danger" size="sm" variant="subtle" title="{{ __('Failed') }}">{{ $failedScripts }}</x-badge>
+                        @endif
+                    </button>
+                </li>
+            @endif
+            @if ($hasSecurity || $securityFindings->isNotEmpty())
+                <li class="nav-item" role="presentation">
+                    <button aria-controls="security-tab-pane" aria-selected="{{ $activeTab === 'security' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'security' ? 'active' : '' }}" x-on:click="$wire.tab = 'security'" data-bs-target="#security-tab-pane" data-bs-toggle="tab" id="security-tab" role="tab" type="button">
+                        <i class="fas fa-shield-alt me-2"></i>{{ __('Security') }}
+                        @if ($securityFindings->isNotEmpty())
+                            <x-badge class="ms-1" :color="$securitySevere > 0 ? 'danger' : 'warning'" size="sm" variant="subtle" title="{{ __('Findings') }}">{{ $securityFindings->count() }}</x-badge>
                         @endif
                     </button>
                 </li>
@@ -572,6 +587,13 @@
                     @endunless
                 </div>
             @endif
+
+            @if ($hasSecurity || $securityFindings->isNotEmpty())
+                <div aria-labelledby="security-tab" class="tab-pane fade {{ $activeTab === 'security' ? 'show active' : '' }}" id="security-tab-pane" role="tabpanel" tabindex="0">
+                    @livewire('device-security', ['deviceId' => $selectedDevice->id], key('device-security-'.$selectedDevice->id))
+                </div>
+            @endif
+
             @if ($history->isNotEmpty())
                 <div aria-labelledby="history-tab" class="tab-pane fade {{ $activeTab === 'history' ? 'show active' : '' }}" id="history-tab-pane" role="tabpanel" tabindex="0">
                     <div class="table-responsive">

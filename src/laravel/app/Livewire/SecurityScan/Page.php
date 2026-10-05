@@ -1,0 +1,147 @@
+<?php
+
+namespace App\Livewire\SecurityScan;
+
+use App\Models\SecurityEvent;
+use App\Models\SecurityFinding;
+use App\Models\SecurityInventory;
+use App\Models\SecurityRule;
+use App\Support\SecurityRules;
+use App\Support\SecurityScanner;
+use Illuminate\Support\Facades\Gate;
+use Livewire\Attributes\On;
+use Livewire\Attributes\Url;
+use Livewire\Component;
+
+/**
+ * The security scanner of the fleet: the findings of its rules on the devices' security
+ * inventories (acknowledge, open again), the events the agents saw (a small SIEM) and the rules
+ * (system admins switch them, add their own in JSON and scan again).
+ */
+class Page extends Component
+{
+    /** findings, events or rules */
+    #[Url(except: 'findings')]
+    public string $tab = 'findings';
+
+    /** open (needs attention), acknowledged or resolved */
+    #[Url(except: 'open')]
+    public string $status = 'open';
+
+    #[Url(except: '')]
+    public string $severity = '';
+
+    #[Url(except: '')]
+    public string $search = '';
+
+    #[Url(except: '')]
+    public string $eventType = '';
+
+    /** Findings and events shown at most. */
+    public const LIMIT = 200;
+
+    public function mount(): void
+    {
+        SecurityRule::syncBuiltIn();
+    }
+
+    public function acknowledge(int $id): void
+    {
+        SecurityFinding::query()->with('rule')->findOrFail($id)->acknowledge(auth()->user());
+    }
+
+    public function reopen(int $id): void
+    {
+        SecurityFinding::query()->with('rule')->findOrFail($id)->reopen();
+    }
+
+    /** Acknowledges what the page shows (the filters apply). */
+    public function acknowledgeAll(): void
+    {
+        foreach ($this->findings()->whereNull('acknowledged_at')->get() as $finding) {
+            $finding->acknowledge(auth()->user());
+        }
+    }
+
+    public function toggleRule(int $id): void
+    {
+        Gate::authorize('is-system-admin');
+        $rule = SecurityRule::query()->findOrFail($id);
+        $rule->update(['enabled' => ! $rule->enabled]);
+        SecurityScanner::scanAll();
+    }
+
+    public function addRule(): void
+    {
+        Gate::authorize('is-system-admin');
+        $this->dispatch('openModal', 'security-scan.rule-form', __('Add rule'), [], 'xl');
+    }
+
+    public function editRule(int $id): void
+    {
+        Gate::authorize('is-system-admin');
+        $this->dispatch('openModal', 'security-scan.rule-form', __('Edit rule'), ['ruleId' => $id], 'xl');
+    }
+
+    /** A copy of a rule (a built-in one cannot be edited) to change as one's own. */
+    public function duplicateRule(int $id): void
+    {
+        Gate::authorize('is-system-admin');
+        $this->dispatch('openModal', 'security-scan.rule-form', __('Add rule'), ['copyOf' => $id], 'xl');
+    }
+
+    public function rescan(): void
+    {
+        Gate::authorize('is-system-admin');
+        $counts = SecurityScanner::scanAll();
+        alert()->success(__('Scanned: :opened new, :resolved resolved.', $counts))->now();
+    }
+
+    #[On('securityRuleSaved')]
+    public function refresh(): void {}
+
+    /** Live update (resources/js/live.js): some device changed. */
+    #[On('devices-changed')]
+    public function devicesChanged(): void {}
+
+    private function findings()
+    {
+        $query = SecurityFinding::query()->with(['device', 'rule', 'acknowledger']);
+        match ($this->status) {
+            'acknowledged' => $query->whereNotNull('acknowledged_at'),
+            'resolved' => $query->whereNotNull('resolved_at')->whereNull('acknowledged_at'),
+            default => $query->active(),
+        };
+        if (isset(SecurityRules::SEVERITIES[$this->severity])) {
+            $query->where('severity', $this->severity);
+        }
+        if (($search = trim($this->search)) !== '') {
+            $like = '%'.str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $search).'%';
+            $query->where(fn ($q) => $q->where('message', 'like', $like)
+                ->orWhereHas('device', fn ($device) => $device->where('name', 'like', $like)->orWhere('friendly_name', 'like', $like))
+                ->orWhereHas('rule', fn ($rule) => $rule->where('name', 'like', $like)));
+        }
+
+        return $query;
+    }
+
+    public function render()
+    {
+        $active = SecurityFinding::query()->active()->selectRaw('severity, count(*) as total')->groupBy('severity')->pluck('total', 'severity');
+        $events = collect();
+        if ($this->tab === 'events') {
+            $events = SecurityEvent::query()->with('device')->latest('occurred_at')->latest('id')
+                ->when(isset(SecurityRules::EVENT_TYPES[$this->eventType]), fn ($q) => $q->where('type', $this->eventType))
+                ->limit(self::LIMIT)->get();
+        }
+
+        return view('livewire.security-scan.page', [
+            'counts' => collect(SecurityRules::SEVERITIES)->map(fn ($rank, $severity) => (int) ($active[$severity] ?? 0)),
+            'findings' => $this->tab === 'findings' ? $this->findings()->bySeverity()->limit(self::LIMIT)->get() : collect(),
+            'events' => $events,
+            'rules' => $this->tab === 'rules' ? SecurityRule::query()->withCount(['findings as open_count' => fn ($q) => $q->active()])->orderBy('source')->orderBy('name')->get() : collect(),
+            'scanned' => SecurityInventory::query()->count(),
+            'isAdmin' => Gate::allows('is-system-admin'),
+        ])->title(__('Security'));
+    }
+}

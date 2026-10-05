@@ -1,0 +1,180 @@
+<div>
+    <div class="container-xl">
+        <div class="page-header">
+            <div class="me-auto min-w-0">
+                <h1>{{ __('Security') }}</h1>
+                <div class="text-muted">{{ __('Rules look at what the agents report: installed software, processes, open ports, startup items, administrators, security settings and events.') }}</div>
+            </div>
+            @if ($isAdmin)
+                <div class="d-flex gap-2">
+                    <button class="btn btn-light" type="button" wire:click="rescan" wire:loading.attr="disabled" wire:target="rescan">
+                        <span class="spinner-border spinner-border-sm me-2" wire:loading wire:target="rescan"></span><i class="fas fa-sync me-2" wire:loading.remove wire:target="rescan"></i>{{ __('Scan again') }}
+                    </button>
+                    <button class="btn btn-primary" type="button" wire:click="addRule">
+                        <i class="fas fa-plus me-2"></i>{{ __('Add rule') }}
+                    </button>
+                </div>
+            @endif
+        </div>
+        <x-boilerplate::alerts />
+
+        <div class="row g-3 mb-4">
+            @foreach ($counts as $level => $count)
+                <div class="col-6 col-md">
+                    <button class="card card-body w-100 text-start py-2 {{ $severity === $level ? 'border-'.\App\Support\SecurityRules::SEVERITY_COLORS[$level] : '' }}" type="button"
+                        wire:click="$set('severity', '{{ $severity === $level ? '' : $level }}'); $set('tab', 'findings'); $set('status', 'open')">
+                        <div class="small text-body-secondary">{{ __(ucfirst($level)) }}</div>
+                        <div class="fs-4 fw-semibold {{ $count > 0 ? 'text-'.\App\Support\SecurityRules::SEVERITY_COLORS[$level].'-emphasis' : 'text-body-tertiary' }}">{{ $count }}</div>
+                    </button>
+                </div>
+            @endforeach
+        </div>
+
+        <ul class="nav nav-tabs mb-4" role="tablist">
+            @foreach (['findings' => __('Findings'), 'events' => __('Events'), 'rules' => __('Rules')] as $value => $label)
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link {{ $tab === $value ? 'active' : '' }}" role="tab" type="button" aria-selected="{{ $tab === $value ? 'true' : 'false' }}" wire:click="$set('tab', '{{ $value }}')">{{ $label }}</button>
+                </li>
+            @endforeach
+        </ul>
+
+        @if ($scanned === 0)
+            <div class="alert alert-info small">
+                <i class="fas fa-info-circle me-1"></i>{{ __('No device has sent a security inventory yet: it needs agent :version or newer (collected hourly, or now with Sync).', ['version' => \App\Models\Device::SECURITY_VERSION]) }}
+            </div>
+        @endif
+
+        @if ($tab === 'events')
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <select class="form-select form-select-sm w-auto" wire:model.live="eventType" aria-label="{{ __('Type') }}">
+                    <option value="">{{ __('All events') }}</option>
+                    @foreach (\App\Support\SecurityRules::EVENT_TYPES as $value => $label)
+                        <option value="{{ $value }}">{{ __($label) }}</option>
+                    @endforeach
+                </select>
+                <span class="small text-muted align-self-center">{{ __('Kept :days days.', ['days' => \App\Models\SecurityEvent::RETENTION_DAYS]) }}</span>
+            </div>
+            <div class="card overflow-hidden">
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead>
+                            <tr class="small text-body-secondary">
+                                <th class="ps-3">{{ __('When') }}</th>
+                                <th>{{ __('Device') }}</th>
+                                <th>{{ __('Event') }}</th>
+                                <th class="text-end">{{ __('Count') }}</th>
+                                <th class="d-none d-md-table-cell">{{ __('User') }}</th>
+                                <th class="d-none d-md-table-cell">{{ __('Source') }}</th>
+                                <th class="d-none d-lg-table-cell pe-3">{{ __('Detail') }}</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @forelse ($events as $event)
+                                <tr wire:key="security-event-{{ $event->id }}">
+                                    <td class="ps-3 small text-nowrap text-body-secondary" title="{{ $event->occurred_at }}">{{ $event->occurred_at->diffForHumans() }}</td>
+                                    <td class="small"><a href="{{ route('devices', ['selectedDeviceId' => $event->device_id, 'tab' => 'security']) }}">{{ $event->device?->displayName }}</a></td>
+                                    <td class="small fw-medium text-nowrap">{{ $event->label }}</td>
+                                    <td class="small text-end">{{ $event->count }}</td>
+                                    <td class="d-none d-md-table-cell small text-break">{{ $event->user ?? '—' }}</td>
+                                    <td class="d-none d-md-table-cell small text-break">{{ $event->source ?? '—' }}</td>
+                                    <td class="d-none d-lg-table-cell small text-muted text-break pe-3">{{ $event->message }}</td>
+                                </tr>
+                            @empty
+                                <tr><td class="text-muted small py-4 text-center" colspan="7">{{ __('No events.') }}</td></tr>
+                            @endforelse
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        @elseif ($tab === 'rules')
+            <div class="card overflow-hidden">
+                <div class="table-responsive">
+                    <table class="table align-middle mb-0">
+                        <thead>
+                            <tr class="small text-body-secondary">
+                                <th class="ps-3">{{ __('Rule') }}</th>
+                                <th>{{ __('Severity') }}</th>
+                                <th class="d-none d-md-table-cell">{{ __('Looks at') }}</th>
+                                <th class="d-none d-md-table-cell">{{ __('Platform') }}</th>
+                                <th class="text-end">{{ __('Open') }}</th>
+                                <th>{{ __('On') }}</th>
+                                <th class="pe-3"><span class="visually-hidden">{{ __('Actions') }}</span></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach ($rules as $rule)
+                                <tr wire:key="security-rule-{{ $rule->id }}" class="{{ $rule->enabled ? '' : 'opacity-50' }}">
+                                    <td class="ps-3">
+                                        <div class="fw-medium">{{ $rule->name }}
+                                            @unless ($rule->built_in)<x-badge color="primary" size="sm" variant="subtle">{{ __('Custom') }}</x-badge>@endunless
+                                        </div>
+                                        @if ($rule->definition['description'] ?? null)
+                                            <div class="small text-muted">{{ $rule->definition['description'] }}</div>
+                                        @endif
+                                        <div class="small text-body-tertiary font-monospace">{{ $rule->key }}</div>
+                                    </td>
+                                    <td><x-badge :color="$rule->severityColor" size="sm" variant="subtle">{{ __(ucfirst($rule->severity)) }}</x-badge></td>
+                                    <td class="d-none d-md-table-cell small">{{ $rule->sourceLabel }}</td>
+                                    <td class="d-none d-md-table-cell small">{{ $rule->platform === 'any' ? __('All') : ucfirst($rule->platform) }}</td>
+                                    <td class="text-end small">{{ $rule->open_count ?: '—' }}</td>
+                                    <td>
+                                        <div class="form-check form-switch m-0">
+                                            <input aria-label="{{ __('Enabled') }}" class="form-check-input" type="checkbox" wire:click="toggleRule({{ $rule->id }})" @checked($rule->enabled) @disabled(! $isAdmin)>
+                                        </div>
+                                    </td>
+                                    <td class="pe-3 text-end text-nowrap">
+                                        @if ($isAdmin)
+                                            <button class="btn btn-sm btn-light" type="button" wire:click="editRule({{ $rule->id }})">{{ $rule->built_in ? __('Show') : __('Edit') }}</button>
+                                            <button class="btn btn-sm btn-light" type="button" wire:click="duplicateRule({{ $rule->id }})" title="{{ __('Copy as a new rule') }}"><i class="far fa-copy"></i></button>
+                                        @endif
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="small text-muted mt-2">
+                {{ __('Built-in rules come from resources/security/rules.json; switch them off or copy one to change it. Inventory findings are resolved when the next inventory no longer matches, event findings when you acknowledge them.') }}
+            </div>
+        @else
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <div class="btn-group btn-group-sm" role="group">
+                    @foreach (['open' => __('Needs attention'), 'acknowledged' => __('Acknowledged'), 'resolved' => __('Resolved')] as $value => $label)
+                        <button class="btn {{ $status === $value ? 'btn-primary' : 'btn-outline-secondary' }}" type="button" wire:click="$set('status', '{{ $value }}')">{{ $label }}</button>
+                    @endforeach
+                </div>
+                <select class="form-select form-select-sm w-auto" wire:model.live="severity" aria-label="{{ __('Severity') }}">
+                    <option value="">{{ __('All severities') }}</option>
+                    @foreach (array_keys(\App\Support\SecurityRules::SEVERITIES) as $level)
+                        <option value="{{ $level }}">{{ __(ucfirst($level)) }}</option>
+                    @endforeach
+                </select>
+                <input class="form-control form-control-sm w-auto flex-grow-1" placeholder="{{ __('Search device, rule or finding') }}" type="search" wire:model.live.debounce.300ms="search" style="max-width: 20rem">
+                @if ($status === 'open' && $findings->isNotEmpty())
+                    <button class="btn btn-sm btn-light ms-auto" type="button" wire:click="acknowledgeAll" wire:confirm="{{ __('Acknowledge the :count findings shown?', ['count' => $findings->count()]) }}">
+                        <i class="fas fa-check-double me-1"></i>{{ __('Acknowledge shown') }}
+                    </button>
+                @endif
+            </div>
+            <div class="card overflow-hidden">
+                <div class="list-group list-group-flush">
+                    @forelse ($findings as $finding)
+                        @include('livewire.security-scan.partials.finding', ['finding' => $finding, 'showDevice' => true])
+                    @empty
+                        <div class="list-group-item text-muted py-4 text-center">
+                            @if ($status === 'open')
+                                <i class="fas fa-shield-alt text-success me-2"></i>{{ __('Nothing needs attention.') }}
+                            @else
+                                {{ __('Nothing here.') }}
+                            @endif
+                        </div>
+                    @endforelse
+                </div>
+            </div>
+            @if ($findings->count() >= \App\Livewire\SecurityScan\Page::LIMIT)
+                <div class="small text-muted mt-2">{{ __('The first :count are shown, narrow the search.', ['count' => \App\Livewire\SecurityScan\Page::LIMIT]) }}</div>
+            @endif
+        @endif
+    </div>
+</div>

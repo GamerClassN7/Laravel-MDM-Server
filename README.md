@@ -287,6 +287,9 @@ The agent is designed to stay out of the way:
 | Restart / Turn off | ✅ | ✅ |
 | Wake-on-LAN through another agent in the network (agent 1.9.0+) | ✅ sends and is woken | ✅ sends and is woken |
 | Pings ping-only devices of its network (agent 1.10.0+, not on a battery) | ✅ | ✅ |
+| **Security** (agent 1.17.0+) | | |
+| Security inventory for the [scanner](#security-scanner) | ✅ software, processes, ports, startup, admins, settings | ✅ the same (dpkg / rpm, snap, flatpak) |
+| Security events | ✅ Security, System and Defender logs | ✅ journal or `auth.log` (sshd, sudo, useradd, usermod) |
 
 Notes:
 
@@ -486,6 +489,7 @@ open the portal with (remembered in `storage/app/portal-url`; not localhost, and
   | Disk health | a disk reports a S.M.A.R.T. warning or failure |
   | Services | a service failed, or a container is unhealthy, dead or restarting |
   | Remediations | the latest run of a remediation script failed |
+  | Security findings | the [security scanner](#security-scanner) found something of high or critical severity that nobody acknowledged |
   | New device | a device is enrolled with the agent or added as ping-only (once each, nothing to resolve; sent with its name, system and agent version after its first report, at the latest 10 minutes after enrolment) |
   | Unknown device | an agent sees a device the portal does not know in its network (once each, see [Network discovery](#network-discovery)) |
   | Address changed | a ping-only device with a MAC address is seen at another IP address (DHCP): the portal follows it, the alert says to reserve the address for the MAC in the router (static lease) or set it on the device |
@@ -654,6 +658,70 @@ remediation): run it on the devices that should scan, it detects which ones do n
 and **Remediate** sets `network_discovery` to `scan` in their `config.json` (a backup is kept as
 `config.json.bak`). The agent reads it with its next report. Scripts find the agent's directory in
 `MDM_AGENT_DIR` (also with `-InstallPath`).
+
+### Security scanner
+
+**Security** in the main menu is a small vulnerability scanner and SIEM: agents 1.17.0+ collect a
+security inventory every hour (and with **Sync**) in a background job at idle priority, the server
+runs simple JSON rules on it and opens a **finding** for every item a rule matches.
+
+What the agent collects (the *sources* of the rules):
+
+| Source | Windows | Debian / Ubuntu |
+|---|---|---|
+| `software` | Programs and Features (machine and loaded user profiles) | dpkg (or rpm), snap, flatpak |
+| `processes` | `Win32_Process` with the user and command line (the agent's own processes left out) | `/proc` |
+| `listening` | `Get-NetTCPConnection` / `Get-NetUDPEndpoint` with the process | `ss -tulpn` |
+| `startup` | Run / RunOnce keys, Startup folders, scheduled tasks outside `\Microsoft\` | cron (system and users), units in `/etc/systemd/system`, `rc.local`, desktop autostart |
+| `admins` | members of Administrators | uid 0, groups sudo / wheel / admin |
+| `posture` | firewall, antivirus (Security Center / Defender), BitLocker, Secure Boot, RDP and NLA, SMBv1, UAC, Guest, auto logon, days since the last update | firewall (ufw, firewalld, iptables / nftables), LUKS, Secure Boot, `sshd -T` (root login, passwords), unattended-upgrades, days since the last apt upgrade |
+| `events` | since the previous collection: failed sign-ins (4625), accounts created (4720), added to Administrators (4732), logs cleared (1102, 104), services installed (7045), Defender detections (1116) | failed ssh sign-ins, failed sudo, `useradd`, added to sudo / wheel / admin |
+
+Events are grouped by type, user and source (*25 failed sign-ins of administrator from
+203.0.113.7*) and kept 30 days on the **Events** tab. Findings of the inventory are resolved when the
+next inventory no longer matches; acknowledging one keeps it quiet (no alert) until it is gone.
+Findings of events stay open until they are acknowledged. The device shows a **Security** tab with
+its findings and inventory, and an alert from medium severity; the **Security findings** alert type
+of [Notifications](#notifications-and-alerts) sends high and critical ones.
+
+About 40 built-in rules come from
+[`resources/security/rules.json`](src/laravel/resources/security/rules.json): remote access tools,
+attack and cracking tools, miners, end-of-life software, WinRAR / 7-Zip / PuTTY with known
+exploited vulnerabilities, encoded PowerShell, download cradles, reverse shells, credential dumping,
+programs running from temporary folders, clear-text services and open databases, suspicious startup
+items, firewall / antivirus / encryption / SMBv1 / UAC / RDP / SSH settings, brute force, cleared
+logs and new administrators. They follow the file with every update of the server; system admins
+switch them off on the **Rules** tab or copy one to change it. **Add rule** takes a rule in JSON,
+checks it while you type and shows what it would find on a device before it is saved:
+
+```json
+{
+    "key": "custom.chrome-outdated",
+    "name": "Outdated Chrome",
+    "severity": "medium",
+    "platform": "windows",
+    "source": "software",
+    "when": {"all": [
+        {"field": "Name", "op": "starts_with", "value": "google chrome"},
+        {"field": "Version", "op": "version_lt", "value": "120"}
+    ]},
+    "message": "{Name} {Version} is outdated",
+    "remediation": "Update Chrome."
+}
+```
+
+- `severity`: `critical`, `high`, `medium`, `low` or `info`; `platform`: `any`, `windows` or `linux`.
+- `when`: a condition `{"field", "op", "value"}`, or `{"all": [...]}`, `{"any": [...]}`,
+  `{"not": {...}}` (up to 6 levels, 64 conditions). Operators: `eq`, `ne`, `contains`,
+  `not_contains`, `starts_with`, `ends_with`, `matches`, `not_matches` (regular expression),
+  `in`, `not_in` (a list), `gt`, `gte`, `lt`, `lte`, `version_lt`, `version_lte`, `version_gt`,
+  `version_gte` (`1.2.3`, `2:1.2-3ubuntu1`), `exists`, `empty`, `true`, `false`. Texts are compared
+  without case; an unknown value is neither `true` nor `false`.
+- `message`: the finding, with `{Field}` placeholders of the item.
+- `threshold`: one finding for the device when at least *n* items match (`{count}` and `{items}` in
+  the message), e.g. more than 3 administrators.
+- Each matching item is its own finding, told apart by the key fields of its source (software:
+  name and source; processes: name, path and command line; ports: protocol, address and port; ...).
 
 ### Dashboard
 

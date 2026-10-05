@@ -1,0 +1,506 @@
+[
+    {
+        "key": "software.remote-access",
+        "name": "Remote access tool",
+        "description": "Remote access tools are a common way in: support scams, attackers who keep access after a break-in.",
+        "severity": "medium",
+        "platform": "any",
+        "source": "software",
+        "when": {"field": "Name", "op": "matches", "value": "\\b(anydesk|teamviewer|rustdesk|ultraviewer|supremo|splashtop|ammyy|radmin|dwservice|dwagent|screenconnect|connectwise control|logmein|remotepc|aeroadmin|getscreen|zoho assist|atera)\\b"},
+        "message": "{Name} {Version} is installed",
+        "remediation": "Uninstall it unless it is used on purpose; otherwise keep it updated and protected by a password or 2FA."
+    },
+    {
+        "key": "software.offensive-tools",
+        "name": "Offensive security tool",
+        "description": "Credential dumpers and attack frameworks have no place on a normal computer.",
+        "severity": "critical",
+        "platform": "any",
+        "source": "software",
+        "when": {"field": "Name", "op": "matches", "value": "mimikatz|lazagne|cobalt ?strike|metasploit|\\bsliver\\b|bloodhound|rubeus|powersploit|powershell empire"},
+        "message": "{Name} {Version} is installed",
+        "remediation": "Find out who installed it and why; treat the device as compromised until you know."
+    },
+    {
+        "key": "software.hacking-tools",
+        "name": "Network or password cracking tool",
+        "description": "Legitimate for administrators and security work, suspicious elsewhere.",
+        "severity": "low",
+        "platform": "any",
+        "source": "software",
+        "when": {"field": "Name", "op": "matches", "value": "^(nmap|zenmap|wireshark|hashcat|john|john the ripper|hydra|thc-hydra|aircrack-ng|sqlmap|burp ?suite|cain|ettercap|netcat|ncat|masscan)\\b"},
+        "message": "{Name} {Version} is installed"
+    },
+    {
+        "key": "software.p2p",
+        "name": "Peer-to-peer or anonymization software",
+        "description": "File sharing and Tor bypass the network's controls and bring in unknown files.",
+        "severity": "low",
+        "platform": "any",
+        "source": "software",
+        "when": {"field": "Name", "op": "matches", "value": "\\b(tor browser|torbrowser|utorrent|bittorrent|qbittorrent|vuze|frostwire|limewire|emule|deluge|transmission)\\b"},
+        "message": "{Name} {Version} is installed"
+    },
+    {
+        "key": "software.miners",
+        "name": "Cryptocurrency miner",
+        "description": "Miners burn the device's power and are often installed by malware.",
+        "severity": "high",
+        "platform": "any",
+        "source": "software",
+        "when": {"field": "Name", "op": "matches", "value": "xmrig|nicehash|minergate|cgminer|bfgminer|ethminer|phoenixminer|nbminer|lolminer|t-rex miner|claymore"},
+        "message": "{Name} {Version} is installed"
+    },
+    {
+        "key": "software.end-of-life",
+        "name": "End-of-life software",
+        "description": "No more security updates: every vulnerability found since stays open.",
+        "severity": "high",
+        "platform": "windows",
+        "source": "software",
+        "when": {"any": [
+            {"field": "Name", "op": "matches", "value": "^adobe flash player"},
+            {"field": "Name", "op": "matches", "value": "^microsoft silverlight"},
+            {"field": "Name", "op": "matches", "value": "^quicktime"},
+            {"field": "Name", "op": "matches", "value": "^java( se)? (runtime environment )?[1-7]\\b|^java\\(tm\\) [67]\\b"},
+            {"field": "Name", "op": "matches", "value": "^python 2\\."}
+        ]},
+        "message": "{Name} {Version} gets no security updates anymore",
+        "remediation": "Uninstall it or replace it with a supported version."
+    },
+    {
+        "key": "software.winrar-cve-2023-38831",
+        "name": "WinRAR with a known exploited vulnerability",
+        "description": "CVE-2023-38831: opening a crafted archive runs code. Fixed in WinRAR 6.23.",
+        "severity": "high",
+        "platform": "windows",
+        "source": "software",
+        "when": {"all": [
+            {"field": "Name", "op": "starts_with", "value": "winrar"},
+            {"field": "Version", "op": "version_lt", "value": "6.23"}
+        ]},
+        "message": "{Name} {Version} is affected by CVE-2023-38831",
+        "remediation": "Update WinRAR to 6.23 or newer."
+    },
+    {
+        "key": "software.7zip-cve-2025-0411",
+        "name": "7-Zip with a known exploited vulnerability",
+        "description": "CVE-2025-0411: files extracted from a crafted archive lose the Mark-of-the-Web. Fixed in 7-Zip 24.09.",
+        "severity": "medium",
+        "platform": "windows",
+        "source": "software",
+        "when": {"all": [
+            {"field": "Name", "op": "starts_with", "value": "7-zip"},
+            {"field": "Version", "op": "version_lt", "value": "24.09"}
+        ]},
+        "message": "{Name} is affected by CVE-2025-0411",
+        "remediation": "Update 7-Zip to 24.09 or newer."
+    },
+    {
+        "key": "software.putty-cve-2024-31497",
+        "name": "PuTTY leaking NIST P-521 keys",
+        "description": "CVE-2024-31497: PuTTY 0.68 to 0.80 lets the server recover a NIST P-521 private key from signatures.",
+        "severity": "medium",
+        "platform": "windows",
+        "source": "software",
+        "when": {"all": [
+            {"field": "Name", "op": "starts_with", "value": "putty"},
+            {"field": "Version", "op": "version_gte", "value": "0.68"},
+            {"field": "Version", "op": "version_lt", "value": "0.81"}
+        ]},
+        "message": "{Name} {Version} is affected by CVE-2024-31497",
+        "remediation": "Update PuTTY to 0.81 or newer and replace P-521 keys used with it."
+    },
+    {
+        "key": "process.encoded-powershell",
+        "name": "PowerShell runs an encoded command",
+        "description": "Base64-encoded commands hide what runs; malware and droppers use them a lot.",
+        "severity": "high",
+        "platform": "any",
+        "source": "processes",
+        "when": {"all": [
+            {"field": "Name", "op": "matches", "value": "^(powershell|pwsh)(\\.exe)?$"},
+            {"field": "CommandLine", "op": "matches", "value": "\\s[-/]e(c|n|nc|nco|ncod|ncode|ncoded|ncodedcommand)?\\s+[A-Za-z0-9+/=]{20,}"}
+        ]},
+        "message": "{Name} runs an encoded command as {User}: {CommandLine}"
+    },
+    {
+        "key": "process.download-cradle",
+        "name": "Script downloads and runs code",
+        "description": "A command line that downloads code and runs it right away (download cradle).",
+        "severity": "high",
+        "platform": "any",
+        "source": "processes",
+        "when": {"any": [
+            {"field": "CommandLine", "op": "matches", "value": "(iex|invoke-expression).{0,80}(downloadstring|invoke-webrequest|iwr|irm|invoke-restmethod|net\\.webclient)"},
+            {"field": "CommandLine", "op": "matches", "value": "(curl|wget)\\s[^|]*\\|\\s*(sudo\\s+)?(ba|z|da)?sh\\b"},
+            {"field": "CommandLine", "op": "matches", "value": "mshta(\\.exe)?\\s+(https?|javascript|vbscript):"},
+            {"field": "CommandLine", "op": "matches", "value": "regsvr32(\\.exe)?\\s.*/i:https?://"}
+        ]},
+        "message": "{Name} ({User}): {CommandLine}"
+    },
+    {
+        "key": "process.reverse-shell",
+        "name": "Reverse shell",
+        "description": "A shell connected to a remote host: someone controls the device from outside.",
+        "severity": "critical",
+        "platform": "any",
+        "source": "processes",
+        "when": {"any": [
+            {"field": "CommandLine", "op": "matches", "value": "\\b(nc|ncat|netcat)(\\.exe)?\\s.*\\s-(e|c)\\s"},
+            {"field": "CommandLine", "op": "matches", "value": "/dev/(tcp|udp)/[0-9a-z.-]+/[0-9]+"},
+            {"field": "CommandLine", "op": "matches", "value": "socket\\.socket.*connect.*(subprocess|pty\\.spawn|os\\.dup2)"}
+        ]},
+        "message": "{Name} ({User}): {CommandLine}",
+        "remediation": "Disconnect the device from the network and investigate."
+    },
+    {
+        "key": "process.credential-dumping",
+        "name": "Credential dumping",
+        "description": "Tools and commands that read passwords and hashes from memory or the registry.",
+        "severity": "critical",
+        "platform": "windows",
+        "source": "processes",
+        "when": {"any": [
+            {"field": "Name", "op": "matches", "value": "^(mimikatz|lazagne|procdump64?|rubeus)(\\.exe)?$"},
+            {"field": "CommandLine", "op": "matches", "value": "sekurlsa|lsadump|comsvcs(\\.dll)?[, ]+#?24|minidump.*lsass|reg(\\.exe)?\\s+save\\s+hklm\\\\(sam|security)"}
+        ]},
+        "message": "{Name} ({User}): {CommandLine}",
+        "remediation": "Treat the device and the accounts used on it as compromised: isolate it and change the passwords."
+    },
+    {
+        "key": "process.miner",
+        "name": "Cryptocurrency miner running",
+        "severity": "high",
+        "platform": "any",
+        "source": "processes",
+        "when": {"any": [
+            {"field": "Name", "op": "matches", "value": "^(xmrig|xmr-stak|cgminer|bfgminer|ethminer|phoenixminer|nbminer|lolminer|t-rex|nanominer)(\\.exe)?$"},
+            {"field": "CommandLine", "op": "matches", "value": "stratum\\+(tcp|ssl)://"}
+        ]},
+        "message": "{Name} ({User}): {CommandLine}"
+    },
+    {
+        "key": "process.temp-folder-windows",
+        "name": "Program runs from a temporary folder",
+        "description": "Malware often runs from Temp, Public or the recycle bin; installers do too, briefly.",
+        "severity": "medium",
+        "platform": "windows",
+        "source": "processes",
+        "when": {"all": [
+            {"field": "Path", "op": "matches", "value": "\\\\(windows\\\\temp|users\\\\public|\\$recycle\\.bin|appdata\\\\local\\\\temp)\\\\"},
+            {"field": "Path", "op": "not_matches", "value": "\\\\(is-[a-z0-9]{5}\\.tmp|ns[a-z0-9]{4,5}\\.tmp)\\\\"}
+        ]},
+        "message": "{Name} runs from {Path} as {User}"
+    },
+    {
+        "key": "process.temp-folder-linux",
+        "name": "Program runs from a temporary folder",
+        "description": "Programs started from /tmp, /var/tmp or /dev/shm are a classic sign of a compromised server.",
+        "severity": "high",
+        "platform": "linux",
+        "source": "processes",
+        "when": {"field": "Path", "op": "matches", "value": "^/(tmp|var/tmp|dev/shm)/"},
+        "message": "{Name} runs from {Path} as {User}"
+    },
+    {
+        "key": "listening.cleartext",
+        "name": "Clear-text remote service",
+        "description": "Telnet, FTP, rsh and rlogin send passwords unencrypted.",
+        "severity": "high",
+        "platform": "any",
+        "source": "listening",
+        "when": {"all": [
+            {"field": "Protocol", "op": "eq", "value": "tcp"},
+            {"field": "Port", "op": "in", "value": [21, 23, 512, 513, 514]},
+            {"field": "Address", "op": "not_matches", "value": "^(127\\.|::1$|\\[::1\\])"}
+        ]},
+        "message": "{Process} listens on {Protocol} {Address}:{Port}",
+        "remediation": "Turn the service off and use SSH / SFTP instead."
+    },
+    {
+        "key": "listening.database",
+        "name": "Database open to the network",
+        "description": "Databases and caches listening on every address can be reached by anyone in the network (Redis, MongoDB, Elasticsearch and memcached often without a password).",
+        "severity": "medium",
+        "platform": "any",
+        "source": "listening",
+        "when": {"all": [
+            {"field": "Protocol", "op": "eq", "value": "tcp"},
+            {"field": "Port", "op": "in", "value": [1433, 3306, 5432, 5984, 6379, 9200, 11211, 27017]},
+            {"field": "Address", "op": "in", "value": ["0.0.0.0", "::", "*", "[::]"]}
+        ]},
+        "message": "{Process} listens on {Address}:{Port}",
+        "remediation": "Bind it to 127.0.0.1 or limit the port in the firewall."
+    },
+    {
+        "key": "listening.vnc",
+        "name": "VNC open to the network",
+        "severity": "medium",
+        "platform": "any",
+        "source": "listening",
+        "when": {"all": [
+            {"field": "Protocol", "op": "eq", "value": "tcp"},
+            {"field": "Port", "op": "gte", "value": 5900},
+            {"field": "Port", "op": "lte", "value": 5910},
+            {"field": "Address", "op": "not_matches", "value": "^(127\\.|::1$|\\[::1\\])"}
+        ]},
+        "message": "{Process} listens on {Address}:{Port}"
+    },
+    {
+        "key": "startup.suspicious-windows",
+        "name": "Suspicious startup item",
+        "description": "Programs started with Windows from temporary folders, or through script hosts used by malware.",
+        "severity": "medium",
+        "platform": "windows",
+        "source": "startup",
+        "when": {"any": [
+            {"field": "Command", "op": "matches", "value": "\\\\(appdata\\\\local\\\\temp|windows\\\\temp|users\\\\public|\\$recycle\\.bin)\\\\"},
+            {"field": "Command", "op": "matches", "value": "\\b(mshta|wscript|cscript)(\\.exe)?\\b|regsvr32.*scrobj|rundll32.*(javascript|http)"},
+            {"field": "Command", "op": "matches", "value": "(powershell|pwsh).*\\s[-/](e|enc|encodedcommand|w(indowstyle)?\\s+h(idden)?)\\b"}
+        ]},
+        "message": "{Name} ({Location}): {Command}"
+    },
+    {
+        "key": "startup.download-linux",
+        "name": "Scheduled download and run",
+        "description": "A cron job or unit that downloads code and pipes it to a shell.",
+        "severity": "high",
+        "platform": "linux",
+        "source": "startup",
+        "when": {"any": [
+            {"field": "Command", "op": "matches", "value": "(curl|wget)\\s[^|]*\\|\\s*(ba|z|da)?sh\\b"},
+            {"field": "Command", "op": "matches", "value": "/dev/(tcp|udp)/|base64\\s+(-d|--decode).*\\|\\s*(ba)?sh"}
+        ]},
+        "message": "{Name} ({Location}): {Command}"
+    },
+    {
+        "key": "admins.many",
+        "name": "Many administrators",
+        "description": "Every administrator account is one more way to take over the device.",
+        "severity": "low",
+        "platform": "any",
+        "source": "admins",
+        "threshold": 4,
+        "when": {"field": "Enabled", "op": "ne", "value": false},
+        "message": "{count} administrator accounts: {items}"
+    },
+    {
+        "key": "posture.firewall-windows",
+        "name": "Firewall is off",
+        "severity": "high",
+        "platform": "windows",
+        "source": "posture",
+        "when": {"field": "FirewallEnabled", "op": "false"},
+        "message": "Windows Defender Firewall is off for at least one profile",
+        "remediation": "Turn the firewall on for all profiles (Domain, Private, Public)."
+    },
+    {
+        "key": "posture.firewall-linux",
+        "name": "No firewall",
+        "description": "No active ufw, firewalld or nftables / iptables rules.",
+        "severity": "low",
+        "platform": "linux",
+        "source": "posture",
+        "when": {"field": "FirewallEnabled", "op": "false"},
+        "message": "No firewall is active"
+    },
+    {
+        "key": "posture.antivirus",
+        "name": "Antivirus is off",
+        "severity": "critical",
+        "platform": "windows",
+        "source": "posture",
+        "when": {"any": [
+            {"field": "AntivirusEnabled", "op": "false"},
+            {"field": "RealTimeProtection", "op": "false"}
+        ]},
+        "message": "{AntivirusName}: protection is off",
+        "remediation": "Turn real-time protection on; find out what turned it off."
+    },
+    {
+        "key": "posture.antivirus-outdated",
+        "name": "Antivirus signatures are outdated",
+        "severity": "medium",
+        "platform": "windows",
+        "source": "posture",
+        "when": {"field": "AntivirusUpToDate", "op": "false"},
+        "message": "{AntivirusName} has outdated signatures"
+    },
+    {
+        "key": "posture.disk-encryption",
+        "name": "System disk is not encrypted",
+        "description": "A lost or stolen device gives away all its data.",
+        "severity": "medium",
+        "platform": "any",
+        "source": "posture",
+        "when": {"field": "DiskEncrypted", "op": "false"},
+        "message": "The system disk is not encrypted (BitLocker / LUKS)",
+        "remediation": "Turn on BitLocker (Windows) or use LUKS for new Linux installations."
+    },
+    {
+        "key": "posture.smb1",
+        "name": "SMBv1 is enabled",
+        "description": "The protocol of WannaCry and NotPetya.",
+        "severity": "high",
+        "platform": "windows",
+        "source": "posture",
+        "when": {"field": "Smb1Enabled", "op": "true"},
+        "message": "SMBv1 is enabled",
+        "remediation": "Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol"
+    },
+    {
+        "key": "posture.uac",
+        "name": "User Account Control is off",
+        "severity": "high",
+        "platform": "windows",
+        "source": "posture",
+        "when": {"field": "UacEnabled", "op": "false"},
+        "message": "UAC is disabled (EnableLUA = 0)"
+    },
+    {
+        "key": "posture.guest",
+        "name": "Guest account is enabled",
+        "severity": "medium",
+        "platform": "windows",
+        "source": "posture",
+        "when": {"field": "GuestEnabled", "op": "true"},
+        "message": "The built-in Guest account is enabled"
+    },
+    {
+        "key": "posture.autologon",
+        "name": "Automatic sign-in with a stored password",
+        "description": "The password is kept in the registry and anyone who turns the device on is signed in.",
+        "severity": "medium",
+        "platform": "windows",
+        "source": "posture",
+        "when": {"field": "AutoLogon", "op": "true"},
+        "message": "Windows signs in automatically (AutoAdminLogon)"
+    },
+    {
+        "key": "posture.rdp-nla",
+        "name": "Remote Desktop without Network Level Authentication",
+        "description": "Without NLA anyone who reaches the port gets the sign-in screen (BlueKeep and brute force).",
+        "severity": "high",
+        "platform": "windows",
+        "source": "posture",
+        "when": {"all": [
+            {"field": "RdpEnabled", "op": "true"},
+            {"field": "RdpNla", "op": "false"}
+        ]},
+        "message": "Remote Desktop is enabled without NLA"
+    },
+    {
+        "key": "posture.secure-boot",
+        "name": "Secure Boot is off",
+        "severity": "low",
+        "platform": "windows",
+        "source": "posture",
+        "when": {"field": "SecureBoot", "op": "false"},
+        "message": "Secure Boot is off"
+    },
+    {
+        "key": "posture.ssh-root-login",
+        "name": "SSH allows root to sign in with a password",
+        "severity": "high",
+        "platform": "linux",
+        "source": "posture",
+        "when": {"field": "SshRootLogin", "op": "eq", "value": "yes"},
+        "message": "sshd: PermitRootLogin yes",
+        "remediation": "Set PermitRootLogin prohibit-password (or no) in /etc/ssh/sshd_config."
+    },
+    {
+        "key": "posture.ssh-password",
+        "name": "SSH accepts passwords",
+        "description": "Password sign-ins can be brute-forced; keys cannot.",
+        "severity": "low",
+        "platform": "linux",
+        "source": "posture",
+        "when": {"field": "SshPasswordAuthentication", "op": "true"},
+        "message": "sshd: PasswordAuthentication yes"
+    },
+    {
+        "key": "posture.stale-updates",
+        "name": "No updates installed for a long time",
+        "severity": "medium",
+        "platform": "any",
+        "source": "posture",
+        "when": {"field": "DaysSinceUpdate", "op": "gt", "value": 60},
+        "message": "The last update was installed {DaysSinceUpdate} days ago"
+    },
+    {
+        "key": "events.brute-force",
+        "name": "Brute force sign-in attempts",
+        "description": "Many failed sign-ins of one account or from one address since the previous collection.",
+        "severity": "high",
+        "platform": "any",
+        "source": "events",
+        "when": {"all": [
+            {"field": "Type", "op": "eq", "value": "failed_logon"},
+            {"field": "Count", "op": "gte", "value": 10}
+        ]},
+        "message": "{Count} failed sign-ins of {User} from {Source}",
+        "remediation": "Block the address, check that the account has a strong password; do not expose RDP / SSH to the internet."
+    },
+    {
+        "key": "events.log-cleared",
+        "name": "Audit log was cleared",
+        "description": "Attackers clear logs to hide what they did.",
+        "severity": "high",
+        "platform": "any",
+        "source": "events",
+        "when": {"field": "Type", "op": "eq", "value": "log_cleared"},
+        "message": "{User} cleared the log: {Message}"
+    },
+    {
+        "key": "events.admin-added",
+        "name": "Account added to administrators",
+        "severity": "medium",
+        "platform": "any",
+        "source": "events",
+        "when": {"field": "Type", "op": "eq", "value": "admin_added"},
+        "message": "{Message}"
+    },
+    {
+        "key": "events.account-created",
+        "name": "Account created",
+        "severity": "low",
+        "platform": "any",
+        "source": "events",
+        "when": {"field": "Type", "op": "eq", "value": "account_created"},
+        "message": "{Message}"
+    },
+    {
+        "key": "events.service-installed",
+        "name": "Service installed",
+        "description": "Drivers and updates install services too: noisy, off by default.",
+        "severity": "info",
+        "platform": "windows",
+        "source": "events",
+        "enabled": false,
+        "when": {"field": "Type", "op": "eq", "value": "service_installed"},
+        "message": "{Message}"
+    },
+    {
+        "key": "events.malware",
+        "name": "Malware detected",
+        "severity": "critical",
+        "platform": "windows",
+        "source": "events",
+        "when": {"field": "Type", "op": "eq", "value": "malware_detected"},
+        "message": "{Message}",
+        "remediation": "Check what Microsoft Defender did with it (quarantine) and run a full scan."
+    },
+    {
+        "key": "events.sudo-failed",
+        "name": "Failed sudo",
+        "severity": "medium",
+        "platform": "linux",
+        "source": "events",
+        "when": {"all": [
+            {"field": "Type", "op": "eq", "value": "sudo_failed"},
+            {"field": "Count", "op": "gte", "value": 3}
+        ]},
+        "message": "{Count} failed sudo attempts of {User}"
+    }
+]
