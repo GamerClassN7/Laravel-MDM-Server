@@ -38,6 +38,12 @@
     network_discovery, the server cannot change it): off; neighbours (default) reports its ARP
     table; scan also pings every address of a network of its interfaces when asked in the portal.
 
+.PARAMETER SecurityLogs
+    With -Install: whether the agent sends the records of its security logs (sign-ins, accounts,
+    sudo, Defender, ...) to the portal for the security checks (stored in config.json as
+    security_logs, the server cannot change it): off (default) or on. The security inventory
+    (software, ports, settings) is sent either way.
+
 .EXAMPLE
     # Enrol the device and register the agent as a scheduled task running as SYSTEM
     .\app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -Install
@@ -71,7 +77,10 @@ param (
     $EnableScripts,
     [ValidateSet('off', 'neighbours', 'scan')]
     [string]
-    $NetworkDiscovery
+    $NetworkDiscovery,
+    [ValidateSet('off', 'on')]
+    [string]
+    $SecurityLogs
 )
 
 $ErrorActionPreference = 'Stop'
@@ -1428,7 +1437,9 @@ function Get-SecurityInventory {
         [bool]$OnLinux,
         [datetime]$Since,
         [int]$AgentPid,
-        [bool]$InContainer
+        [bool]$InContainer,
+        # security_logs is on in config.json: without it the logs are not even read.
+        [bool]$SendLogs = $false
     )
 
     $inventory = @{}
@@ -1438,10 +1449,12 @@ function Get-SecurityInventory {
     try { $inventory['startup'] = @(Get-SecurityStartup -OnLinux $OnLinux | Select-Object -First 500) } catch { }
     try { $inventory['admins'] = @(Get-SecurityAdmins -OnLinux $OnLinux | Select-Object -First 200) } catch { }
     try { $inventory['posture'] = Get-SecurityPosture -OnLinux $OnLinux -InContainer $InContainer } catch { }
-    $logs = @()
-    try { $logs = @(Get-SecurityLogs -OnLinux $OnLinux -Since $Since) } catch { }
+    $records = @()
+    if ($SendLogs) {
+        try { $records = @(Get-SecurityLogs -OnLinux $OnLinux -Since $Since) } catch { }
+    }
 
-    return @{ inventory = $inventory; logs = $logs }
+    return @{ inventory = $inventory; logs = $records }
 }
 
 #endregion
@@ -3252,13 +3265,16 @@ function Start-SecurityCollection {
         [datetime]
         $Since,
         [bool]
-        $InContainer
+        $InContainer,
+        # Whether the records of the security logs are read and sent (security_logs in config.json).
+        [bool]
+        $SendLogs = $false
     )
 
-    return Start-AgentJob -Name 'security' -Functions 'ConvertTo-SecurityText', 'Get-SecuritySoftware', 'Get-SecurityProcesses', 'Get-SecurityListening', 'Get-SecurityStartup', 'Get-SecurityAdmins', 'Get-SecurityPosture', 'Get-SecurityLogs', 'Get-SecurityInventory' -ArgumentList $OnLinux, $Since, $PID, $InContainer -ScriptBlock {
-        param ($OnLinux, $Since, $AgentPid, $InContainer)
+    return Start-AgentJob -Name 'security' -Functions 'ConvertTo-SecurityText', 'Get-SecuritySoftware', 'Get-SecurityProcesses', 'Get-SecurityListening', 'Get-SecurityStartup', 'Get-SecurityAdmins', 'Get-SecurityPosture', 'Get-SecurityLogs', 'Get-SecurityInventory' -ArgumentList $OnLinux, $Since, $PID, $InContainer, $SendLogs -ScriptBlock {
+        param ($OnLinux, $Since, $AgentPid, $InContainer, $SendLogs)
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
-        return Get-SecurityInventory -OnLinux $OnLinux -Since $Since -AgentPid $AgentPid -InContainer $InContainer
+        return Get-SecurityInventory -OnLinux $OnLinux -Since $Since -AgentPid $AgentPid -InContainer $InContainer -SendLogs $SendLogs
     }
 }
 
@@ -3348,6 +3364,12 @@ function Get-Report {
     $data.machine | Add-Member -NotePropertyName ServerKeyFingerprint -NotePropertyValue $config['server_key'].fingerprint -Force
     $discovery = Get-NetworkDiscovery -Config $config
     $data.machine | Add-Member -NotePropertyName NetworkDiscovery -NotePropertyValue $discovery -Force
+    # What this agent is set to do (the portal shows it on the Agent tab, read only).
+    $data.machine | Add-Member -NotePropertyName Features -NotePropertyValue ([ordered]@{
+            scripts           = [bool]$config['scripts_enabled']
+            network_discovery = $discovery
+            security_logs     = (Get-SecurityLogsLevel -Config $config)
+        }) -Force
     if ($discovery -ne 'off') {
         try { $data['neighbours'] = @(Get-Neighbours) } catch { Write-AgentLog "Neighbours failed: $($_.Exception.Message)" -ErrorRecord $_ }
     }
@@ -3752,6 +3774,14 @@ function Get-NetworkDiscovery {
     if ($null -eq $level) { return 'neighbours' }
     if (@('off', 'neighbours', 'scan') -contains "$level") { return "$level" }
     return 'off'
+}
+
+function Get-SecurityLogsLevel {
+    # security_logs in config.json: on sends the records of the security logs, anything else is off.
+    # Only changed on the device (-SecurityLogs with -Install, or editing config.json).
+    param ($Config = (Get-AgentConfig))
+
+    return $(if ("$($Config['security_logs'])" -eq 'on') { 'on' } else { 'off' })
 }
 
 function Test-UnicastMac {
@@ -5409,7 +5439,7 @@ function Start-Agent {
                 $state = Get-SecurityState
                 $since = if ($state -and $state.Since -gt (Get-Date).AddDays(-1)) { $state.Since } else { (Get-Date).AddDays(-1) }
                 $securityStarted = Get-Date
-                $securityJob = Start-SecurityCollection -Since $since -InContainer ($virtualization -and $virtualization.Type -eq 'container')
+                $securityJob = Start-SecurityCollection -Since $since -InContainer ($virtualization -and $virtualization.Type -eq 'container') -SendLogs ((Get-SecurityLogsLevel) -eq 'on')
                 $nextSecurity = (Get-Date).AddSeconds($SecurityInterval)
             }
 
@@ -5530,10 +5560,15 @@ if ($Install) {
         $config['network_discovery'] = $NetworkDiscovery
         Save-AgentConfig -Config $config
     }
+    if ($SecurityLogs) {
+        $config['security_logs'] = $SecurityLogs
+        Save-AgentConfig -Config $config
+    }
     Save-AgentSettings -Config $config
     Write-Host "Server key: $($config['server_key'].fingerprint)" -ForegroundColor Yellow
     Write-Host "Remediation scripts: $(if ($config['scripts_enabled']) { 'enabled' } else { 'disabled' }) (config.json)" -ForegroundColor Yellow
     Write-Host "Network discovery: $(Get-NetworkDiscovery -Config $config) (config.json)" -ForegroundColor Yellow
+    Write-Host "Security logs: $(Get-SecurityLogsLevel -Config $config) (config.json)" -ForegroundColor Yellow
 
     if ($OnLinux) {
         # The service runs as root like this installer: enrol right away.

@@ -29,12 +29,12 @@ class SecurityScannerTest extends TestCase
 {
     use RefreshDatabase, SignsDeviceRequests;
 
-    private function device(string $token = 'a', string $platform = 'windows'): Device
+    private function device(string $token = 'a', string $platform = 'windows', string $logs = 'on'): Device
     {
         $device = new Device;
         $device->token = hash('sha256', $token);
         $device->name = "pc-$token";
-        $device->data = json_encode(['machine' => ['Hostname' => "pc-$token", 'AgentVersion' => '1.17.0', 'Platform' => $platform, 'Drives' => []]]);
+        $device->data = json_encode(['machine' => ['Hostname' => "pc-$token", 'AgentVersion' => '1.17.0', 'Platform' => $platform, 'Drives' => [], 'ScriptsEnabled' => true, 'NetworkDiscovery' => 'neighbours', 'Features' => ['scripts' => true, 'network_discovery' => 'neighbours', 'security_logs' => $logs]]]);
         $device->save();
         $this->registerDeviceKey($device);
         Device::recordHeartbeat($device->id);
@@ -248,6 +248,70 @@ class SecurityScannerTest extends TestCase
         $gone->delete();
         (new \App\Jobs\ProcessSecurityCollection($gone->id, $key))->handle();
         $this->assertNull(\App\Support\SecurityInbox::read($key));
+    }
+
+    public function test_logs_are_only_taken_from_agents_that_send_them(): void
+    {
+        $off = $this->device('off', 'windows', 'off');
+        $this->send($off, $this->inventory(), 'off');
+        // The inventory is scanned, the logs a device did not agree to send are dropped.
+        $this->assertContains('software.remote-access', $this->openKeys($off));
+        $this->assertNotContains('events.brute-force', $this->openKeys($off));
+        $this->assertSame(0, SecurityEvent::query()->where('device_id', $off->id)->count());
+
+        // On, but a system admin turned the logs off for the whole portal.
+        $on = $this->device('on');
+        SecurityScanner::setLogsAllowed(false);
+        $this->send($on, $this->inventory(), 'on');
+        $this->assertNotContains('events.brute-force', $this->openKeys($on));
+        SecurityScanner::setLogsAllowed(true);
+        $this->send($on, $this->inventory(), 'on');
+        $this->assertContains('events.brute-force', $this->openKeys($on));
+    }
+
+    public function test_installations_start_with_a_script_that_turns_the_logs_on(): void
+    {
+        $script = \App\Models\Script::query()->where('name', 'Allow security logs')->firstOrFail();
+
+        // Like Allow network scans: a run only detects, an admin starts the remediation per device.
+        $this->assertTrue($script->manual_remediation);
+        $this->assertSame('all', $script->platform);
+        $this->assertSame($script->fingerprint, \App\Models\Script::fingerprintOf('all', 60, $script->detection, $script->remediation));
+        $this->assertSame([], \App\Support\PowerShellCheck::errors($script->detection));
+        $this->assertSame([], \App\Support\PowerShellCheck::errors($script->remediation));
+        $this->assertTrue(\App\Support\PowerShellCheck::exits($script->detection, 0));
+        $this->assertTrue(\App\Support\PowerShellCheck::exits($script->detection, 1));
+        $this->assertStringContainsString("security_logs -NotePropertyValue 'on'", $script->remediation);
+    }
+
+    public function test_the_agent_tab_lists_the_features_read_only(): void
+    {
+        $this->withoutVite();
+        $device = $this->device('a', 'linux', 'off');
+        $this->send($device, $this->inventory(), 'a');
+        $features = collect($device->fresh()->features)->keyBy('key');
+
+        $this->assertTrue($features['scripts']['on']);
+        $this->assertSame('ARP table', $features['network_discovery']['detail']);
+        $this->assertTrue($features['security_inventory']['on']);
+        $this->assertFalse($features['security_logs']['on']);
+        $this->assertSame('security_logs', $features['security_logs']['setting']);
+        $this->assertTrue($features['ping']['on']);
+
+        // An agent that predates a feature says which version adds it.
+        $old = $this->device('old');
+        $data = json_decode($old->getRawOriginal('data'), true);
+        $data['machine']['AgentVersion'] = '1.10.0';
+        unset($data['machine']['Features'], $data['machine']['NetworkDiscovery']);
+        $old->forceFill(['data' => json_encode($data)])->saveQuietly();
+        $oldFeatures = collect($old->fresh()->features)->keyBy('key');
+        $this->assertFalse($oldFeatures['security_logs']['on']);
+        $this->assertSame('1.17.0', $oldFeatures['security_logs']['needs']);
+        $this->assertSame('needs agent 1.16.0', $oldFeatures['network_discovery']['detail']);
+
+        $this->actingAs(User::factory()->create());
+        $page = Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id, 'tab' => 'agent']);
+        $page->assertSee('Features')->assertSee('security_logs')->assertSee('Read only')->assertDontSee('Turn on');
     }
 
     public function test_an_inventory_opens_findings_and_the_next_one_resolves_them(): void

@@ -51,8 +51,10 @@ class DeviceVirtualizationTest extends TestCase
         ]);
 
         $this->assertFalse($device->showDiskHealth);
+        // No tab for it; the Agent tab only says it is off there.
         Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
-            ->assertDontSee('Disk health');
+            ->assertDontSeeHtml('id="health-tab"')
+            ->assertSee('not on virtual machines');
     }
 
     public function test_disk_health_is_hidden_on_vms_even_with_smart_values(): void

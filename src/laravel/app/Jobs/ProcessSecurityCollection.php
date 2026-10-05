@@ -61,9 +61,12 @@ class ProcessSecurityCollection implements ShouldQueue
         if (is_array($payload)) {
             SecurityRule::syncBuiltIn();
             $parsers = SecurityRule::query()->enabled()->parsers()->get()->pluck('definition');
-            $events = SecurityParsers::run($payload['logs'] ?? [], $parsers);
+            // Logs only from an agent that is set to send them (security_logs in its config.json), and
+            // while the portal takes them: whatever else arrives is dropped.
+            $logs = $device->securityLogs && SecurityScanner::logsAllowed();
+            $events = $logs ? SecurityParsers::run($payload['logs'] ?? [], $parsers) : [];
             // Events another agent parsed itself are taken as they are.
-            if (is_array($payload['events'] ?? null)) {
+            if ($logs && is_array($payload['events'] ?? null)) {
                 $events = array_merge($events, $payload['events']);
             }
             SecurityScanner::ingest($device, ['events' => $events] + ($payload['inventory'] ?? []));

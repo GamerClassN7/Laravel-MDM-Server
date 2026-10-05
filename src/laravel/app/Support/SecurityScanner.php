@@ -10,6 +10,8 @@ use App\Models\SecurityRule;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use SteelAnts\LaravelBoilerplate\Models\Setting;
+use SteelAnts\LaravelBoilerplate\Types\SettingDataType;
 use Throwable;
 
 /**
@@ -21,6 +23,20 @@ class SecurityScanner
 {
     /** At most this many findings per rule and device (a rule that matches everything). */
     public const MAX_FINDINGS_PER_RULE = 50;
+
+    /** The portal setting that turns the logs of all agents off (system admins, Security page). */
+    public const LOGS_SETTING = 'mdm.security_logs';
+
+    /** Whether the portal takes the logs the agents send (on unless a system admin turned it off). */
+    public static function logsAllowed(): bool
+    {
+        return (string) Setting::query()->whereNull('settable_id')->where('index', self::LOGS_SETTING)->value('value') !== '0';
+    }
+
+    public static function setLogsAllowed(bool $allowed): void
+    {
+        Setting::query()->whereNull('settable_id')->updateOrCreate(['index' => self::LOGS_SETTING], ['value' => $allowed ? '1' : '0', 'type' => SettingDataType::BOOL]);
+    }
 
     /**
      * A collection (SecurityInbox: the logs already parsed into events): the inventory is kept,

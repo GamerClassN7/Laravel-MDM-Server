@@ -668,26 +668,6 @@
                                     <x-badge color="secondary" size="sm" variant="subtle">{{ __('Needs :version', ['version' => \App\Models\Device::TRACKING_VERSION]) }}</x-badge>
                                 @endif
                             </div>
-                            <div class="{{ $row }}">
-                                <span class="small text-body-secondary">{{ __('Remediation scripts') }}</span>
-                                <x-badge :color="$selectedDevice->scriptsEnabled ? 'success' : 'secondary'" size="sm" variant="subtle">{{ $selectedDevice->scriptsEnabled ? __('Allowed') : __('Disabled on the device') }}</x-badge>
-                            </div>
-                            <div class="{{ $row }}" title="{{ __('network_discovery in config.json on the device: off, neighbours (its ARP table) or scan (also scans of its networks on request)') }}">
-                                <span class="small text-body-secondary">{{ __('Network discovery') }}</span>
-                                @switch ($selectedDevice->networkDiscovery)
-                                    @case('scan')
-                                        <x-badge color="success" size="sm" variant="subtle">{{ __('ARP table and scans') }}</x-badge>
-                                        @break
-                                    @case('neighbours')
-                                        <x-badge color="success" size="sm" variant="subtle">{{ __('ARP table') }}</x-badge>
-                                        @break
-                                    @case('off')
-                                        <x-badge color="secondary" size="sm" variant="subtle">{{ __('Disabled on the device') }}</x-badge>
-                                        @break
-                                    @default
-                                        <x-badge color="secondary" size="sm" variant="subtle">{{ __('Needs :version', ['version' => \App\Models\Device::NETWORK_DISCOVERY_VERSION]) }}</x-badge>
-                                @endswitch
-                            </div>
                         </div>
                     </div>
 
@@ -711,6 +691,32 @@
                                 </span>
                                 <x-badge :color="$selectedDevice->connectedViaApi ? 'success' : 'secondary'" icon="fas fa-exchange-alt" size="sm" variant="subtle">{{ $selectedDevice->connectedViaApi ? __('Reporting') : __('Inactive') }}</x-badge>
                             </div>
+                        </div>
+                    </div>
+
+                    @php $features = $selectedDevice->features; @endphp
+                    <div class="col-12">
+                        <div class="card card-body">
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <span class="icon-tile bg-primary-subtle text-primary-emphasis"><i class="fas fa-sliders-h"></i></span>
+                                <span class="fw-semibold me-auto">{{ __('Features') }}</span>
+                                <span class="small text-body-secondary">{{ __(':on of :count on', ['on' => collect($features)->where('on', true)->count(), 'count' => count($features)]) }}</span>
+                            </div>
+                            @foreach ($features as $feature)
+                                <div class="{{ $row }}" wire:key="feature-{{ $feature['key'] }}">
+                                    <span class="min-w-0">
+                                        <span class="d-block">{{ $feature['label'] }}</span>
+                                        <span class="small text-body-secondary d-block">{{ $feature['description'] }}@if ($feature['setting']) <code class="small ms-1">{{ $feature['setting'] }}</code>@endif</span>
+                                    </span>
+                                    <span class="d-flex align-items-center gap-2 text-nowrap">
+                                        @if ($feature['detail'])
+                                            <span class="small text-body-secondary">{{ $feature['detail'] }}</span>
+                                        @endif
+                                        <x-badge :color="$feature['on'] ? 'success' : 'secondary'" size="sm" variant="subtle">{{ $feature['on'] ? __('On') : __('Off') }}</x-badge>
+                                    </span>
+                                </div>
+                            @endforeach
+                            <div class="small text-body-secondary border-top pt-2">{{ __('Read only. Features with a key are set on the device itself in config.json (or with the install parameters); the portal cannot change them.') }}</div>
                         </div>
                     </div>
 

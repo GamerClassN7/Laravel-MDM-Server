@@ -535,6 +535,53 @@ class Device extends Model
     }
 
     /**
+     * Whether the agent sends the records of its security logs (security_logs in its config.json,
+     * agents 1.17.0+); false for older agents.
+     */
+    public function getSecurityLogsAttribute(): bool
+    {
+        return ($this->data->machine->Features->security_logs ?? null) === 'on';
+    }
+
+    /**
+     * What the agent is set to do, for the Agent tab (read only: the settings are changed on the
+     * device). Each: key, label, description, setting (the config.json key, or null), on, detail
+     * (what the state means, or why it is off) and needs (the agent version that adds it, when
+     * this agent is older).
+     *
+     * @return list<array{key: string, label: string, description: string, setting: ?string, on: bool, detail: ?string, needs: ?string}>
+     */
+    public function getFeaturesAttribute(): array
+    {
+        $version = $this->agent_version ?? '0';
+        $has = fn (string $needed) => version_compare($version, $needed, '>=');
+        $feature = fn (string $key, string $label, string $description, ?string $setting, bool $on, ?string $detail = null, ?string $needs = null) => [
+            'key' => $key, 'label' => $label, 'description' => $description, 'setting' => $setting, 'on' => $on && $needs === null, 'detail' => $needs !== null ? __('needs agent :version', ['version' => $needs]) : $detail, 'needs' => $needs,
+        ];
+        $discovery = $this->networkDiscovery;
+        $disk = $this->diskHealth;
+        $targets = $this->isPingOnly || ! $has(self::PING_VERSION) ? 0 : count(self::pingTargetsFor($this));
+
+        return [
+            $feature('scripts', __('Remediation scripts'), __('Runs the scripts of the Scripts page as root.'), 'scripts_enabled', $this->scriptsEnabled),
+            $feature('network_discovery', __('Network discovery'), __('Reports devices it sees in its networks and scans them on request.'), 'network_discovery', $discovery !== null && $discovery !== 'off',
+                $discovery === 'scan' ? __('ARP table and scans') : ($discovery === 'neighbours' ? __('ARP table') : null), $has(self::NETWORK_DISCOVERY_VERSION) ? null : self::NETWORK_DISCOVERY_VERSION),
+            $feature('security_inventory', __('Security inventory'), __('Software, programs, open ports and settings for the security checks, every hour.'), null, $this->securityInventory()->exists(),
+                ($collected = $this->securityInventory()->value('collected_at')) ? __('last :time', ['time' => \Illuminate\Support\Carbon::parse($collected)->diffForHumans()]) : null, $has(self::SECURITY_VERSION) ? null : self::SECURITY_VERSION),
+            $feature('security_logs', __('Security logs'), __('Sends sign-in and system log records, so the sign-in checks (password guessing, new administrators) work.'), 'security_logs', $this->securityLogs, null, $has(self::SECURITY_VERSION) ? null : self::SECURITY_VERSION),
+            $feature('disk_health', __('Disk health'), __('S.M.A.R.T. values of the disks, every hour.'), null, $disk !== null && $this->virtualization === null,
+                match (true) {
+                    $this->virtualization !== null => __('not on virtual machines'),
+                    $disk === null && $this->platform === 'linux' => __('needs smartmontools'),
+                    default => null,
+                }),
+            $feature('wake', __('Wake-on-LAN relay'), __('Wakes other devices of its network (lan, wifi).'), null, $has(self::WAKE_VERSION), null, $has(self::WAKE_VERSION) ? null : self::WAKE_VERSION),
+            $feature('ping', __('Pings ping-only devices'), __('Checks devices without the agent in its network every 30 s.'), null, $has(self::PING_VERSION),
+                $has(self::PING_VERSION) ? trans_choice(':count device assigned|:count devices assigned', $targets) : null, $has(self::PING_VERSION) ? null : self::PING_VERSION),
+        ];
+    }
+
+    /**
      * The networks the agent can scan (Scan in its menu): the IPv4 subnets of its connected wired,
      * Wi-Fi and bridge interfaces, /22 and smaller.
      *

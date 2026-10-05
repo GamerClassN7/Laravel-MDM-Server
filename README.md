@@ -668,10 +668,19 @@ background job at idle priority. The agent does not interpret the logs: **parser
 server turn their records into events, **detection rules** look at the inventory and the events and
 open a **finding** for every item they match.
 
-Taking a collection is cheap: the server only puts it into its cache (compressed) and answers
-`202`. Parsing, storing and scanning come right after the response (the PHP worker goes on once the
-agent has its answer), and the scheduler processes every minute what is still waiting (at most
-1000 collections, a day).
+**The logs are optional and off by default** (they contain user names, addresses and commands):
+the agent sends them only when `security_logs` is `on` in its `config.json` (`-SecurityLogs on` at
+install). The portal cannot switch it on; the **Allow security logs** script (like **Allow network
+scans**: a run only detects, **Remediate** is yours to start on the devices you pick) does it for
+you. System admins can turn the logs off for all agents. The **Agent** tab of a device lists the
+features of its agent (remediation scripts, network discovery, security inventory and logs, disk
+health, Wake-on-LAN, pings) as On / Off, read only. The inventory (software, ports, settings) is
+sent either way.
+
+Taking a collection is cheap: the server only puts it into its cache (compressed and encrypted
+with the app key) and answers `202`. A job on the `security` queue parses, stores and scans it (the
+queue worker of the Docker image; without a worker, `QUEUE_ENABLED=false`, it runs right after the
+response), one collection of a device at a time, with retries.
 
 What the agent collects (the *sources* of the rules):
 
@@ -814,6 +823,7 @@ Parameters:
 | `-ResetServerKey` | Pin the current server key again (after it was replaced on purpose) |
 | `-DisableScripts`, `-EnableScripts` | Remediation scripts on this device ([Remediation scripts](#remediation-scripts)) |
 | `-NetworkDiscovery off\|neighbours\|scan` | [Network discovery](#network-discovery) |
+| `-SecurityLogs off\|on` | [Security scanner](#security-scanner): whether the records of the security logs are sent (default off) |
 
 Everything else is in `config.json` next to the agent, read on every start (the server cannot change
 it, edit the file and restart the agent):
