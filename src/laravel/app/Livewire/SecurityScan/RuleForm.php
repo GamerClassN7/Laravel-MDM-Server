@@ -153,6 +153,16 @@ class RuleForm extends Component
             'preview' => ! $isParser && $definition && $device ? SecurityScanner::preview($definition, $device) : null,
             'previewDevice' => $device,
             'devices' => Device::query()->whereIn('id', SecurityInventory::query()->select('device_id'))->get()->sortBy('displayName'),
+            // The other agents, with what they wait for (shown greyed in the list).
+            'waiting' => Device::query()->where('kind', 'agent')->whereNotIn('id', SecurityInventory::query()->select('device_id'))->get()->sortBy('displayName')
+                ->map(fn (Device $agent) => [
+                    'name' => $agent->displayName,
+                    'reason' => match (true) {
+                        version_compare((string) $agent->agent_version, Device::SECURITY_VERSION, '<') => __('agent :version, the inventory needs :needed', ['version' => $agent->agent_version ?: '?', 'needed' => Device::SECURITY_VERSION.'+']),
+                        $agent->offline => __('offline'),
+                        default => __('no inventory yet, the agent sends it a few minutes after it starts'),
+                    },
+                ])->values(),
         ]);
     }
 }

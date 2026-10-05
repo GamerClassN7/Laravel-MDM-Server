@@ -52,6 +52,13 @@
                         @empty
                             <option value="">{{ __('No device with an inventory yet') }}</option>
                         @endforelse
+                        @if ($waiting->isNotEmpty())
+                            <optgroup label="{{ __('No inventory yet') }}">
+                                @foreach ($waiting as $agent)
+                                    <option disabled>{{ $agent['name'] }} ({{ $agent['reason'] }})</option>
+                                @endforeach
+                            </optgroup>
+                        @endif
                     </select>
                 </div>
                 @if ($preview !== null)
