@@ -685,6 +685,17 @@ deltas of a collection in one transaction and checks that the result has the sta
 computed; a delta that does not follow what the server has is refused (`409`, nothing stored) and
 the agent sends that source whole. A collection sent twice (`collection_id`) is processed once.
 
+Logs are not sent whole either. The agent keeps a **position per log** (the journal cursor, the
+`EventRecordID` of a Windows log, the byte offset of `auth.log`) and reads on from where the
+server last took them, so nothing is lost or sent twice. The server tells it **what to send**
+(`GET /api/device/security/policy`): the identifiers (`sshd`, `sudo`, ...) and event ids (4625,
+7045, ...) the enabled parsers read, so a busy log is filtered at the source and only the
+records a parser can use leave the device (a parser without a `when` on them asks for the whole
+log). Records go as columns (field names once), the body is gzipped (`Content-Encoding: gzip`,
+signed over the compressed bytes, inflated by the server only after the signature checked out and
+within a limit), and travels like the rest of the agent's communication: signed in both
+directions over HTTPS.
+
 Taking a collection is cheap: the server only puts it into its cache (compressed and encrypted
 with the app key) and answers `202`. A job on the `security` queue parses, stores and scans it (the
 queue worker of the Docker image; without a worker, `QUEUE_ENABLED=false`, it runs right after the

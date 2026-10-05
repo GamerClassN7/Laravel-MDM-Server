@@ -26,10 +26,10 @@ class SecurityParsers
 {
     /** What the agents send (agents 1.17.0+), with the fields of a record. */
     public const LOG_SOURCES = [
-        'linux.auth' => ['label' => 'Linux: auth log (journal or auth.log)', 'fields' => ['Time', 'Identifier', 'Pid', 'Message']],
-        'windows.security' => ['label' => 'Windows: Security log', 'fields' => ['Time', 'Id', 'Provider', 'Level', 'Data']],
-        'windows.system' => ['label' => 'Windows: System log', 'fields' => ['Time', 'Id', 'Provider', 'Level', 'Data']],
-        'windows.defender' => ['label' => 'Windows: Microsoft Defender log', 'fields' => ['Time', 'Id', 'Provider', 'Level', 'Data']],
+        'linux.auth' => ['label' => 'Linux: auth log (journal or auth.log)', 'fields' => ['Time', 'Identifier', 'Pid', 'Message'], 'key' => 'Identifier'],
+        'windows.security' => ['label' => 'Windows: Security log', 'fields' => ['Time', 'Id', 'Provider', 'Level', 'Data'], 'key' => 'Id'],
+        'windows.system' => ['label' => 'Windows: System log', 'fields' => ['Time', 'Id', 'Provider', 'Level', 'Data'], 'key' => 'Id'],
+        'windows.defender' => ['label' => 'Windows: Microsoft Defender log', 'fields' => ['Time', 'Id', 'Provider', 'Level', 'Data'], 'key' => 'Id'],
     ];
 
     /** At most this many records per source and collection are parsed. */
@@ -145,10 +145,11 @@ class SecurityParsers
         $groups = [];
         foreach (is_array($logs) ? $logs : [] as $log) {
             $source = is_array($log) ? ($log['source'] ?? null) : null;
-            if (! is_string($source) || ! isset($bySource[$source]) || ! is_array($log['records'] ?? null)) {
+            $records = is_array($log) ? self::records($log) : [];
+            if (! is_string($source) || ! isset($bySource[$source])) {
                 continue;
             }
-            foreach (array_slice($log['records'], 0, self::MAX_RECORDS) as $record) {
+            foreach (array_slice($records, 0, self::MAX_RECORDS) as $record) {
                 if (! is_array($record)) {
                     continue;
                 }
@@ -173,6 +174,108 @@ class SecurityParsers
         }
 
         return array_values($groups);
+    }
+
+    /**
+     * The records of a log of a collection: {source, fields: [...], rows: [[...], ...]} (columnar, field
+     * names once) or {source, records: [{...}, ...]}.
+     *
+     * @return array<int, array>
+     */
+    public static function records(array $log): array
+    {
+        if (is_array($log['records'] ?? null)) {
+            return array_values(array_filter($log['records'], 'is_array'));
+        }
+        $fields = $log['fields'] ?? null;
+        if (! is_array($fields) || ! is_array($log['rows'] ?? null)) {
+            return [];
+        }
+        $width = count($fields);
+        $records = [];
+        foreach ($log['rows'] as $row) {
+            if (is_array($row) && array_is_list($row) && count($row) === $width) {
+                $records[] = array_combine($fields, $row);
+            }
+        }
+
+        return $records;
+    }
+
+    /**
+     * What the agents have to send for the enabled parsers, so they filter at the source instead of
+     * sending whole logs: per log the values of the field the parsers tell records apart by
+     * (Identifier on Linux, the event Id on Windows), null when a parser takes any record of it, and an
+     * empty list for a log no parser reads. A version (a hash) says when it changed.
+     *
+     * @param  iterable<int, array>  $parsers  definitions of the enabled parsers
+     * @return array{version: string, sources: array<string, array<int, string|int>|null>}
+     */
+    public static function policy(iterable $parsers): array
+    {
+        $sources = array_fill_keys(array_keys(self::LOG_SOURCES), []);
+        foreach ($parsers as $parser) {
+            $source = $parser['source'];
+            $values = self::constraint($parser['when'] ?? null, self::LOG_SOURCES[$source]['key'] ?? 'Id');
+            if ($values === null || $sources[$source] === null) {
+                $sources[$source] = null;
+            } else {
+                $sources[$source] = array_values(array_unique([...$sources[$source], ...$values], SORT_REGULAR));
+            }
+        }
+        ksort($sources);
+        foreach ($sources as &$values) {
+            if (is_array($values)) {
+                sort($values);
+            }
+        }
+        unset($values);
+
+        return ['version' => substr(hash('sha256', json_encode($sources)), 0, 16), 'sources' => $sources];
+    }
+
+    /**
+     * The values a condition limits a field to ("field eq / in values", also under all / any), null when it
+     * does not limit it.
+     *
+     * @return array<int, string|int>|null
+     */
+    private static function constraint(mixed $condition, string $field): ?array
+    {
+        if (! is_array($condition)) {
+            return null;
+        }
+        if (isset($condition['all'])) {
+            // Any one limiting condition limits the whole group.
+            foreach ($condition['all'] as $child) {
+                if (($values = self::constraint($child, $field)) !== null) {
+                    return $values;
+                }
+            }
+
+            return null;
+        }
+        if (isset($condition['any'])) {
+            $all = [];
+            foreach ($condition['any'] as $child) {
+                $values = self::constraint($child, $field);
+                if ($values === null) {
+                    return null;
+                }
+                $all = [...$all, ...$values];
+            }
+
+            return $all;
+        }
+        if (($condition['field'] ?? null) !== $field) {
+            return null;
+        }
+
+        return match ($condition['op'] ?? null) {
+            'eq' => [$condition['value']],
+            'in' => array_values($condition['value']),
+            default => null,
+        };
     }
 
     /** {a} and {a|b} (the first that is set; "-" is not set). */

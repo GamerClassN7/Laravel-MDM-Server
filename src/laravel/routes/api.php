@@ -5,6 +5,7 @@ use App\Models\DeviceCommand;
 use App\Models\Enrolment;
 use App\Models\ScriptRun;
 use App\Support\SecurityInbox;
+use App\Support\SecurityParsers;
 use App\Support\SecurityScanner;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
@@ -139,15 +140,19 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         /** @var Device $device */
         $device = $request->user();
         abort_unless($device->signsRequests, 403);
-        $body = $request->getContent();
-        abort_if(strlen($body) > SecurityInbox::MAX_BYTES, 413);
-        abort_unless(json_validate($body) && str_starts_with(ltrim($body), '{'), 422);
-        $payload = json_decode($body, true);
+        $raw = $request->getContent();
+        abort_if(strlen($raw) > SecurityInbox::MAX_BYTES, 413);
+        $gzip = strtolower((string) $request->header('Content-Encoding')) === 'gzip';
+        $json = SecurityInbox::decode($raw, $gzip);
+        abort_if($json === null, 422);
+        $payload = json_decode($json, true);
         $sources = SecurityScanner::normalizeSources($payload['sources'] ?? []);
         $id = $payload['collection_id'] ?? null;
         abort_if($sources === null || ! is_string($id) || ! preg_match('/^[0-9a-f-]{16,64}$/i', $id), 422);
 
-        $ack = ['ack' => collect($sources)->pluck('state', 'source')->all()];
+        // The log positions the agent may move on to once this collection is taken.
+        $cursors = array_filter($payload['cursors'] ?? [], fn ($cursor, $source) => isset(SecurityParsers::LOG_SOURCES[$source]) && (is_string($cursor) || is_int($cursor)) && strlen((string) $cursor) <= 512, ARRAY_FILTER_USE_BOTH);
+        $ack = ['ack' => collect($sources)->pluck('state', 'source')->all(), 'cursors' => $cursors];
         // Sent again after a timeout: acknowledged, not processed twice.
         if (! Cache::add("mdm.security_collection.{$device->id}.{$id}", 1, SecurityInbox::TTL)) {
             return response()->json(['queued' => true, 'duplicate' => true] + $ack, 202);
@@ -157,9 +162,17 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
 
             return response()->json(['resync' => $wrong], 409);
         }
-        SecurityInbox::push($device, $body);
+        SecurityInbox::push($device, $raw, $gzip);
 
         return response()->json(['queued' => true] + $ack, 202);
+    });
+
+    // What the agent has to send of its logs (agents 1.17.0+, when security_logs is on): the values of
+    // the identifier / event id the enabled parsers read, per log, so it filters at the source.
+    Route::get('/device/security/policy', function (Request $request) {
+        abort_unless($request->user()->signsRequests, 403);
+
+        return response()->json(SecurityScanner::policy());
     });
 
     // Samples the agent collected while it could not reach the server (agents 1.11.0+): they fill

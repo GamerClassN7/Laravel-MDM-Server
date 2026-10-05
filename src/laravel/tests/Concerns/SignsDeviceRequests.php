@@ -42,7 +42,8 @@ trait SignsDeviceRequests
 
     protected function signedJson(string $method, string $uri, array $data = [], ?string $token = null, array $options = []): TestResponse
     {
-        $body = json_encode($data);
+        // options.raw: a body that is not JSON of $data (compressed by the agent).
+        $body = $options['raw'] ?? json_encode($data);
         $timestamp = (string) ($options['timestamp'] ?? time());
         $nonce = $this->lastNonce = $options['nonce'] ?? bin2hex(random_bytes(16));
         $message = implode("\n", ['MDM1-REQ', strtoupper($method), parse_url($uri, PHP_URL_PATH), $timestamp, $nonce, hash('sha256', $body)]);

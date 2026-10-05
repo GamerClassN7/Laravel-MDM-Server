@@ -27,11 +27,29 @@ class SecurityInbox
     /** A request body larger than this is refused (bytes). */
     public const MAX_BYTES = 16 * 1024 * 1024;
 
-    /** Takes a collection of a device: into the cache, a job to process it. */
-    public static function push(Device $device, string $body): string
+    /**
+     * The JSON of a request body: gunzipped when the agent compressed it (Content-Encoding: gzip, the
+     * signature covers the compressed bytes, so this is only done after it was verified), null when it is
+     * not a JSON object or inflates to more than MAX_BYTES (a zip bomb).
+     */
+    public static function decode(string $raw, bool $gzip): ?string
+    {
+        $json = $gzip ? @zlib_decode($raw, self::MAX_BYTES) : $raw;
+        if (! is_string($json) || strlen($json) > self::MAX_BYTES || ! json_validate($json) || ! str_starts_with(ltrim($json), '{')) {
+            return null;
+        }
+
+        return $json;
+    }
+
+    /**
+     * Takes a collection of a device: into the cache, gzipped (what the agent sent is kept as it came) and
+     * encrypted, and a job to process it.
+     */
+    public static function push(Device $device, string $body, bool $gzip = false): string
     {
         $key = 'mdm.security_inbox.'.Str::uuid();
-        Cache::put($key, Crypt::encryptString(base64_encode(gzcompress($body, 6))), self::TTL);
+        Cache::put($key, Crypt::encryptString(base64_encode($gzip ? $body : gzencode($body, 6))), self::TTL);
 
         if (config('queue.default') === 'sync') {
             ProcessSecurityCollection::dispatchAfterResponse($device->id, $key);
@@ -42,7 +60,7 @@ class SecurityInbox
         return $key;
     }
 
-    /** The collection of a key, null when it is gone or unreadable. */
+    /** The JSON of the collection of a key, null when it is gone or unreadable. */
     public static function read(string $key): ?string
     {
         $stored = Cache::get($key);
@@ -50,12 +68,12 @@ class SecurityInbox
             return null;
         }
         try {
-            $body = gzuncompress(base64_decode(Crypt::decryptString($stored), true) ?: '');
+            $body = @zlib_decode(base64_decode(Crypt::decryptString($stored), true) ?: '', self::MAX_BYTES);
         } catch (Throwable) {
             return null;
         }
 
-        return $body === false ? null : $body;
+        return is_string($body) ? $body : null;
     }
 
     /** How many collections wait in the queue (0 without a queue worker to count). */

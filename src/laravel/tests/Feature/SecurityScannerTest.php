@@ -487,6 +487,70 @@ class SecurityScannerTest extends TestCase
         }
     }
 
+    public function test_logs_come_columnar_and_compressed_with_the_positions_acknowledged(): void
+    {
+        $device = $this->device();
+        $inventory = $this->inventory();
+        unset($inventory['logs']);
+        $records = [];
+        for ($i = 0; $i < 25; $i++) {
+            $records[] = [now()->subMinutes(5)->toIso8601String(), 4625, 'Microsoft-Windows-Security-Auditing', 0, ['TargetUserName' => 'administrator', 'IpAddress' => '203.0.113.7', 'LogonType' => '10']];
+        }
+        $logs = [['source' => 'windows.security', 'fields' => ['Time', 'Id', 'Provider', 'Level', 'Data'], 'rows' => $records]];
+
+        // Compressed with the signature over the compressed bytes: only the positions it may move on to come back.
+        $response = $this->agentSend('a', $inventory, $logs, cursors: ['windows.security' => 4711, 'nonsense' => 'x'], gzip: true)->assertStatus(202);
+        $this->runWorker();
+        $this->assertSame(['windows.security' => 4711], $response->json('cursors'));
+        $this->assertContains('events.brute-force', $this->openKeys($device));
+        $this->assertSame(25, SecurityEvent::query()->where('device_id', $device->id)->sum('count'));
+        $this->assertLessThan(strlen(json_encode($this->lastCollection)) / 3, strlen(gzencode(json_encode($this->lastCollection), 6)));
+    }
+
+    public function test_a_compressed_body_is_checked_before_and_after_it_is_inflated(): void
+    {
+        $device = $this->device();
+        $body = json_encode(['collection_id' => 'abcdefabcdefabcdef', 'sources' => []]);
+
+        // Changed after it was signed: refused by the signature, nothing is inflated.
+        $tampered = gzencode($body, 6);
+        $this->signedJson('POST', '/api/device/security', [], 'a', ['raw' => $tampered, 'server' => ['HTTP_CONTENT_ENCODING' => 'gzip'], 'signature' => base64_encode('x')])->assertUnauthorized();
+
+        // A zip bomb: signed, small, inflates beyond what is allowed.
+        $bomb = gzencode(str_repeat(' ', SecurityInbox::MAX_BYTES + 1024).$body, 9);
+        $this->assertLessThan(100000, strlen($bomb));
+        $this->signedJson('POST', '/api/device/security', [], 'a', ['raw' => $bomb, 'server' => ['HTTP_CONTENT_ENCODING' => 'gzip']])->assertStatus(422);
+        // Not gzip although it says so.
+        $this->signedJson('POST', '/api/device/security', [], 'a', ['raw' => $body, 'server' => ['HTTP_CONTENT_ENCODING' => 'gzip']])->assertStatus(422);
+        $this->assertSame(0, \Illuminate\Support\Facades\DB::table('jobs')->count());
+    }
+
+    public function test_the_policy_tells_the_agent_which_log_records_to_send(): void
+    {
+        $this->device();
+        $policy = $this->signedJson('GET', '/api/device/security/policy', [], 'a')->assertOk()->json();
+        // Built-in parsers: sshd and sudo etc. on Linux, the event ids of the Windows ones.
+        $this->assertSame(['gpasswd', 'sshd', 'sshd-session', 'sudo', 'useradd', 'usermod'], $policy['sources']['linux.auth']);
+        $this->assertContains(4625, $policy['sources']['windows.security']);
+        $this->assertContains(7045, $policy['sources']['windows.system']);
+        $this->assertContains(1116, $policy['sources']['windows.defender']);
+
+        // A parser that takes any record of a log makes the whole log wanted; a log without parsers none.
+        $parser = ['kind' => 'parser', 'key' => 'custom.any', 'name' => 'Any', 'source' => 'linux.auth', 'pattern' => 'x', 'event' => ['type' => 'x_y']];
+        $parsers = SecurityRule::query()->parsers()->where('source', 'linux.auth')->pluck('definition')->push($parser);
+        $this->assertNull(SecurityParsers::policy($parsers)['sources']['linux.auth']);
+        $this->assertSame([], SecurityParsers::policy([])['sources']['windows.security']);
+        $when = fn ($value) => ['source' => 'windows.security', 'when' => ['all' => [['field' => 'Provider', 'op' => 'eq', 'value' => 'x'], ['any' => [['field' => 'Id', 'op' => 'eq', 'value' => 1], ['field' => 'Id', 'op' => 'in', 'value' => [2, $value]]]]]]];
+        $this->assertSame([1, 2, 3], SecurityParsers::policy([$when(3)])['sources']['windows.security']);
+        $this->assertNotSame(SecurityParsers::policy([$when(3)])['version'], SecurityParsers::policy([$when(4)])['version']);
+
+        // The portal takes no logs: nothing is wanted.
+        SecurityScanner::setLogsAllowed(false);
+        $off = $this->signedJson('GET', '/api/device/security/policy', [], 'a')->assertOk()->json();
+        $this->assertSame([], $off['sources']['linux.auth']);
+        $this->assertSame([], $off['sources']['windows.security']);
+    }
+
     public function test_the_endpoint_needs_a_signing_agent(): void
     {
         $device = $this->device();

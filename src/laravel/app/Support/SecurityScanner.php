@@ -25,6 +25,19 @@ class SecurityScanner
     /** At most this many findings per rule and device (a rule that matches everything). */
     public const MAX_FINDINGS_PER_RULE = 50;
 
+    /**
+     * The collection policy for the agents: what to send of the logs. Nothing when the portal takes no logs.
+     *
+     * @return array{version: string, sources: array<string, array<int, string|int>|null>}
+     */
+    public static function policy(): array
+    {
+        SecurityRule::syncBuiltIn();
+        $parsers = self::logsAllowed() ? SecurityRule::query()->enabled()->parsers()->get()->pluck('definition') : collect();
+
+        return SecurityParsers::policy($parsers);
+    }
+
     /** The portal setting that turns the logs of all agents off (system admins, Security page). */
     public const LOGS_SETTING = 'mdm.security_logs';
 

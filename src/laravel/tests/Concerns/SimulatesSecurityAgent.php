@@ -64,14 +64,16 @@ trait SimulatesSecurityAgent
      *
      * @return TestResponse the last response
      */
-    protected function agentSend(string $token, array $inventory, array $logs = [], ?string $collectionId = null)
+    protected function agentSend(string $token, array $inventory, array $logs = [], ?string $collectionId = null, array $cursors = [], bool $gzip = false)
     {
         $whole = [];
         for ($attempt = 0; $attempt < 2; $attempt++) {
             ['sources' => $sources, 'pending' => $pending] = $this->agentSources($token, $inventory, $whole);
-            $body = ['collection_id' => $collectionId ?? (string) Str::uuid(), 'sources' => $sources, 'logs' => $logs];
+            $body = ['collection_id' => $collectionId ?? (string) Str::uuid(), 'sources' => $sources, 'logs' => $logs] + ($cursors === [] ? [] : ['cursors' => $cursors]);
             $this->lastCollection = $body;
-            $response = $this->signedJson('POST', '/api/device/security', $body, $token);
+            // Compressed before it is signed: the signature covers the bytes that are sent.
+            $options = $gzip ? ['raw' => gzencode(json_encode($body), 6), 'server' => ['HTTP_CONTENT_ENCODING' => 'gzip']] : [];
+            $response = $this->signedJson('POST', '/api/device/security', $body, $token, $options);
             if ($response->status() === 409) {
                 $whole = $response->json('resync');
                 $collectionId = null;
