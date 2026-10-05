@@ -7,6 +7,7 @@ use App\Support\SecurityRules;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
@@ -35,6 +36,67 @@ class SecurityRule extends Model
         'definition' => 'array',
         'enabled' => 'boolean',
     ];
+
+    private ?string $token = null;
+
+    /** @var array{key: string, rules: Collection<int, SecurityRule>, plan: array<int, array>}|null */
+    private static ?array $set = null;
+
+    protected static function booted(): void
+    {
+        $bump = fn () => static::touchVersion();
+        static::saved($bump);
+        static::deleted($bump);
+    }
+
+    /** Says that rules changed (the sets the workers keep in memory are built again). */
+    public static function touchVersion(): void
+    {
+        Cache::forever('mdm.security_rules_version', (int) Cache::get('mdm.security_rules_version', 0) + 1);
+        self::$set = null;
+    }
+
+    /**
+     * The detection rules, kept in memory (a worker runs many scans) until a rule changes.
+     *
+     * @return Collection<int, SecurityRule>
+     */
+    public static function detectionSet(): Collection
+    {
+        return self::loadSet()['rules'];
+    }
+
+    /**
+     * The same rules as plain values (id, token, enabled, platform, source, event, rule), so that a
+     * scan that has nothing to do does not read a thousand models.
+     *
+     * @return array<int, array{id: int, token: string, enabled: bool, platform: string, source: string, event: bool, rule: SecurityRule}>
+     */
+    public static function scanPlan(): array
+    {
+        return self::loadSet()['plan'];
+    }
+
+    /** @return array{key: string, rules: Collection<int, SecurityRule>, plan: array<int, array>} */
+    private static function loadSet(): array
+    {
+        $key = Cache::get('mdm.security_rules_version', 0).'|'.static::query()->detection()->count().'|'.static::query()->detection()->max('id');
+        if (self::$set === null || self::$set['key'] !== $key) {
+            $rules = static::query()->detection()->get();
+            self::$set = ['key' => $key, 'rules' => $rules, 'plan' => $rules->map(fn (SecurityRule $rule) => [
+                'id' => $rule->id, 'token' => $rule->scanToken, 'enabled' => $rule->enabled, 'platform' => $rule->platform,
+                'source' => $rule->source, 'event' => $rule->isEvent, 'rule' => $rule,
+            ])->all()];
+        }
+
+        return self::$set;
+    }
+
+    /** What a scan remembers of the rule: when it is the same, so is what the rule finds in the same items. */
+    public function getScanTokenAttribute(): string
+    {
+        return $this->token ??= substr(md5(json_encode([$this->definition, $this->severity, $this->platform, $this->enabled])), 0, 12);
+    }
 
     public function findings(): HasMany
     {

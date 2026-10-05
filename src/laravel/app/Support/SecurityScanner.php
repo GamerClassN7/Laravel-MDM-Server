@@ -139,11 +139,14 @@ class SecurityScanner
      * computed (otherwise nothing of the collection is stored).
      *
      * @param  array<int, array>  $sources  from normalizeSources
+     * @return array<string, array{full: bool, base: ?string, state: string, old: array<int, array>, new: array<int, array>}>
+     *                                                                                                                  what changed per source (the items before and after), for the incremental scan
      * @throws SecurityStateMismatch
      */
-    public static function applyDeltas(Device $device, array $sources): void
+    public static function applyDeltas(Device $device, array $sources): array
     {
-        DB::transaction(function () use ($device, $sources) {
+        $changes = [];
+        DB::transaction(function () use ($device, $sources, &$changes) {
             $inventory = SecurityInventory::query()->where('device_id', $device->id)->lockForUpdate()->first()
                 ?? new SecurityInventory(['device_id' => $device->id, 'states' => []]);
             $states = $inventory->states ?? [];
@@ -158,6 +161,16 @@ class SecurityScanner
                     continue;
                 }
                 $items = SecurityInventoryItem::query()->where('device_id', $device->id)->where('source', $source);
+                $old = [];
+                if (! $delta['full']) {
+                    $touched = array_values(array_unique([...$delta['remove'], ...array_column($delta['upsert'], 0)]));
+                    foreach (array_chunk($touched, 500) as $keys) {
+                        foreach ((clone $items)->whereIn('item_key', $keys)->pluck('data') as $json) {
+                            $old[] = json_decode($json, true);
+                        }
+                    }
+                }
+                $changes[$source] = ['full' => $delta['full'], 'base' => $delta['base'], 'state' => $delta['state'], 'old' => $old, 'new' => array_column($delta['upsert'], 2)];
                 if ($delta['full']) {
                     (clone $items)->delete();
                 }
@@ -182,6 +195,8 @@ class SecurityScanner
             $inventory->collected_at = now();
             $inventory->save();
         });
+
+        return $changes;
     }
 
     /**
@@ -195,19 +210,26 @@ class SecurityScanner
      */
     public static function ingest(Device $device, array $sources, array $events = []): array
     {
-        self::applyDeltas($device, $sources);
+        $changes = self::applyDeltas($device, $sources);
         SecurityEvent::record($device, $events);
 
-        return self::scan($device, $events);
+        return self::scan($device, $events, $changes);
     }
 
+    /** A rule is checked in full again at least this often (a safety net for the incremental scan). */
+    private const FULL_SCAN_AFTER = 86400;
+
     /**
-     * The rules on the device's last inventory (and on the events that just came in).
+     * The rules on the device's last inventory (and on the events that just came in). Work that
+     * would find the same as last time is not done: a rule whose definition and source have not
+     * changed since it ran is skipped, and when only some items changed (the deltas of a
+     * collection) a rule looks at those items alone.
      *
      * @param  array<int, array>  $events
+     * @param  array<string, array>|null  $changes  from applyDeltas, null: look at everything
      * @return array{opened: int, resolved: int}
      */
-    public static function scan(Device $device, array $events = []): array
+    public static function scan(Device $device, array $events = [], ?array $changes = null): array
     {
         SecurityRule::syncBuiltIn();
         $inventory = SecurityInventory::query()->where('device_id', $device->id)->first();
@@ -216,34 +238,87 @@ class SecurityScanner
             return $counts;
         }
 
-        $rules = SecurityRule::query()->detection()->get();
-        $open = SecurityFinding::query()->open()->where('device_id', $device->id)->get()->groupBy('security_rule_id');
-        foreach ($rules as $rule) {
-            $findings = $open->get($rule->id, collect());
-            try {
-                if (! $rule->enabled || ! $rule->appliesTo($device)) {
-                    // Switched off: what it found is gone with it (events stay until acknowledged).
-                    if (! $rule->isEvent) {
-                        $counts['resolved'] += self::resolve($findings);
-                    }
-
-                    continue;
+        $states = $inventory->states ?? [];
+        $scanned = $inventory->scanned ?? [];
+        $previous = ($scanned['full_at'] ?? 0) > time() - self::FULL_SCAN_AFTER ? ($scanned['rules'] ?? []) : [];
+        $next = [];
+        $open = null;
+        $platform = $device->platform;
+        foreach (SecurityRule::scanPlan() as $plan) {
+            $active = $plan['enabled'] && ($plan['platform'] === 'any' || $plan['platform'] === $platform);
+            if ($plan['event']) {
+                if ($active && $events !== []) {
+                    $rule = $plan['rule'];
+                    $open ??= self::openFindings($device);
+                    self::add($counts, self::guard($rule, $device, fn () => self::scanEvents($device, $rule, $open->get($rule->id, collect()), $events)));
                 }
-                $result = $rule->isEvent
-                    ? self::scanEvents($device, $rule, $findings, $events)
+
+                continue;
+            }
+            $mark = [$plan['token'].($active ? '' : '!'), $states[$plan['source']] ?? ''];
+            $before = $previous[$plan['id']] ?? null;
+            if ($before !== null && $before[0] === $mark[0] && ($before[1] === $mark[1] || ! $active)) {
+                $next[$plan['id']] = $mark;
+
+                continue;
+            }
+            $rule = $plan['rule'];
+            $open ??= self::openFindings($device);
+            $findings = $open->get($rule->id, collect());
+            $result = self::guard($rule, $device, function () use ($device, $rule, $active, $findings, $inventory, $before, $mark, $changes) {
+                if (! $active) {
+                    // Switched off: what it found is gone with it.
+                    return ['opened' => 0, 'resolved' => self::resolve($findings)];
+                }
+                $change = $changes[$rule->source] ?? null;
+                $incremental = $before !== null && $before[0] === $mark[0] && $change !== null && ! $change['full']
+                    && $change['base'] === $before[1] && $change['state'] === $mark[1]
+                    && ! isset($rule->definition['threshold']) && $rule->source !== 'posture';
+
+                return $incremental
+                    ? self::scanChanged($device, $rule, $findings, $change)
                     : self::scanInventory($device, $rule, $findings, $inventory->items($rule->source));
-                $counts['opened'] += $result['opened'];
-                $counts['resolved'] += $result['resolved'];
-            } catch (Throwable $e) {
-                Log::warning("Security rule {$rule->key} failed on device {$device->id}: {$e->getMessage()}");
+            });
+            if ($result !== null) {
+                $next[$rule->id] = $mark;
+                self::add($counts, $result);
             }
         }
 
+        $full = $scanned['full_at'] ?? 0;
+        $fresh = ['rules' => $next, 'full_at' => $previous === [] ? time() : $full];
+        if ($fresh !== $scanned) {
+            $inventory->forceFill(['scanned' => $fresh])->saveQuietly();
+        }
         if ($counts['opened'] + $counts['resolved'] > 0) {
             LiveUpdates::device($device->id, 'security');
         }
 
         return $counts;
+    }
+
+    /** @return Collection<int, Collection<int, SecurityFinding>> the open findings of a device by rule */
+    private static function openFindings(Device $device): Collection
+    {
+        return SecurityFinding::query()->open()->where('device_id', $device->id)->get()->groupBy('security_rule_id');
+    }
+
+    /** What a rule does, null when it fails (the others go on, it is tried again next time). */
+    private static function guard(SecurityRule $rule, Device $device, callable $work): ?array
+    {
+        try {
+            return $work();
+        } catch (Throwable $e) {
+            Log::warning("Security rule {$rule->key} failed on device {$device->id}: {$e->getMessage()}");
+
+            return null;
+        }
+    }
+
+    private static function add(array &$counts, ?array $result): void
+    {
+        $counts['opened'] += $result['opened'] ?? 0;
+        $counts['resolved'] += $result['resolved'] ?? 0;
     }
 
     /**
@@ -329,22 +404,80 @@ class SecurityScanner
     {
         $found = self::matches($rule->definition, $items);
         $byFingerprint = $open->keyBy('fingerprint');
-        $opened = 0;
 
-        DB::transaction(function () use ($device, $rule, $found, $byFingerprint, &$opened) {
+        $opened = self::write($device, $rule, $found, $byFingerprint);
+
+        return ['opened' => $opened, 'resolved' => self::resolve($open->reject(fn ($finding) => isset($found[$finding->fingerprint])))];
+    }
+
+    /**
+     * A rule on the items that changed (not on the whole list): what the items that went away or
+     * changed had found is resolved unless they still match, the new ones are matched.
+     *
+     * @param  Collection<int, SecurityFinding>  $open
+     * @param  array{old: array<int, array>, new: array<int, array>}  $change
+     */
+    private static function scanChanged(Device $device, SecurityRule $rule, Collection $open, array $change): array
+    {
+        $definition = $rule->definition;
+        $found = self::matches($definition, $change['new']);
+        if ($found === [] && $open->isEmpty()) {
+            return ['opened' => 0, 'resolved' => 0];
+        }
+        $touched = [];
+        foreach ([...$change['old'], ...$change['new']] as $item) {
+            $touched[SecurityRules::fingerprint($definition, $item)] = true;
+        }
+        $byFingerprint = $open->keyBy('fingerprint');
+        $room = max(0, self::MAX_FINDINGS_PER_RULE - $byFingerprint->count());
+        $opened = self::write($device, $rule, $found, $byFingerprint, $room);
+
+        return ['opened' => $opened, 'resolved' => self::resolve($open->filter(fn ($finding) => isset($touched[$finding->fingerprint]) && ! isset($found[$finding->fingerprint])))];
+    }
+
+    /**
+     * Updates the open findings that a rule found again (only when something about them changed,
+     * their last_seen_at at most hourly) and opens the new ones in one insert.
+     *
+     * @param  array<string, array>  $found
+     * @param  Collection<string, SecurityFinding>  $byFingerprint
+     * @return int how many were opened
+     */
+    private static function write(Device $device, SecurityRule $rule, array $found, Collection $byFingerprint, ?int $room = null): int
+    {
+        $rows = [];
+        DB::transaction(function () use ($device, $rule, $found, $byFingerprint, $room, &$rows) {
             foreach ($found as $fingerprint => $match) {
                 $finding = $byFingerprint->get($fingerprint);
-                if ($finding !== null) {
-                    $finding->update(['message' => self::message($match), 'details' => $match['item'], 'severity' => $rule->severity, 'last_seen_at' => now()]);
+                if ($finding === null) {
+                    if ($room === null || count($rows) < $room) {
+                        $rows[] = [
+                            'device_id' => $device->id,
+                            'security_rule_id' => $rule->id,
+                            'fingerprint' => $fingerprint,
+                            'severity' => $rule->severity,
+                            'message' => self::message($match),
+                            'details' => json_encode($match['item'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                            'first_seen_at' => now(),
+                            'last_seen_at' => now(),
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ];
+                    }
 
                     continue;
                 }
-                self::open($device, $rule, $match);
-                $opened++;
+                $fresh = ['message' => self::message($match), 'details' => $match['item'], 'severity' => $rule->severity];
+                if ($finding->message !== $fresh['message'] || $finding->details !== $fresh['details'] || $finding->severity !== $fresh['severity'] || $finding->last_seen_at->lt(now()->subHour())) {
+                    $finding->update($fresh + ['last_seen_at' => now()]);
+                }
+            }
+            foreach (array_chunk($rows, 100) as $chunk) {
+                SecurityFinding::query()->insert($chunk);
             }
         });
 
-        return ['opened' => $opened, 'resolved' => self::resolve($open->reject(fn ($finding) => isset($found[$finding->fingerprint])))];
+        return count($rows);
     }
 
     /**

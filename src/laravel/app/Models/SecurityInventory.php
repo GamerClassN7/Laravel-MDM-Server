@@ -30,10 +30,11 @@ class SecurityInventory extends Model
     /** Texts are cut to this many characters (command lines are long). */
     private const MAX_TEXT = 1000;
 
-    protected $fillable = ['device_id', 'states', 'collected_at'];
+    protected $fillable = ['device_id', 'states', 'scanned', 'collected_at'];
 
     protected $casts = [
         'states' => 'array',
+        'scanned' => 'array',
         'collected_at' => 'datetime',
     ];
 

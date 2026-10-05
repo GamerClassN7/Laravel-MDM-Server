@@ -16,6 +16,7 @@ return new class extends Migration
             $table->id();
             $table->foreignId('device_id')->unique()->constrained()->cascadeOnDelete();
             $table->json('states');
+            $table->json('scanned')->nullable();
             $table->timestamp('collected_at');
             $table->timestamps();
         });
