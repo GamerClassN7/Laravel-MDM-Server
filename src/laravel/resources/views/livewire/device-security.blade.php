@@ -22,15 +22,29 @@
         $yesNo = fn ($value) => is_bool($value) ? ($value ? __('Yes') : __('No')) : $value;
     @endphp
 
+    {{-- What needs attention; the acknowledged ones are folded away (and can be opened again). --}}
     <div class="card overflow-hidden mb-3">
         <div class="list-group list-group-flush">
             @forelse ($findings as $finding)
                 @include('livewire.security-scan.partials.finding', ['finding' => $finding, 'showDevice' => false])
             @empty
-                <div class="list-group-item text-muted py-3"><i class="fas fa-shield-alt text-success me-2"></i>{{ __('No findings.') }}</div>
+                <div class="list-group-item text-muted py-3"><i class="fas fa-shield-alt text-success me-2"></i>{{ $acknowledged->isEmpty() ? __('No findings.') : __('Nothing needs attention.') }}</div>
             @endforelse
         </div>
     </div>
+
+    @if ($acknowledged->isNotEmpty())
+        <details class="card overflow-hidden mb-3" wire:key="security-acknowledged">
+            <summary class="card-body py-2 d-flex align-items-center gap-2" style="cursor: pointer">
+                <span class="fw-medium">{{ __('Acknowledged') }}</span><span class="small text-muted">{{ $acknowledged->count() }}</span>
+            </summary>
+            <div class="list-group list-group-flush">
+                @foreach ($acknowledged as $finding)
+                    @include('livewire.security-scan.partials.finding', ['finding' => $finding, 'showDevice' => false])
+                @endforeach
+            </div>
+        </details>
+    @endif
 
     @if ($inventory === null)
         <div class="small text-muted">{{ __('No security inventory yet: it needs agent :version or newer.', ['version' => Device::SECURITY_VERSION]) }}</div>
