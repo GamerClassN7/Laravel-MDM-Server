@@ -706,6 +706,27 @@ class SecurityScannerTest extends TestCase
         Livewire::test(Page::class)->set('severity', 'critical')->assertSee('Nothing needs attention');
     }
 
+    public function test_acknowledged_findings_of_a_device_are_folded_away(): void
+    {
+        $this->withoutVite();
+        $device = $this->device();
+        $this->send($device, $this->inventory());
+        $this->actingAs(User::factory()->create());
+        $finding = SecurityFinding::query()->whereHas('rule', fn ($q) => $q->where('key', 'software.remote-access'))->firstOrFail();
+
+        $component = Livewire::test(DeviceSecurity::class, ['deviceId' => $device->id]);
+        $this->assertTrue($component->viewData('findings')->contains('id', $finding->id));
+        $this->assertCount(0, $component->viewData('acknowledged'));
+
+        $component->call('acknowledge', $finding->id);
+        $this->assertFalse($component->viewData('findings')->contains('id', $finding->id));
+        $this->assertTrue($component->viewData('acknowledged')->contains('id', $finding->id));
+
+        $component->call('reopen', $finding->id);
+        $this->assertTrue($component->viewData('findings')->contains('id', $finding->id));
+        $this->assertCount(0, $component->viewData('acknowledged'));
+    }
+
     public function test_scanning_without_an_inventory_does_nothing(): void
     {
         $device = $this->device();

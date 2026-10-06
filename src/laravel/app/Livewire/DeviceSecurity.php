@@ -37,11 +37,13 @@ class DeviceSecurity extends Component
     {
         $device = Device::findOrFail($this->deviceId);
         $inventory = SecurityInventory::query()->where('device_id', $device->id)->first();
+        $open = $device->securityFindings()->with(['rule', 'acknowledger'])->open()->bySeverity()->get();
 
         return view('livewire.device-security', [
             'device' => $device,
             'inventory' => $inventory,
-            'findings' => $device->securityFindings()->with(['rule', 'acknowledger'])->open()->bySeverity()->get(),
+            'findings' => $open->whereNull('acknowledged_at')->values(),
+            'acknowledged' => $open->whereNotNull('acknowledged_at')->values(),
             'events' => SecurityEvent::query()->where('device_id', $device->id)->latest('occurred_at')->limit(20)->get(),
         ]);
     }
