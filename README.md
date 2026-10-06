@@ -12,7 +12,7 @@ A lightweight PowerShell agent on each device reports to the portal and takes co
 # docker-compose.yml
 services:
   mdm:
-    image: ghcr.io/gamerclassn7/laravel-mdm-server:latest
+    image: ghcr.io/panoptipulse/laravel-mdm-server:latest
     container_name: mdm
     ports:
       - "8000:8000"

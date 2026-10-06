@@ -32,7 +32,7 @@ the Docker image runs it for you):
 ## Docker
 
 A small Alpine-based image (running as a non-root user) is built by GitHub Actions and published to
-`ghcr.io/gamerclassn7/laravel-mdm-server`. A single container runs everything under supervisord:
+`ghcr.io/panoptipulse/laravel-mdm-server`. A single container runs everything under supervisord:
 
 | Process | Description | Disable with |
 |---------|-------------|--------------|
