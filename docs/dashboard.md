@@ -10,6 +10,12 @@ devices right now, the offline ones listed, refreshed every 30 seconds). Owners 
 dashboards; system admins (`APP_SYSTEM_ADMINS`) can edit every dashboard
 (`App\Policies\DashboardPolicy`).
 
+Other widgets: **Smart alerts** (what needs attention on the devices, with the action that fixes it) and
+**Security findings** (open findings of the [security scanner](security-scanner.md) that nobody
+acknowledged: the count per severity, the most severe ones listed with their device, linking to
+**Security**). Its settings are the least severe finding listed (`severity`, default medium) and how
+many to list (`list`, default 5; 0 hides the list).
+
 New widgets are Blade components in `app/View/Components/Widgets` and show up in the editor
 automatically. The package comes from the `packistry` Composer repository configured in
 `composer.json`.
