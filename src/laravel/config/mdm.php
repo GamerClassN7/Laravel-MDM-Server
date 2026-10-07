@@ -41,4 +41,16 @@ return [
     // Seconds a signed message may differ from the server clock.
     'signature_max_skew' => 300,
 
+    // Languages of the user interface (lang/*.json), named in their own language. Each user picks one
+    // in the profile, the first one on the setup page. Logs, the scheduler and the queue stay in
+    // English (APP_LOCALE).
+    'locales' => [
+        'en' => 'English',
+        'cs' => 'Čeština',
+        'de' => 'Deutsch',
+        'es' => 'Español',
+        'fr' => 'Français',
+        'it' => 'Italiano',
+    ],
+
 ];

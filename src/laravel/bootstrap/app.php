@@ -18,7 +18,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->redirectUsersTo('/devices');
         $middleware->alias(['device.signature' => \App\Http\Middleware\DeviceSignature::class]);
-        $middleware->web(append: [\App\Http\Middleware\RememberPortalUrl::class]);
+        $middleware->web(append: [\App\Http\Middleware\SetLocale::class, \App\Http\Middleware\RememberPortalUrl::class]);
         // Before authentication, so the 401 of an unknown token is signed as well.
         $middleware->prependToPriorityList(\Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests::class, \App\Http\Middleware\DeviceSignature::class);
     })
