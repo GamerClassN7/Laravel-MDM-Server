@@ -24,8 +24,8 @@
                 @php($counts = $policyCounts->get($item->id, []))
                 @php($score = CompliancePolicies::score($counts))
                 <div class="list-group-item py-3 {{ $item->enabled ? '' : 'opacity-50' }}" wire:key="compliance-policy-{{ $item->id }}">
-                    <div class="d-flex flex-wrap align-items-start gap-3">
-                        <div class="me-auto min-w-0">
+                    <div class="d-flex flex-wrap flex-md-nowrap align-items-start gap-3">
+                        <div class="me-auto min-w-0 flex-grow-1">
                             <button class="btn btn-link p-0 fw-medium text-start text-decoration-none" type="button" wire:click="$set('policy', {{ $item->id }})">{{ $item->name }}</button>
                             @unless ($item->built_in)<x-badge color="primary" size="sm" variant="subtle">{{ __('Custom') }}</x-badge>@endunless
                             @if ($item->definition['description'] ?? null)
@@ -76,9 +76,9 @@
     </div>
 @else
     @php($counts = $policyCounts->get($selectedPolicy->id, []))
-    <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-        <button class="btn btn-sm btn-light" type="button" wire:click="$set('policy', 0)"><i class="fas fa-arrow-left me-1"></i>{{ __('Policies') }}</button>
-        <div class="me-auto min-w-0">
+    <div class="d-flex flex-wrap flex-md-nowrap align-items-center gap-2 mb-3">
+        <button class="btn btn-sm btn-light text-nowrap" type="button" wire:click="$set('policy', 0)"><i class="fas fa-arrow-left me-1"></i>{{ __('Policies') }}</button>
+        <div class="me-auto min-w-0 flex-grow-1">
             <div class="fw-medium">{{ $selectedPolicy->name }}
                 @if ($selectedPolicy->definition['version'] ?? null)<span class="small text-muted fw-normal">{{ $selectedPolicy->definition['version'] }}</span>@endif
             </div>
@@ -87,7 +87,7 @@
             @endif
         </div>
         @php($score = CompliancePolicies::score($counts))
-        <div class="fw-semibold">{{ $score === null ? '—' : __(':score % passing', ['score' => $score]) }}</div>
+        <div class="fw-semibold text-nowrap">{{ $score === null ? '—' : __(':score % passing', ['score' => $score]) }}</div>
     </div>
     @if (! $selectedPolicy->enabled)
         <div class="alert alert-secondary small py-2">{{ __('The policy is switched off: its devices are not evaluated.') }}</div>
