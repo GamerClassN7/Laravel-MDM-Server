@@ -43,6 +43,9 @@ class Device extends Model
     /** Agents from this version collect the security inventory (App\Support\SecurityScanner). */
     public const SECURITY_VERSION = '1.17.0';
 
+    /** Agents from this version report their SQL Server instances (the sqlserver source of compliance policies). */
+    public const SQLSERVER_VERSION = '1.18.0';
+
     /** At most this many ping-only devices per agent. */
     public const MAX_PING_TARGETS = 32;
 
@@ -623,6 +626,11 @@ class Device extends Model
     public function securityFindings(): HasMany
     {
         return $this->hasMany(SecurityFinding::class);
+    }
+
+    public function complianceResults(): HasMany
+    {
+        return $this->hasMany(ComplianceResult::class);
     }
 
     /** Agents 1.7.0+ register a key and sign every request; older ones only get the agent update. */

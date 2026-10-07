@@ -19,10 +19,10 @@ use Throwable;
 class SecurityInventory extends Model
 {
     /** The sources an inventory has (events are not part of it). */
-    public const SOURCES = ['software', 'processes', 'listening', 'startup', 'admins', 'posture'];
+    public const SOURCES = ['software', 'processes', 'listening', 'startup', 'admins', 'posture', 'sqlserver'];
 
     /** At most this many items per list are kept. */
-    public const LIMITS = ['software' => 5000, 'processes' => 1000, 'listening' => 1000, 'startup' => 500, 'admins' => 200, 'posture' => 1];
+    public const LIMITS = ['software' => 5000, 'processes' => 1000, 'listening' => 1000, 'startup' => 500, 'admins' => 200, 'posture' => 1, 'sqlserver' => 50];
 
     /** The key of the one item of the posture source. */
     public const POSTURE_KEY = 'posture';
@@ -138,15 +138,16 @@ class SecurityInventory extends Model
 
     /**
      * An item of a source with only its known fields and values: texts cut, Count / Port / days
-     * as integers. The posture source keeps booleans, numbers and texts.
+     * as integers. Typed sources (posture, sqlserver) keep booleans, numbers and texts.
      */
     public static function sanitizeItem(string $source, mixed $item): array
     {
         $clean = [];
         $item = is_array($item) ? $item : [];
+        $typed = SecurityRules::SOURCES[$source]['typed'] ?? false;
         foreach (SecurityRules::SOURCES[$source]['fields'] as $field) {
             $value = $item[$field] ?? null;
-            $clean[$field] = $source === 'posture' && (is_bool($value) || is_int($value) || is_float($value)) ? $value : self::value($value, $field);
+            $clean[$field] = $typed && (is_bool($value) || is_int($value) || is_float($value)) ? $value : self::value($value, $field);
         }
 
         return $clean;

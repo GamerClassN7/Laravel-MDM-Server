@@ -26,16 +26,18 @@ class SecurityScanner
     public const MAX_FINDINGS_PER_RULE = 50;
 
     /**
-     * The collection policy for the agents: what to send of the logs. Nothing when the portal takes no logs.
+     * The collection policy for the agents: what to send of the logs (nothing when the portal takes no
+     * logs) and which sources of the inventory the server takes (agents 1.18.0+ send sqlserver only
+     * when it is listed, an older server would refuse the whole collection).
      *
-     * @return array{version: string, sources: array<string, array<int, string|int>|null>}
+     * @return array{version: string, sources: array<string, array<int, string|int>|null>, inventory: array<int, string>}
      */
     public static function policy(): array
     {
         SecurityRule::syncBuiltIn();
         $parsers = self::logsAllowed() ? SecurityRule::query()->enabled()->parsers()->get()->pluck('definition') : collect();
 
-        return SecurityParsers::policy($parsers);
+        return SecurityParsers::policy($parsers) + ['inventory' => SecurityInventory::SOURCES];
     }
 
     /** The portal setting that turns the logs of all agents off (system admins, Security page). */
@@ -286,11 +288,13 @@ class SecurityScanner
         }
 
         $full = $scanned['full_at'] ?? 0;
-        $fresh = ['rules' => $next, 'full_at' => $previous === [] ? time() : $full];
+        $fresh = ['rules' => $next, 'full_at' => $previous === [] ? time() : $full] + array_intersect_key($scanned, ['compliance' => true]);
         if ($fresh !== $scanned) {
             $inventory->forceFill(['scanned' => $fresh])->saveQuietly();
         }
-        if ($counts['opened'] + $counts['resolved'] > 0) {
+        // The compliance policies look at the same inventory.
+        $compliance = ComplianceScanner::evaluate($device, $inventory);
+        if ($counts['opened'] + $counts['resolved'] > 0 || $compliance) {
             LiveUpdates::device($device->id, 'security');
         }
 

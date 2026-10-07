@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Models\CompliancePolicy;
 use App\Models\SecurityRule;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -14,7 +15,8 @@ use Throwable;
 /**
  * The rules of the security scanner from a public git repository (MDM_SECURITY_FEED_URL, at
  * MDM_SECURITY_FEED_REF): manifest.json lists its version and the SHA-256 of every file, rules/*.json
- * and parsers/*.json hold the definitions (one rule or a list per file). Everything is fetched and
+ * and parsers/*.json hold the definitions (one rule or a list per file), policies/*.json the
+ * compliance policies (one policy with its checks, or a list). Everything is fetched and
  * checked first, then applied in one go: a file that does not match the manifest or an unreachable
  * repository changes nothing.
  */
@@ -86,6 +88,7 @@ class SecurityFeed
             }
 
             $definitions = [];
+            $policies = [];
             $total = 0;
             foreach ($manifest['files'] as $path => $hash) {
                 $body = self::fetch("$base/$path");
@@ -97,22 +100,33 @@ class SecurityFeed
                 if (! is_array($parsed)) {
                     throw new RuntimeException("$path is not JSON.");
                 }
+                if (str_starts_with($path, 'policies/')) {
+                    // A policy is one object (with its checks) or a list of them.
+                    array_push($policies, ...(isset($parsed['key']) ? [$parsed] : array_values($parsed)));
+
+                    continue;
+                }
                 foreach (isset($parsed['key']) ? [$parsed] : $parsed as $definition) {
                     $definitions[] = str_starts_with($path, 'parsers/') && is_array($definition) ? ['kind' => 'parser'] + $definition : $definition;
                 }
             }
 
             $result = SecurityRule::apply($definitions, SecurityRule::FEED, $manifest['version']);
+            $policyResult = CompliancePolicy::apply($policies, CompliancePolicy::FEED, $manifest['version']);
             // A bundled rule the feed no longer has comes back.
             Cache::forget('mdm.security_rules');
             SecurityRule::syncBuiltIn();
             if ($result['added'] + $result['updated'] + $result['removed'] > 0) {
                 SecurityScanner::scanAll();
             }
+            if ($policyResult['added'] + $policyResult['updated'] + $policyResult['removed'] > 0) {
+                ComplianceScanner::evaluateAll();
+            }
 
             return self::remember([
                 'checked_at' => now()->toIso8601String(), 'version' => $manifest['version'], 'ok' => true, 'error' => null,
-                'added' => $result['added'], 'updated' => $result['updated'], 'removed' => $result['removed'], 'skipped' => array_slice($result['skipped'], 0, 20),
+                'added' => $result['added'], 'updated' => $result['updated'], 'removed' => $result['removed'], 'skipped' => array_slice([...$result['skipped'], ...$policyResult['skipped']], 0, 20),
+                'policies' => ['added' => $policyResult['added'], 'updated' => $policyResult['updated'], 'removed' => $policyResult['removed']],
             ]);
         } catch (Throwable $e) {
             Log::warning('Security rules feed: '.$e->getMessage());
@@ -146,7 +160,7 @@ class SecurityFeed
             throw new RuntimeException('manifest.json lists more than '.self::MAX_FILES.' files.');
         }
         foreach ($manifest['files'] as $path => $hash) {
-            if (! is_string($path) || ! preg_match('~^(rules|parsers)/[\w.-]+(/[\w.-]+)*\.json$~', $path) || str_contains($path, '..') || ! is_string($hash) || ! preg_match('/^[0-9a-fA-F]{64}$/', $hash)) {
+            if (! is_string($path) || ! preg_match('~^(rules|parsers|policies)/[\w.-]+(/[\w.-]+)*\.json$~', $path) || str_contains($path, '..') || ! is_string($hash) || ! preg_match('/^[0-9a-fA-F]{64}$/', $hash)) {
                 throw new RuntimeException('manifest.json lists an unusable file: '.json_encode($path));
             }
         }

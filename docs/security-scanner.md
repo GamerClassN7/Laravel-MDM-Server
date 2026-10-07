@@ -51,6 +51,7 @@ What the agent collects (the *sources* of the rules):
 | `startup` | Run / RunOnce keys, Startup folders, scheduled tasks outside `\Microsoft\` | cron (system and users), units in `/etc/systemd/system`, `rc.local`, desktop autostart |
 | `admins` | members of Administrators | uid 0, groups sudo / wheel / admin |
 | `posture` | firewall, antivirus (Security Center / Defender), BitLocker, Secure Boot, RDP and NLA, SMBv1, UAC, Guest, auto logon, days since the last update | firewall (ufw, firewalld, iptables / nftables), LUKS, Secure Boot, `sshd -T` (root login, passwords), unattended-upgrades, days since the last apt upgrade |
+| `sqlserver` | local SQL Server instances (agents 1.18.0+, see [Compliance policies](#compliance-policies)) | — |
 | logs (raw, since the previous collection) | `windows.security` (1102, 4625, 4648, 4697, 4698, 4720, 4722, 4724, 4726, 4728, 4732, 4740, 4756), `windows.system` (104, 7045), `windows.defender` (1006, 1116, 1117, 5001, 5010, 5012): `Time`, `Id`, `Provider`, `Level`, `Data` (EventData / UserData, names without spaces) | `linux.auth`: the auth / authpriv journal (or `auth.log`, `secure`): `Time`, `Identifier`, `Pid`, `Message` |
 
 The built-in parsers ([`resources/security/parsers.json`](../src/laravel/resources/security/parsers.json))
@@ -137,3 +138,106 @@ over feed over bundled), and a bundled rule the feed replaced comes back when it
   the message), e.g. more than 3 administrators.
 - Each matching item is its own finding, told apart by the key fields of its source (software:
   name and source; processes: name, path and command line; ports: protocol, address and port; ...).
+
+## Compliance policies
+
+The **Compliance** tab of **Security** measures the devices against benchmarks and baselines (the CIS
+Benchmarks, your own standards). A **policy** is a list of **checks**; every check looks at a source of
+the inventory, like a detection rule, and gives each device one status:
+
+| Status | When |
+|---|---|
+| **Fail** | `fail` holds on an item |
+| **Warn** | `warn` holds (and `fail` does not) |
+| **Manual** | it cannot be told from what the agent reports: `manual` holds, or a field the check needs is not reported (`requires`, by default every field of `fail` and `warn`) |
+| **Pass** | none of the above |
+| **Not applicable** | `applies` does not hold, the source has no items (no SQL Server on the device), or the policy is for another platform |
+
+Each item of the source is judged on its own and the check takes the worst status (an instance with
+`xp_cmdshell` on fails the check even when the other instances pass). The tab shows each policy with
+the share of passing checks among the ones that could be told (fail, warn, pass) and, per check, the
+devices that do not pass with since when; the **Security** tab of a device lists its results with the
+remediation of what fails.
+
+Policies come with the rules feed (`policies/**/*.json`, listed in `manifest.json` like rules and
+parsers: one policy with its checks per file, or a list) and system admins add their own with **Add
+policy** (JSON, checked while typing and tried on a device). Like rules, a policy of the feed is switched
+on and off and copied, not edited, and one of your own keeps its definition when the feed has the same
+key. The results are evaluated with every inventory and whenever policies change.
+
+```json
+{
+    "key": "cis-mssql-2022",
+    "name": "CIS Microsoft SQL Server 2019 / 2022 Benchmark",
+    "version": "1.1.0",
+    "platform": "windows",
+    "source": "sqlserver",
+    "manual": {"field": "Error", "op": "exists"},
+    "checks": [
+        {
+            "id": "Sql.XpCmdshellDisabled",
+            "name": "xp_cmdshell is disabled",
+            "reference": "CIS 2.15",
+            "severity": "critical",
+            "fail": {"field": "XpCmdshell", "op": "ne", "value": 0},
+            "message": "{Instance}: xp_cmdshell is {XpCmdshell}",
+            "remediation": "EXEC sp_configure 'xp_cmdshell', 0; RECONFIGURE;"
+        },
+        {
+            "id": "Sql.RemoteAdminConnectionsDisabled",
+            "name": "Remote admin connections are off",
+            "reference": "CIS 2.7",
+            "severity": "medium",
+            "applies": {"field": "Clustered", "op": "false"},
+            "fail": {"field": "RemoteAdminConnections", "op": "ne", "value": 0}
+        }
+    ]
+}
+```
+
+- Policy: `key`, `name`, `description`, `version`, `platform`, `source` (the default of its checks),
+  `applies` and `manual` (conditions for every check), `checks` (up to 300).
+- Check: `id` (letters, digits, `.`, `-`, `_`), `name`, `severity`, `reference`, `description`,
+  `remediation`, `source`, `applies`, `manual`, `fail`, `warn` (at least one of them), `requires`,
+  `message` (`{Field}` placeholders of the failing item). Conditions and operators are the ones of
+  detection rules.
+
+### SQL Server
+
+On Windows, agents 1.18.0+ report every local SQL Server instance (`sqlserver`, one item per instance),
+once the server says it takes that source. The agent signs in to each instance with **Windows
+authentication as its own account** (`NT AUTHORITY\SYSTEM`): no password or connection string is kept
+on the device or the server, and nothing is changed on the instance. Since SQL Server 2012 that login is
+not a sysadmin, so give it read access once on each instance:
+
+```sql
+USE master;
+GRANT VIEW SERVER STATE, VIEW ANY DEFINITION, VIEW ANY DATABASE TO [NT AUTHORITY\SYSTEM];
+USE msdb;
+CREATE USER [NT AUTHORITY\SYSTEM] FOR LOGIN [NT AUTHORITY\SYSTEM];
+GRANT SELECT ON dbo.backupset TO [NT AUTHORITY\SYSTEM];
+```
+
+What the login may not read is not reported, and the checks that need it are **Manual**; an instance
+that is stopped or refuses the sign-in has `Error` (and a policy with `"manual": {"field": "Error", "op":
+"exists"}` turns all its checks Manual). The fields:
+
+| Field | What |
+|---|---|
+| `Instance`, `Version`, `Edition`, `Clustered`, `Error` | the instance (`Clustered`: a failover cluster instance) |
+| `AdHocDistributedQueries`, `ClrEnabled`, `CrossDbOwnershipChaining`, `DatabaseMailXps`, `OleAutomationProcedures`, `RemoteAccess`, `RemoteAdminConnections`, `ScanForStartupProcs`, `XpCmdshell` | `value_in_use` of the server configuration options |
+| `TrustworthyCount`, `TrustworthyDatabases` | databases with TRUSTWORTHY on (msdb left out) |
+| `SaEnabled`, `SaName` | the login with SID `0x01` |
+| `WindowsAuthOnly` | false in mixed authentication mode |
+| `SysadminCount`, `SysadminLogins` | enabled sysadmin logins without `NT SERVICE\*`, `##...##` and `NT AUTHORITY\SYSTEM` |
+| `WeakPolicyCount`, `WeakPolicyLogins` | enabled SQL logins without CHECK_POLICY or CHECK_EXPIRATION |
+| `NoFullBackupCount`, `NoFullBackupDatabases` | online user databases without a full backup in 24 hours |
+| `NoLogBackupCount`, `NoLogBackupDatabases` | FULL / BULK_LOGGED user databases without a log backup in an hour |
+| `NoCheckDbCount`, `NoCheckDbDatabases` | user databases without a good CHECKDB in 7 days (not reported before SQL Server 2016 SP2) |
+| `LinkedServerSaCount`, `LinkedServersSa` | linked servers that sign in as `sa` |
+| `OwnedBySaCount`, `OwnedBySaDatabases` | user databases owned by `sa` |
+| `ForceEncryption`, `AllConnectionsEncrypted`, `NoTdeCount`, `NoTdeDatabases` | Force Encryption (registry), whether every TCP connection is encrypted, user databases without TDE |
+| `ErrorLogCount`, `LoginAuditLevel` | the number of error logs kept, login auditing (`None`, `Success`, `Failure`, `Both`) |
+
+The lists (`...Databases`, `...Logins`) name at most 20; the counts are exact. The CIS Microsoft SQL
+Server 2019 / 2022 Benchmark is a policy of the [detection-policy](https://github.com/PanoptiPulse/detection-policy) feed.

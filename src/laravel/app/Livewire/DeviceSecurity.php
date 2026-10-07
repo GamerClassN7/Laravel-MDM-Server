@@ -2,6 +2,7 @@
 
 namespace App\Livewire;
 
+use App\Models\ComplianceResult;
 use App\Models\Device;
 use App\Models\SecurityEvent;
 use App\Models\SecurityFinding;
@@ -9,7 +10,7 @@ use App\Models\SecurityInventory;
 use Livewire\Attributes\On;
 use Livewire\Component;
 
-/** The Security tab of a device: the scanner's findings and the security inventory they come from. */
+/** The Security tab of a device: the scanner's findings, its compliance and the security inventory they come from. */
 class DeviceSecurity extends Component
 {
     public int $deviceId;
@@ -45,6 +46,8 @@ class DeviceSecurity extends Component
             'findings' => $open->whereNull('acknowledged_at')->values(),
             'acknowledged' => $open->whereNotNull('acknowledged_at')->values(),
             'events' => SecurityEvent::query()->where('device_id', $device->id)->latest('occurred_at')->limit(20)->get(),
+            'compliance' => ComplianceResult::query()->with('policy')->where('device_id', $device->id)->worstFirst()->get()
+                ->groupBy('compliance_policy_id')->sortBy(fn ($results) => $results->first()->policy?->name),
         ]);
     }
 }

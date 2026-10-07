@@ -71,6 +71,26 @@ class SecurityRules
                 'AutoLogon', 'SshRootLogin', 'SshPasswordAuthentication', 'AutomaticUpdates', 'DaysSinceUpdate',
             ],
             'key' => [],
+            'typed' => true,
+        ],
+        // Windows: one item per local SQL Server instance (agents 1.18.0+, for compliance policies).
+        // Settings are numbers (value_in_use), lists are "...Count" (null: could not be read) with
+        // the names beside them.
+        'sqlserver' => [
+            'label' => 'SQL Server instances',
+            'fields' => [
+                'Instance', 'Version', 'Edition', 'Clustered', 'Error',
+                'AdHocDistributedQueries', 'ClrEnabled', 'CrossDbOwnershipChaining', 'DatabaseMailXps', 'OleAutomationProcedures',
+                'RemoteAccess', 'RemoteAdminConnections', 'ScanForStartupProcs', 'XpCmdshell',
+                'TrustworthyCount', 'TrustworthyDatabases', 'SaEnabled', 'SaName', 'WindowsAuthOnly',
+                'SysadminCount', 'SysadminLogins', 'WeakPolicyCount', 'WeakPolicyLogins',
+                'NoFullBackupCount', 'NoFullBackupDatabases', 'NoLogBackupCount', 'NoLogBackupDatabases',
+                'NoCheckDbCount', 'NoCheckDbDatabases', 'LinkedServerSaCount', 'LinkedServersSa',
+                'OwnedBySaCount', 'OwnedBySaDatabases', 'ForceEncryption', 'AllConnectionsEncrypted',
+                'NoTdeCount', 'NoTdeDatabases', 'ErrorLogCount', 'LoginAuditLevel',
+            ],
+            'key' => ['Instance'],
+            'typed' => true,
         ],
         'events' => [
             'label' => 'Security events',
