@@ -9,7 +9,6 @@ use App\Models\ScriptRun;
 use App\Models\SecurityFinding;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -25,15 +24,13 @@ class AlertEvaluator
     /** Sizes are 1024 based, as shown in the portal. */
     private const GB = 1073741824;
 
-    private const LOCALE = 'en';
-
     /** @var Collection<int, Device> loaded once per run */
     private Collection $devices;
 
     /** @return array{triggered: int, resolved: int} */
     public static function run(): array
     {
-        return App::withLocale(self::LOCALE, fn () => (new self)->evaluate());
+        return Locales::inEnglish(fn () => (new self)->evaluate());
     }
 
     public function evaluate(): array
@@ -332,7 +329,7 @@ class AlertEvaluator
      */
     public static function addressChanged(Device $device, string $from, string $to): void
     {
-        App::withLocale(self::LOCALE, fn () => self::announceAddressChange($device, $from, $to));
+        Locales::inEnglish(fn () => self::announceAddressChange($device, $from, $to));
     }
 
     private static function announceAddressChange(Device $device, string $from, string $to): void

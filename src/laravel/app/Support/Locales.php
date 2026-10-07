@@ -4,6 +4,7 @@ namespace App\Support;
 
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\App;
 use SteelAnts\LaravelBoilerplate\Models\Setting;
 use SteelAnts\LaravelBoilerplate\Types\SettingDataType;
 
@@ -60,6 +61,18 @@ class Locales
             ?? self::system()
             ?? $request->getPreferredLanguage(array_keys(self::available()))
             ?? config('app.locale');
+    }
+
+    /** Runs the callback in English (alerts, notifications), then switches back to the language before. */
+    public static function inEnglish(callable $callback): mixed
+    {
+        $previous = App::getLocale();
+        App::setLocale('en');
+        try {
+            return $callback();
+        } finally {
+            App::setLocale($previous);
+        }
     }
 
     public static function setForUser(User $user, string $locale): void
