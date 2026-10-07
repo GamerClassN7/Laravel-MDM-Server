@@ -1,4 +1,4 @@
-# Laravel-MDM
+# HeimGuard
 
 A simple, self-hosted portal for keeping an eye on your Windows and Linux (Debian / Ubuntu)
 computers: free disk space, pending updates, services, Docker containers, disk health and more.
