@@ -1,4 +1,6 @@
 @use('App\Models\Device')
+@use('App\Support\CompliancePolicies')
+@use('App\Support\ComplianceScanner')
 {{-- Findings of the scanner, then the inventory they come from (one list at a time). --}}
 <div x-data="{ search: '' }">
     @php
@@ -10,6 +12,7 @@
             'startup' => [__('Startup'), count($inventory?->data['startup'] ?? [])],
             'software' => [__('Software'), count($inventory?->data['software'] ?? [])],
             'processes' => [__('Processes'), count($inventory?->data['processes'] ?? [])],
+            'sqlserver' => [__('SQL Server'), count($inventory?->data['sqlserver'] ?? [])],
             'events' => [__('Events'), $events->count()],
         ];
         $columns = [
@@ -18,7 +21,11 @@
             'startup' => ['Name', 'Location', 'Command'],
             'software' => ['Name', 'Version', 'Publisher', 'Source'],
             'processes' => ['Name', 'User', 'Path', 'CommandLine'],
+            'sqlserver' => ['Instance', 'Version', 'Edition', 'Error'],
         ];
+        if (($inventory?->data['sqlserver'] ?? []) === []) {
+            unset($lists['sqlserver']);
+        }
         $yesNo = fn ($value) => is_bool($value) ? ($value ? __('Yes') : __('No')) : $value;
     @endphp
 
@@ -45,6 +52,48 @@
             </div>
         </details>
     @endif
+
+    {{-- The compliance policies on this device, one card per policy (the ones with problems open). --}}
+    @foreach ($compliance as $results)
+        @php($policy = $results->first()->policy)
+        @php($counts = ComplianceScanner::counts($results))
+        @php($score = CompliancePolicies::score($counts))
+        <details class="card overflow-hidden mb-3" wire:key="compliance-{{ $policy?->id }}" @if ($counts[CompliancePolicies::FAIL] + $counts[CompliancePolicies::WARN] > 0) open @endif>
+            <summary class="card-body py-2 d-flex flex-wrap align-items-center gap-2" style="cursor: pointer">
+                <span class="fw-medium me-auto">{{ $policy?->name }}</span>
+                @foreach ([CompliancePolicies::FAIL, CompliancePolicies::WARN, CompliancePolicies::MANUAL, CompliancePolicies::PASS] as $status)
+                    @if ($counts[$status] > 0)
+                        <x-badge :color="CompliancePolicies::STATUS_COLORS[$status]" size="sm" variant="subtle">{{ __(CompliancePolicies::STATUS_LABELS[$status]) }} {{ $counts[$status] }}</x-badge>
+                    @endif
+                @endforeach
+                <span class="small fw-semibold">{{ $score === null ? '—' : $score.' %' }}</span>
+            </summary>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0 small">
+                    <tbody>
+                        @php($checks = $policy?->checks() ?? [])
+                        @foreach ($results as $result)
+                            @php($check = $checks[$result->check_id] ?? [])
+                            <tr wire:key="compliance-result-{{ $result->id }}">
+                                <td class="ps-3 text-nowrap"><x-badge :color="$result->statusColor" size="sm" variant="subtle">{{ $result->statusLabel }}</x-badge></td>
+                                <td>
+                                    <div class="fw-medium">{{ $check['name'] ?? $result->check_id }}</div>
+                                    <div class="text-body-tertiary"><span class="font-monospace">{{ $result->check_id }}</span>@if ($check['reference'] ?? null) · {{ $check['reference'] }}@endif</div>
+                                </td>
+                                <td class="d-none d-md-table-cell"><x-badge :color="$result->severityColor" size="sm" variant="subtle">{{ __(ucfirst($result->severity)) }}</x-badge></td>
+                                <td class="text-break text-muted pe-3">
+                                    {{ $result->message }}
+                                    @if (in_array($result->status, [CompliancePolicies::FAIL, CompliancePolicies::WARN], true) && ($check['remediation'] ?? null))
+                                        <div class="text-body-secondary mt-1"><i class="fas fa-wrench me-1"></i>{{ $check['remediation'] }}</div>
+                                    @endif
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    @endforeach
 
     @if ($inventory === null)
         <div class="small text-muted">{{ __('No security inventory yet: it needs agent :version or newer.', ['version' => Device::SECURITY_VERSION]) }}</div>

@@ -35,7 +35,7 @@
         </div>
 
         <ul class="nav nav-tabs mb-4" role="tablist">
-            @foreach (['findings' => __('Findings'), 'events' => __('Events'), 'rules' => __('Checks')] as $value => $label)
+            @foreach (['findings' => __('Findings'), 'events' => __('Events'), 'compliance' => __('Compliance'), 'rules' => __('Checks')] as $value => $label)
                 <li class="nav-item" role="presentation">
                     <button class="nav-link {{ $tab === $value ? 'active' : '' }}" role="tab" type="button" aria-selected="{{ $tab === $value ? 'true' : 'false' }}" wire:click="$set('tab', '{{ $value }}')">{{ $label }}</button>
                 </li>
@@ -94,6 +94,8 @@
                     </table>
                 </div>
             </div>
+        @elseif ($tab === 'compliance')
+            @include('livewire.security-scan.partials.compliance', $compliance + ['isAdmin' => $isAdmin])
         @elseif ($tab === 'rules')
             <div class="card overflow-hidden">
                 <div class="table-responsive">

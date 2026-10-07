@@ -3,10 +3,14 @@
 namespace App\Livewire\SecurityScan;
 
 use App\Jobs\SyncSecurityFeed;
+use App\Models\CompliancePolicy;
+use App\Models\ComplianceResult;
 use App\Models\SecurityEvent;
 use App\Models\SecurityFinding;
 use App\Models\SecurityInventory;
 use App\Models\SecurityRule;
+use App\Support\CompliancePolicies;
+use App\Support\ComplianceScanner;
 use App\Support\SecurityFeed;
 use App\Support\SecurityInbox;
 use App\Support\SecurityRules;
@@ -23,7 +27,7 @@ use Livewire\Component;
  */
 class Page extends Component
 {
-    /** findings, events or rules */
+    /** findings, events, compliance or rules */
     #[Url(except: 'findings')]
     public string $tab = 'findings';
 
@@ -39,6 +43,10 @@ class Page extends Component
 
     #[Url(except: '')]
     public string $eventType = '';
+
+    /** Compliance: the policy whose checks are shown (its id), 0 for the list of policies. */
+    #[Url(except: 0)]
+    public int $policy = 0;
 
     /** Findings and events shown at most. */
     public const LIMIT = 200;
@@ -122,7 +130,42 @@ class Page extends Component
         alert()->success(__('Scanned: :opened new, :resolved resolved.', $counts))->now();
     }
 
+    public function togglePolicy(int $id): void
+    {
+        Gate::authorize('is-system-admin');
+        $policy = CompliancePolicy::query()->findOrFail($id);
+        $policy->update(['enabled' => ! $policy->enabled]);
+        ComplianceScanner::evaluateAll();
+    }
+
+    public function addPolicy(): void
+    {
+        Gate::authorize('is-system-admin');
+        $this->dispatch('openModal', 'security-scan.policy-form', __('Add policy'), [], 'xl');
+    }
+
+    public function editPolicy(int $id): void
+    {
+        Gate::authorize('is-system-admin');
+        $this->dispatch('openModal', 'security-scan.policy-form', __('Edit policy'), ['policyId' => $id], 'xl');
+    }
+
+    /** A copy of a policy (one of the feed cannot be edited) to change as one's own. */
+    public function duplicatePolicy(int $id): void
+    {
+        Gate::authorize('is-system-admin');
+        $this->dispatch('openModal', 'security-scan.policy-form', __('Add policy'), ['copyOf' => $id], 'xl');
+    }
+
+    public function reevaluate(): void
+    {
+        Gate::authorize('is-system-admin');
+        ComplianceScanner::evaluateAll();
+        alert()->success(__('Compliance evaluated again.'))->now();
+    }
+
     #[On('securityRuleSaved')]
+    #[On('compliancePolicySaved')]
     public function refresh(): void {}
 
     /** Live update (resources/js/live.js): some device changed. */
@@ -150,6 +193,40 @@ class Page extends Component
         return $query;
     }
 
+    /**
+     * The compliance tab: the policies with the statuses of their results over the fleet, or the
+     * checks of one policy with the devices that do not pass.
+     */
+    private function compliance(): array
+    {
+        $policies = CompliancePolicy::query()->orderBy('name')->get();
+        $counts = ComplianceResult::query()->selectRaw('compliance_policy_id, status, count(*) as total')->groupBy('compliance_policy_id', 'status')->get()
+            ->groupBy('compliance_policy_id')->map(fn ($rows) => $rows->pluck('total', 'status')->map(fn ($total) => (int) $total)->all());
+        $devices = ComplianceResult::query()->selectRaw('compliance_policy_id, count(distinct device_id) as total')->groupBy('compliance_policy_id')->pluck('total', 'compliance_policy_id');
+        $selected = $this->policy ? $policies->firstWhere('id', $this->policy) : null;
+        $checks = [];
+        if ($selected !== null) {
+            $results = ComplianceResult::query()->with('device')->where('compliance_policy_id', $selected->id)->get()->groupBy('check_id');
+            foreach ($selected->checks() as $id => $check) {
+                $rows = $results->get($id, collect());
+                $checks[$id] = [
+                    'check' => $check,
+                    'counts' => ComplianceScanner::counts($rows),
+                    'open' => $rows->whereIn('status', [CompliancePolicies::FAIL, CompliancePolicies::WARN, CompliancePolicies::MANUAL])
+                        ->sortBy(fn ($row) => CompliancePolicies::STATUSES[$row->status])->take(self::LIMIT)->values(),
+                ];
+            }
+        }
+
+        return [
+            'policies' => $policies,
+            'policyCounts' => $counts,
+            'policyDevices' => $devices,
+            'selectedPolicy' => $selected,
+            'checks' => $checks,
+        ];
+    }
+
     public function render()
     {
         $active = SecurityFinding::query()->active()->selectRaw('severity, count(*) as total')->groupBy('severity')->pluck('total', 'severity');
@@ -170,6 +247,7 @@ class Page extends Component
             'pending' => SecurityInbox::pending(),
             'feed' => ['enabled' => SecurityFeed::enabled()] + SecurityFeed::state(),
             'scanned' => SecurityInventory::query()->count(),
+            'compliance' => $this->tab === 'compliance' ? $this->compliance() : null,
             'isAdmin' => Gate::allows('is-system-admin'),
         ])->title(__('Security'));
     }

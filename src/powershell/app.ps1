@@ -124,7 +124,7 @@ $ReverbKey = "$($LegacyOptions['ReverbKey'])"
 # Not left for the functions (they would see them through dynamic scoping).
 Remove-Variable -Name i, name, value -ErrorAction SilentlyContinue
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.17.1'
+$AgentVersion = '1.18.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow', 'scanNetwork')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -1337,6 +1337,148 @@ function Get-SecurityPosture {
     return $posture
 }
 
+function Get-SecuritySqlServer {
+    # The local SQL Server instances and what the compliance policies check on them (CIS Microsoft
+    # SQL Server Benchmark): one item per instance. The agent signs in with Windows authentication as
+    # its own account (LocalSystem): no password is kept anywhere. What that login may not read is
+    # left out (null) and the check that needs it is "manual"; an instance it cannot connect to has
+    # Error. NT AUTHORITY\SYSTEM needs VIEW SERVER STATE, VIEW ANY DEFINITION and SELECT on
+    # msdb.dbo.backupset (docs/security-scanner.md).
+    $root = 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server'
+    $names = Get-ItemProperty -Path "$root\Instance Names\SQL" -ErrorAction SilentlyContinue
+    if (-not $names) { return }
+    $join = { param ($List) $all = @($List | Where-Object { $_ }); if ($all.Count -gt 20) { (($all | Select-Object -First 20) -join ', ') + ', …' } else { $all -join ', ' } }
+
+    foreach ($property in @($names.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' })) {
+        $name = $property.Name
+        $id = "$($property.Value)"
+        $item = [ordered]@{ Instance = $name }
+        $setup = Get-ItemProperty -Path "$root\$id\Setup" -ErrorAction SilentlyContinue
+        if ($setup) { $item.Version = "$($setup.Version)"; $item.Edition = "$($setup.Edition)" }
+        $item.Clustered = Test-Path -Path "$root\$id\Cluster"
+        $server = Get-ItemProperty -Path "$root\$id\MSSQLServer" -ErrorAction SilentlyContinue
+        # Not set: SQL Server keeps 6 error logs.
+        $item.ErrorLogCount = if ($server -and $null -ne $server.NumErrorLogs) { [int]$server.NumErrorLogs } else { 6 }
+        if ($server -and $null -ne $server.AuditLevel) { $item.LoginAuditLevel = @('None', 'Success', 'Failure', 'Both')[[int]$server.AuditLevel -band 3] }
+        $netLib = Get-ItemProperty -Path "$root\$id\MSSQLServer\SuperSocketNetLib" -ErrorAction SilentlyContinue
+        if ($netLib -and $null -ne $netLib.ForceEncryption) { $item.ForceEncryption = [int]$netLib.ForceEncryption -eq 1 }
+
+        $service = if ($name -eq 'MSSQLSERVER') { 'MSSQLSERVER' } else { "MSSQL`$$name" }
+        $status = (Get-Service -Name $service -ErrorAction SilentlyContinue).Status
+        if ($status -and "$status" -ne 'Running') {
+            $item.Error = "The service $service is $status."
+            [PSCustomObject]$item
+            continue
+        }
+
+        $dataSource = if ($name -eq 'MSSQLSERVER') { '.' } else { ".\$name" }
+        $connection = New-Object System.Data.SqlClient.SqlConnection("Data Source=$dataSource;Integrated Security=SSPI;Connect Timeout=10;Application Name=MDM agent;Encrypt=False")
+        try {
+            $connection.Open()
+        }
+        catch {
+            $reason = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message }
+            $item.Error = ConvertTo-SecurityText "Cannot connect: $reason" 300
+            [PSCustomObject]$item
+            continue
+        }
+        # Rows of a query (each an array of its columns), $null when it fails (no permission). Assign
+        # the result before using it: @(& $query ...) would wrap the rows once more.
+        $query = {
+            param ($Sql)
+            try {
+                $command = $connection.CreateCommand()
+                $command.CommandText = $Sql
+                $command.CommandTimeout = 30
+                $reader = $command.ExecuteReader()
+                $rows = New-Object System.Collections.Generic.List[object]
+                try {
+                    while ($reader.Read()) {
+                        $values = New-Object object[] $reader.FieldCount
+                        [void]$reader.GetValues($values)
+                        for ($i = 0; $i -lt $values.Count; $i++) { if ($values[$i] -is [System.DBNull]) { $values[$i] = $null } }
+                        $rows.Add($values)
+                    }
+                }
+                finally { $reader.Close() }
+                return , $rows.ToArray()
+            }
+            catch { return $null }
+        }
+        try {
+            $props = & $query "SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)), CAST(SERVERPROPERTY('Edition') AS nvarchar(128)), CAST(SERVERPROPERTY('IsClustered') AS int), CAST(SERVERPROPERTY('IsIntegratedSecurityOnly') AS int), HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION'), HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE')"
+            $definitions = $false
+            $state = $false
+            if ($props) {
+                $row = $props[0]
+                $item.Version = "$($row[0])"
+                $item.Edition = "$($row[1])"
+                $item.Clustered = [int]$row[2] -eq 1
+                $item.WindowsAuthOnly = [int]$row[3] -eq 1
+                $definitions = [int]$row[4] -eq 1
+                $state = [int]$row[5] -eq 1
+            }
+
+            $settings = @{
+                'Ad Hoc Distributed Queries' = 'AdHocDistributedQueries'; 'clr enabled' = 'ClrEnabled'; 'cross db ownership chaining' = 'CrossDbOwnershipChaining'
+                'Database Mail XPs' = 'DatabaseMailXps'; 'Ole Automation Procedures' = 'OleAutomationProcedures'; 'remote access' = 'RemoteAccess'
+                'remote admin connections' = 'RemoteAdminConnections'; 'scan for startup procs' = 'ScanForStartupProcs'; 'xp_cmdshell' = 'XpCmdshell'
+            }
+            $configurations = & $query 'SELECT name, CAST(value_in_use AS int) FROM sys.configurations'
+            foreach ($row in $configurations) {
+                if ($row -and $settings.ContainsKey("$($row[0])")) { $item[$settings["$($row[0])"]] = [int]$row[1] }
+            }
+
+            $trustworthy = & $query "SELECT name FROM sys.databases WHERE is_trustworthy_on = 1 AND name <> 'msdb'"
+            if ($null -ne $trustworthy) { $item.TrustworthyCount = @($trustworthy).Count; $item.TrustworthyDatabases = & $join @($trustworthy | ForEach-Object { $_[0] }) }
+
+            if ($definitions) {
+                $sa = & $query 'SELECT name, is_disabled FROM sys.server_principals WHERE sid = 0x01'
+                if ($sa) { $item.SaName = "$($sa[0][0])"; $item.SaEnabled = -not [bool]$sa[0][1] }
+                $admins = & $query "SELECT p.name FROM sys.server_role_members m JOIN sys.server_principals r ON r.principal_id = m.role_principal_id JOIN sys.server_principals p ON p.principal_id = m.member_principal_id WHERE r.name = 'sysadmin' AND p.is_disabled = 0 AND p.name NOT LIKE 'NT SERVICE\%' AND p.name NOT LIKE '##%' AND p.name <> 'NT AUTHORITY\SYSTEM'"
+                if ($null -ne $admins) { $item.SysadminCount = @($admins).Count; $item.SysadminLogins = & $join @($admins | ForEach-Object { $_[0] }) }
+                $weak = & $query "SELECT name FROM sys.sql_logins WHERE is_disabled = 0 AND name NOT LIKE '##%' AND (is_policy_checked = 0 OR is_expiration_checked = 0)"
+                if ($null -ne $weak) { $item.WeakPolicyCount = @($weak).Count; $item.WeakPolicyLogins = & $join @($weak | ForEach-Object { $_[0] }) }
+                $linked = & $query "SELECT DISTINCT s.name FROM sys.servers s JOIN sys.linked_logins l ON l.server_id = s.server_id WHERE s.is_linked = 1 AND l.remote_name = 'sa'"
+                if ($null -ne $linked) { $item.LinkedServerSaCount = @($linked).Count; $item.LinkedServersSa = & $join @($linked | ForEach-Object { $_[0] }) }
+            }
+
+            # Online user databases (not the system ones, not snapshots).
+            $databases = & $query "SELECT name, recovery_model, CASE WHEN owner_sid = 0x01 THEN 1 ELSE 0 END, is_encrypted, CONVERT(datetime, DATABASEPROPERTYEX(name, 'LastGoodCheckDbTime')), CASE WHEN CONVERT(datetime, DATABASEPROPERTYEX(name, 'LastGoodCheckDbTime')) >= DATEADD(day, -7, GETDATE()) THEN 1 ELSE 0 END FROM sys.databases WHERE database_id > 4 AND state = 0 AND source_database_id IS NULL"
+            if ($null -ne $databases) {
+                $databases = @($databases)
+                $owned = @($databases | Where-Object { [int]$_[2] -eq 1 } | ForEach-Object { $_[0] })
+                $item.OwnedBySaCount = $owned.Count; $item.OwnedBySaDatabases = & $join $owned
+                $plain = @($databases | Where-Object { -not [bool]$_[3] } | ForEach-Object { $_[0] })
+                $item.NoTdeCount = $plain.Count; $item.NoTdeDatabases = & $join $plain
+                # Before SQL Server 2016 SP2 LastGoodCheckDbTime is not there (null): CHECKDB cannot be told.
+                if (-not @($databases | Where-Object { $null -eq $_[4] })) {
+                    $stale = @($databases | Where-Object { [int]$_[5] -ne 1 } | ForEach-Object { $_[0] })
+                    $item.NoCheckDbCount = $stale.Count; $item.NoCheckDbDatabases = & $join $stale
+                }
+                $backups = & $query "SELECT d.name, d.recovery_model, (SELECT MAX(b.backup_finish_date) FROM msdb.dbo.backupset b WHERE b.database_name = d.name AND b.type = 'D'), (SELECT MAX(b.backup_finish_date) FROM msdb.dbo.backupset b WHERE b.database_name = d.name AND b.type = 'L'), GETDATE() FROM sys.databases d WHERE d.database_id > 4 AND d.state = 0 AND d.source_database_id IS NULL"
+                if ($null -ne $backups) {
+                    $noFull = @($backups | Where-Object { $null -eq $_[2] -or [datetime]$_[2] -lt ([datetime]$_[4]).AddHours(-24) } | ForEach-Object { $_[0] })
+                    $item.NoFullBackupCount = $noFull.Count; $item.NoFullBackupDatabases = & $join $noFull
+                    # Full and bulk-logged recovery (1, 2) need log backups.
+                    $noLog = @($backups | Where-Object { [int]$_[1] -in 1, 2 -and ($null -eq $_[3] -or [datetime]$_[3] -lt ([datetime]$_[4]).AddHours(-1)) } | ForEach-Object { $_[0] })
+                    $item.NoLogBackupCount = $noLog.Count; $item.NoLogBackupDatabases = & $join $noLog
+                }
+            }
+
+            if ($state) {
+                # Connections over the network (this one is shared memory): all of them encrypted.
+                $connections = & $query "SELECT COUNT(*), SUM(CASE WHEN encrypt_option = 'TRUE' THEN 1 ELSE 0 END) FROM sys.dm_exec_connections WHERE net_transport = 'TCP'"
+                if ($connections -and [int]$connections[0][0] -gt 0) { $item.AllConnectionsEncrypted = [int]$connections[0][0] -eq [int]$connections[0][1] }
+            }
+        }
+        finally {
+            $connection.Dispose()
+        }
+        [PSCustomObject]$item
+    }
+}
+
 function Get-SecurityLogs {
     # The raw records of the logs the parsers of the server read, from the position the server
     # acknowledged last, only the ones the collection policy asks for (the identifiers / event ids
@@ -1488,7 +1630,9 @@ function Get-SecurityInventory {
         [bool]$SendLogs = $false,
         # The collection policy of the server and the positions of the logs (JSON), see Get-SecurityLogs.
         [string]$PolicyJson = '',
-        [string]$CursorsJson = ''
+        [string]$CursorsJson = '',
+        # The server takes the sqlserver source (its policy lists it under inventory).
+        [bool]$SqlServer = $false
     )
 
     $inventory = @{}
@@ -1498,6 +1642,9 @@ function Get-SecurityInventory {
     try { $inventory['startup'] = @(Get-SecurityStartup -OnLinux $OnLinux | Select-Object -First 500) } catch { }
     try { $inventory['admins'] = @(Get-SecurityAdmins -OnLinux $OnLinux | Select-Object -First 200) } catch { }
     try { $inventory['posture'] = Get-SecurityPosture -OnLinux $OnLinux -InContainer $InContainer } catch { }
+    if ($SqlServer -and -not $OnLinux -and -not $InContainer) {
+        try { $inventory['sqlserver'] = @(Get-SecuritySqlServer | Select-Object -First 50) } catch { }
+    }
     $records = @()
     $moved = @{}
     if ($SendLogs -and $PolicyJson) {
@@ -3345,13 +3492,16 @@ function Start-SecurityCollection {
         [string]
         $PolicyJson = '',
         [string]
-        $CursorsJson = ''
+        $CursorsJson = '',
+        # Whether the SQL Server instances are read (the server takes the sqlserver source).
+        [bool]
+        $SqlServer = $false
     )
 
-    return Start-AgentJob -Name 'security' -Functions 'ConvertTo-SecurityText', 'Get-SecuritySoftware', 'Get-SecurityProcesses', 'Get-SecurityListening', 'Get-SecurityStartup', 'Get-SecurityAdmins', 'Get-SecurityPosture', 'Get-SecurityShortHash', 'Get-SecurityLogs', 'Get-SecurityInventory' -ArgumentList $OnLinux, $Since, $PID, $InContainer, $SendLogs, $PolicyJson, $CursorsJson -ScriptBlock {
-        param ($OnLinux, $Since, $AgentPid, $InContainer, $SendLogs, $PolicyJson, $CursorsJson)
+    return Start-AgentJob -Name 'security' -Functions 'ConvertTo-SecurityText', 'Get-SecuritySoftware', 'Get-SecurityProcesses', 'Get-SecurityListening', 'Get-SecurityStartup', 'Get-SecurityAdmins', 'Get-SecurityPosture', 'Get-SecuritySqlServer', 'Get-SecurityShortHash', 'Get-SecurityLogs', 'Get-SecurityInventory' -ArgumentList $OnLinux, $Since, $PID, $InContainer, $SendLogs, $PolicyJson, $CursorsJson, $SqlServer -ScriptBlock {
+        param ($OnLinux, $Since, $AgentPid, $InContainer, $SendLogs, $PolicyJson, $CursorsJson, $SqlServer)
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
-        return Get-SecurityInventory -OnLinux $OnLinux -Since $Since -AgentPid $AgentPid -InContainer $InContainer -SendLogs $SendLogs -PolicyJson $PolicyJson -CursorsJson $CursorsJson
+        return Get-SecurityInventory -OnLinux $OnLinux -Since $Since -AgentPid $AgentPid -InContainer $InContainer -SendLogs $SendLogs -PolicyJson $PolicyJson -CursorsJson $CursorsJson -SqlServer $SqlServer
     }
 }
 
@@ -3408,6 +3558,7 @@ $SecurityFields = @{
     startup   = @('Name', 'Command', 'Location', 'User')
     admins    = @('Name', 'Source', 'Enabled')
     posture   = @('FirewallEnabled', 'AntivirusName', 'AntivirusEnabled', 'AntivirusUpToDate', 'RealTimeProtection', 'DiskEncrypted', 'SecureBoot', 'RdpEnabled', 'RdpNla', 'Smb1Enabled', 'UacEnabled', 'GuestEnabled', 'AutoLogon', 'SshRootLogin', 'SshPasswordAuthentication', 'AutomaticUpdates', 'DaysSinceUpdate')
+    sqlserver = @('Instance', 'Version', 'Edition', 'Clustered', 'Error', 'AdHocDistributedQueries', 'ClrEnabled', 'CrossDbOwnershipChaining', 'DatabaseMailXps', 'OleAutomationProcedures', 'RemoteAccess', 'RemoteAdminConnections', 'ScanForStartupProcs', 'XpCmdshell', 'TrustworthyCount', 'TrustworthyDatabases', 'SaEnabled', 'SaName', 'WindowsAuthOnly', 'SysadminCount', 'SysadminLogins', 'WeakPolicyCount', 'WeakPolicyLogins', 'NoFullBackupCount', 'NoFullBackupDatabases', 'NoLogBackupCount', 'NoLogBackupDatabases', 'NoCheckDbCount', 'NoCheckDbDatabases', 'LinkedServerSaCount', 'LinkedServersSa', 'OwnedBySaCount', 'OwnedBySaDatabases', 'ForceEncryption', 'AllConnectionsEncrypted', 'NoTdeCount', 'NoTdeDatabases', 'ErrorLogCount', 'LoginAuditLevel')
 }
 $SecurityKeyFields = @{
     software  = @('Name', 'Source')
@@ -3415,6 +3566,7 @@ $SecurityKeyFields = @{
     listening = @('Protocol', 'Address', 'Port')
     startup   = @('Name', 'Location')
     admins    = @('Name')
+    sqlserver = @('Instance')
 }
 
 function ConvertTo-SecurityCanon ($Value) {
@@ -3481,7 +3633,7 @@ function Get-SecurityDeltas {
 
     $sources = New-Object System.Collections.Generic.List[object]
     $pending = @{}
-    foreach ($source in 'software', 'processes', 'listening', 'startup', 'admins', 'posture') {
+    foreach ($source in 'software', 'processes', 'listening', 'startup', 'admins', 'posture', 'sqlserver') {
         if (-not $Inventory.ContainsKey($source)) { continue }
         $items = if ($source -eq 'posture') { @($Inventory[$source]) } else { @($Inventory[$source]) }
         $rows = @{}
@@ -5700,8 +5852,10 @@ function Start-Agent {
                 $since = if ($state -and $state.Since -gt (Get-Date).AddDays(-1)) { $state.Since } else { (Get-Date).AddDays(-1) }
                 $securityStarted = Get-Date
                 $sendLogs = (Get-SecurityLogsLevel) -eq 'on'
-                $policy = if ($sendLogs) { Get-SecurityPolicy -Token $Token } else { $null }
-                $securityJob = Start-SecurityCollection -Since $since -InContainer ($virtualization -and $virtualization.Type -eq 'container') -SendLogs ($sendLogs -and $null -ne $policy) -PolicyJson $(if ($policy) { $policy | ConvertTo-Json -Depth 6 -Compress } else { '' }) -CursorsJson ((Get-SecurityCursors) | ConvertTo-Json -Compress)
+                # The policy also says which inventory sources the server takes (sqlserver from 1.18.0).
+                $policy = Get-SecurityPolicy -Token $Token
+                $sqlServer = [bool]($policy -and @($policy.inventory) -contains 'sqlserver')
+                $securityJob = Start-SecurityCollection -Since $since -InContainer ($virtualization -and $virtualization.Type -eq 'container') -SendLogs ($sendLogs -and $null -ne $policy) -PolicyJson $(if ($sendLogs -and $policy) { $policy | ConvertTo-Json -Depth 6 -Compress } else { '' }) -CursorsJson ((Get-SecurityCursors) | ConvertTo-Json -Compress) -SqlServer $sqlServer
                 $nextSecurity = (Get-Date).AddSeconds($SecurityInterval)
             }
 
