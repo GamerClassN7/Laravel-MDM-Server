@@ -11,9 +11,9 @@ A lightweight PowerShell agent on each device reports to the portal and takes co
 ```yaml
 # docker-compose.yml
 services:
-  mdm:
-    image: ghcr.io/panoptipulse/laravel-mdm-server:latest
-    container_name: mdm
+  heim_guard:
+    image: ghcr.io/heimguard/laravel-mdm-server:latest
+    container_name: 
     ports:
       - "8000:8000"
     volumes:
@@ -53,7 +53,7 @@ Details: [Installing the agent](docs/installation.md).
 |---|---|
 | [Server](docs/server.md) | Setup, Docker, MySQL, real-time WebSocket, PWA |
 | [Installing the agent](docs/installation.md) | Install, parameters, `config.json`, checking, uninstalling |
-| [Agent](docs/agent.md) | How it works, feature matrix, signed communication |
+| [Agent]mdm(docs/agent.md) | How it works, feature matrix, signed communication |
 | [Alerts and notifications](docs/alerts.md) | Smart alerts, agent errors, rules, notification channels |
 | [Devices](docs/devices.md) | Tags, Wake-on-LAN, ping-only devices |
 | [Networks](docs/networks.md) | Network map and discovery of unknown devices |
