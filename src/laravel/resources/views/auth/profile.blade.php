@@ -15,6 +15,8 @@
         </div>
 
         <hr/>
+        @livewire('user.language', ['user' => $user])
+        <hr/>
         @livewire('user.limitation', ['user' => $user])
         <hr/>
 
