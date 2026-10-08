@@ -134,7 +134,7 @@ $ReverbKey = "$($LegacyOptions['ReverbKey'])"
 # Not left for the functions (they would see them through dynamic scoping).
 Remove-Variable -Name i, name, value -ErrorAction SilentlyContinue
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.18.0'
+$AgentVersion = '1.19.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow', 'scanNetwork', 'scanPorts')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -146,6 +146,9 @@ $UpdateKinds = @{
     module  = '^[A-Za-z0-9][A-Za-z0-9._\-]*$'
     # A PowerShell 7 release from GitHub, by its version.
     pwsh    = '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}$'
+    # A Python package (pip --user) or pipx app, by its name.
+    pip     = '^[A-Za-z0-9][A-Za-z0-9._\-]*$'
+    pipx    = '^[A-Za-z0-9][A-Za-z0-9._\-]*$'
 }
 # The server's public key ("n:e", base64), filled in by the server when it serves this script.
 # The agent pins it on the first start and then trusts only what is signed with it.
@@ -2008,6 +2011,67 @@ function Get-SnapUpdates {
     }
 }
 
+function Get-PythonUpdates {
+    # Outdated Python packages installed per user: pip --user packages and pipx apps, for the current
+    # context and (on Linux) each /home user's own site and pipx. Only user installs are touched; the
+    # system Python is left to the OS package manager (often externally managed). The latest versions
+    # come from pip's own outdated check (it queries the package index). Rows:
+    # @{ Id; Version; Avaliable; Source } with Source 'pip'/'pipx' plus " (user)" for a user's.
+    $hasPipx = [bool](Get-Command -Name pipx -CommandType Application -ErrorAction SilentlyContinue)
+    $python = @('python3', 'python') | Where-Object { Get-Command -Name $_ -CommandType Application -ErrorAction SilentlyContinue } | Select-Object -First 1
+    if (-not $hasPipx -and -not $python) { return }
+
+    # Who to check: the current context, and on Linux each user with a home directory.
+    $targets = @(@{ User = $null; Prefix = @() })
+    if ($OnLinux) {
+        foreach ($userHome in @(Get-ChildItem -Path /home -Directory -ErrorAction SilentlyContinue)) {
+            $prefix = Get-UserCommand -User $userHome.Name
+            if ($prefix) { $targets += @{ User = $userHome.Name; Prefix = @($prefix) } }
+        }
+    }
+
+    foreach ($target in $targets) {
+        $prefix = @($target.Prefix)
+        $label = if ($target.User) { " ($($target.User))" } else { '' }
+        $invoke = {
+            param ([string[]]$CommandLine)
+            $full = @($prefix + $CommandLine)
+            try { & $full[0] @($full[1..($full.Count - 1)]) 2>$null } catch { }
+        }
+
+        # pip --user outdated: [{name, version, latest_version}].
+        if ($python) {
+            $raw = "$(& $invoke @($python, '-m', 'pip', 'list', '--user', '--outdated', '--format=json'))".Trim()
+            if ($raw.StartsWith('[')) {
+                foreach ($pkg in @(try { $raw | ConvertFrom-Json } catch { @() })) {
+                    if ($pkg.name -and $pkg.latest_version) {
+                        [PSCustomObject]@{ Id = "$($pkg.name)"; Version = "$($pkg.version)"; Avaliable = "$($pkg.latest_version)"; Source = "pip$label" }
+                    }
+                }
+            }
+        }
+
+        # pipx apps: list the venvs, then ask each app's own venv what is outdated.
+        if ($hasPipx) {
+            $listRaw = "$(& $invoke @('pipx', 'list', '--json'))".Trim()
+            $list = if ($listRaw.StartsWith('{')) { try { $listRaw | ConvertFrom-Json } catch { $null } } else { $null }
+            foreach ($prop in @($list.venvs.PSObject.Properties)) {
+                $app = $prop.Name
+                $main = $prop.Value.metadata.main_package
+                if (-not $main.package) { continue }
+                $pkg = "$($main.package)".Replace('_', '-').ToLowerInvariant()
+                $outRaw = "$(& $invoke @('pipx', 'runpip', $app, 'list', '--outdated', '--format=json'))".Trim()
+                if (-not $outRaw.StartsWith('[')) { continue }
+                foreach ($o in @(try { $outRaw | ConvertFrom-Json } catch { @() })) {
+                    if ("$($o.name)".Replace('_', '-').ToLowerInvariant() -eq $pkg -and $o.latest_version) {
+                        [PSCustomObject]@{ Id = "$app"; Version = "$($main.package_version)"; Avaliable = "$($o.latest_version)"; Source = "pipx$label" }
+                    }
+                }
+            }
+        }
+    }
+}
+
 function Get-PowerShellManager {
     # Who updates this PowerShell 7 instead of a release from GitHub: 'snap' (read-only, snap
     # refreshes it) or 'store' (Microsoft Store); $null when it is a plain installation.
@@ -3303,7 +3367,7 @@ function Start-AgentJob {
 
 function Start-InventoryCollection {
     # Windows Update search and winget are expensive, run them rarely in a separate idle-priority process.
-    return Start-AgentJob -Name 'inventory' -Functions 'Get-WingetSoftware', 'Get-WingetUpdates', 'Invoke-WingetInUserSession', 'Get-WindowsUpdate', 'Get-AptUpdates', 'Get-UserCommand', 'Get-FlatpakUpdates', 'Get-SnapUpdates', 'Get-PowerShellReleaseUpdate', 'Get-PowerShellManager', 'ConvertFrom-WingetTable', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules' -ArgumentList $OnLinux -ScriptBlock {
+    return Start-AgentJob -Name 'inventory' -Functions 'Get-WingetSoftware', 'Get-WingetUpdates', 'Invoke-WingetInUserSession', 'Get-WindowsUpdate', 'Get-AptUpdates', 'Get-UserCommand', 'Get-FlatpakUpdates', 'Get-SnapUpdates', 'Get-PythonUpdates', 'Get-PowerShellReleaseUpdate', 'Get-PowerShellManager', 'ConvertFrom-WingetTable', 'Get-WingetPath', 'Get-PowerShellHosts', 'Invoke-PowerShellModules' -ArgumentList $OnLinux -ScriptBlock {
         param ($OnLinux)
         try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Idle } catch { }
         $data = @{}
@@ -3317,6 +3381,7 @@ function Start-InventoryCollection {
             try { $data['os_updates'] = @(Get-WindowsUpdate) } catch { }
             try { $packages += @(Get-WingetUpdates | Select-Object -Property Id, Version, Avaliable, Source, Scope) } catch { }
         }
+        try { $packages += @(Get-PythonUpdates) } catch { }
         try { $packages += @(Get-PowerShellReleaseUpdate -OnLinux $OnLinux -Known (@($data['os_updates']) + $packages)) } catch { }
         $data['packages_updates'] = $packages
         return $data
@@ -3951,7 +4016,7 @@ function Test-UpdateParams {
     if (-not $UpdateKinds.ContainsKey($kind) -or "$($Params.id)" -notmatch $UpdateKinds[$kind] -or "$($Params.id)".Length -gt 200) {
         throw "invalid update '$kind' '$($Params.id)'"
     }
-    if ($Params.user -and ($kind -notin 'flatpak', 'module' -or "$($Params.user)" -notmatch '^[a-z_][a-z0-9_.\-]{0,31}$')) {
+    if ($Params.user -and ($kind -notin 'flatpak', 'module', 'pip', 'pipx' -or "$($Params.user)" -notmatch '^[a-z_][a-z0-9_.\-]{0,31}$')) {
         throw "invalid user '$($Params.user)'"
     }
     if ($kind -eq 'module' -and ("$($Params.edition)" -notin 'Windows PowerShell', 'PowerShell 7' -or "$($Params.version)" -notmatch '^[0-9][0-9A-Za-z.\-]{0,49}$')) {
@@ -4905,6 +4970,34 @@ function Start-UpdateJob {
                     "snap refresh ${id}: exit $LASTEXITCODE"
                     Add-Result "snap refresh $id" $LASTEXITCODE $output
                 }
+                'pip' {
+                    # A user's --user package (never the system Python). Runs as the owning user.
+                    Set-Progress 10 "pip install --upgrade $id"
+                    $python = @('python3', 'python') | Where-Object { Get-Command -Name $_ -CommandType Application -ErrorAction SilentlyContinue } | Select-Object -First 1
+                    if (-not $python) { [void]$state.Failures.Add('python not found'); break }
+                    if ($Params.user) {
+                        $asUser = Get-UserCommand -User $Params.user
+                        if (-not $asUser) { [void]$state.Failures.Add("user $($Params.user) not found"); break }
+                        $output = Invoke-Logged "pip install --upgrade $id ($($Params.user))" { & $asUser[0] @($asUser[1..($asUser.Count - 1)]) $python -m pip install --user --upgrade $id }
+                    } else {
+                        $output = Invoke-Logged "pip install --upgrade $id" { & $python -m pip install --user --upgrade $id }
+                    }
+                    "pip install --upgrade ${id}: exit $LASTEXITCODE"
+                    Add-Result "pip install --upgrade $id" $LASTEXITCODE $output
+                }
+                'pipx' {
+                    Set-Progress 10 "pipx upgrade $id"
+                    if ($Params.user) {
+                        $asUser = Get-UserCommand -User $Params.user
+                        if (-not $asUser) { [void]$state.Failures.Add("user $($Params.user) not found"); break }
+                        $output = Invoke-Logged "pipx upgrade $id ($($Params.user))" { & $asUser[0] @($asUser[1..($asUser.Count - 1)]) pipx upgrade $id }
+                    } else {
+                        if (-not (Get-Command -Name pipx -CommandType Application -ErrorAction SilentlyContinue)) { [void]$state.Failures.Add('pipx not found'); break }
+                        $output = Invoke-Logged "pipx upgrade $id" { pipx upgrade $id }
+                    }
+                    "pipx upgrade ${id}: exit $LASTEXITCODE"
+                    Add-Result "pipx upgrade $id" $LASTEXITCODE $output
+                }
                 'pwsh' {
                     Set-Progress 10 "PowerShell $id"
                     Install-PowerShellRelease -Version $id -OnLinux $OnLinux -State $state
@@ -4964,6 +5057,22 @@ function Start-UpdateJob {
                 $output = Invoke-Logged 'snap refresh' { snap refresh }
                 "snap refresh: exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
                 Add-Result 'snap refresh' $LASTEXITCODE $output
+            }
+            Enter-Step 90 95 'pipx upgrade-all'
+            # Each user's pipx apps (pipx is per user); the system Python's pip is left to apt.
+            foreach ($userHome in @(Get-ChildItem -Path /home -Directory -ErrorAction SilentlyContinue)) {
+                $asUser = Get-UserCommand -User $userHome.Name
+                if (-not $asUser) { continue }
+                if (& $asUser[0] @($asUser[1..($asUser.Count - 1)]) sh -c 'command -v pipx' 2>$null) {
+                    $output = Invoke-Logged "pipx upgrade-all ($($userHome.Name))" { & $asUser[0] @($asUser[1..($asUser.Count - 1)]) pipx upgrade-all }
+                    "pipx upgrade-all ($($userHome.Name)): exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+                    Add-Result "pipx upgrade-all ($($userHome.Name))" $LASTEXITCODE $output
+                }
+            }
+            if (Get-Command -Name pipx -CommandType Application -ErrorAction SilentlyContinue) {
+                $output = Invoke-Logged 'pipx upgrade-all' { pipx upgrade-all }
+                "pipx upgrade-all: exit $LASTEXITCODE$(if ($LASTEXITCODE) { ': ' + (Get-Tail $output) })"
+                Add-Result 'pipx upgrade-all' $LASTEXITCODE $output
             }
         } else {
             Enter-Step 0 40 'winget'

@@ -74,6 +74,9 @@ class DeviceCommand extends Model
         'module' => '/^[A-Za-z0-9][A-Za-z0-9._\-]*$/',
         // A PowerShell 7 release from GitHub (installations no package manager knows about).
         'pwsh' => '/^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}$/',
+        // A Python package (pip --user) or a pipx app, by its name.
+        'pip' => '/^[A-Za-z0-9][A-Za-z0-9._\-]*$/',
+        'pipx' => '/^[A-Za-z0-9][A-Za-z0-9._\-]*$/',
     ];
 
     public const MODULE_EDITIONS = ['Windows PowerShell', 'PowerShell 7'];
@@ -178,7 +181,7 @@ class DeviceCommand extends Model
         $clean = ['kind' => $kind, 'id' => $id];
         $user = $params['user'] ?? null;
         if ($user !== null) {
-            if (! in_array($kind, ['flatpak', 'module'], true) || ! is_string($user) || ! preg_match('/^[a-z_][a-z0-9_.\-]{0,31}$/', $user)) {
+            if (! in_array($kind, ['flatpak', 'module', 'pip', 'pipx'], true) || ! is_string($user) || ! preg_match('/^[a-z_][a-z0-9_.\-]{0,31}$/', $user)) {
                 return null;
             }
             $clean['user'] = $user;

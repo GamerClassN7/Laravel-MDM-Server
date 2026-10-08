@@ -46,6 +46,9 @@ class Device extends Model
     /** Agents from this version scan the open ports of an address in their network (port_scan). */
     public const PORT_SCAN_VERSION = '1.18.0';
 
+    /** Agents from this version report and install pip --user and pipx package updates. */
+    public const PYTHON_UPDATE_VERSION = '1.19.0';
+
     /** At most this many ping-only devices per agent. */
     public const MAX_PING_TARGETS = 32;
 
@@ -450,6 +453,7 @@ class Device extends Model
             $command === 'scanPorts' && ! PortScanResult::enabled() => __('Port scanning is turned off in the portal'),
             $command === 'sync' && version_compare((string) $this->agent_version, self::SYNC_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::SYNC_VERSION]),
             $command === 'installUpdate' && ($params['kind'] ?? null) === 'pwsh' && version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') => __('The agent is too old for this command'),
+            $command === 'installUpdate' && in_array($params['kind'] ?? null, ['pip', 'pipx'], true) && version_compare((string) $this->agent_version, self::PYTHON_UPDATE_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::PYTHON_UPDATE_VERSION]),
             default => null,
         };
     }
@@ -882,6 +886,9 @@ class Device extends Model
                 ($row['Source'] ?? null) === 'snap' => ['kind' => 'snap', 'id' => (string) ($row['Id'] ?? '')],
                 // Installed from the GitHub release, the agent installs the newer one from there.
                 ($row['Source'] ?? null) === 'github.com/PowerShell' => version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') ? null : ['kind' => 'pwsh', 'id' => (string) ($row['Avaliable'] ?? ''), 'title' => 'PowerShell '.($row['Avaliable'] ?? '')],
+                // Python: a pipx app or a user's pip --user package ("pipx"/"pip", with " (user)").
+                str_starts_with((string) ($row['Source'] ?? ''), 'pipx') => version_compare((string) $this->agent_version, self::PYTHON_UPDATE_VERSION, '<') ? null : ['kind' => 'pipx', 'id' => (string) ($row['Id'] ?? ''), 'user' => preg_match('/\((.+)\)$/', (string) $row['Source'], $m) ? $m[1] : null],
+                str_starts_with((string) ($row['Source'] ?? ''), 'pip') => version_compare((string) $this->agent_version, self::PYTHON_UPDATE_VERSION, '<') ? null : ['kind' => 'pip', 'id' => (string) ($row['Id'] ?? ''), 'user' => preg_match('/\((.+)\)$/', (string) $row['Source'], $m) ? $m[1] : null],
                 // Scope user: installed only for the logged-on user (agents 1.14.0+ update it in their session).
                 $this->platform === 'windows' => ['kind' => 'winget', 'id' => (string) ($row['Id'] ?? ''), 'source' => in_array($row['Source'] ?? null, ['winget', 'msstore'], true) ? $row['Source'] : null, 'scope' => ($row['Scope'] ?? null) === 'user' ? 'user' : null],
                 default => null,
