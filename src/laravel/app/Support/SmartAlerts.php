@@ -95,6 +95,8 @@ class SmartAlerts
                 },
                 'action' => $canUpdate ? ['command' => 'updateAgent', 'label' => __('Update agent'), 'icon' => 'fas fa-download'] : null,
                 'copy' => $device->agentUpdatable ? InstallCommands::update($device) : null,
+                // A dismissal is for these versions: a newer release (or another version on the device) shows it again.
+                'revision' => ($device->agentVersion ?? '').'→'.AgentScript::version(),
             ];
         }
 
@@ -292,10 +294,13 @@ class SmartAlerts
             ->where('updated_at', '>=', now()->subSeconds(self::FAILED_COMMAND_WINDOW))->latest('id')->first();
     }
 
-    /** What the alert says: a dismissal holds until this changes (e.g. "5 updates" → "6 updates"). */
+    /**
+     * What the alert says: a dismissal holds until this changes (e.g. "5 updates" → "6 updates").
+     * Alerts with the same title for something new (a newer agent release) set a revision.
+     */
     public static function signature(array $alert): string
     {
-        return hash('sha256', $alert['key'].'|'.$alert['title']);
+        return hash('sha256', $alert['key'].'|'.$alert['title'].(isset($alert['revision']) ? '|'.$alert['revision'] : ''));
     }
 
     /**
