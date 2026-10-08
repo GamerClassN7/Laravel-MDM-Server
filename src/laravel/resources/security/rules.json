@@ -534,4 +534,136 @@
         "when": {"field": "Type", "op": "eq", "value": "task_created"},
         "message": "{Message}"
     }
+,
+    {
+        "key": "portscan.telnet",
+        "name": "Telnet is exposed",
+        "description": "Telnet sends everything, passwords included, in the clear.",
+        "severity": "high",
+        "platform": "any",
+        "source": "portscan",
+        "when": {"field": "Service", "op": "eq", "value": "telnet"},
+        "message": "Telnet is exposed on port {Port}",
+        "remediation": "Disable Telnet and use SSH instead."
+    },
+    {
+        "key": "portscan.self-signed-cert",
+        "name": "Self-signed TLS certificate",
+        "description": "A self-signed certificate cannot be verified and lets an attacker impersonate the service.",
+        "severity": "medium",
+        "platform": "any",
+        "source": "portscan",
+        "when": {"field": "CertSelfSigned", "op": "true"},
+        "message": "Self-signed TLS certificate on port {Port}",
+        "remediation": "Install a certificate from a trusted CA (or your own internal CA)."
+    },
+    {
+        "key": "portscan.expired-cert",
+        "name": "Expired TLS certificate",
+        "description": "The certificate presented on this port has expired, so clients cannot trust it.",
+        "severity": "medium",
+        "platform": "any",
+        "source": "portscan",
+        "when": {"field": "CertExpired", "op": "true"},
+        "message": "Expired TLS certificate on port {Port}",
+        "remediation": "Renew the TLS certificate."
+    },
+    {
+        "key": "portscan.tls-handshake-failed",
+        "name": "TLS would not negotiate",
+        "description": "A TLS port that fails the handshake usually runs an outdated or misconfigured TLS stack.",
+        "severity": "low",
+        "platform": "any",
+        "source": "portscan",
+        "when": {"field": "TlsFailed", "op": "true"},
+        "message": "TLS on port {Port} would not negotiate",
+        "remediation": "Check the TLS protocols and certificate configured on this service."
+    },
+    {
+        "key": "portscan.cleartext-http",
+        "name": "HTTP served without TLS",
+        "description": "A web service over plain HTTP exposes its traffic and any credentials to the network.",
+        "severity": "low",
+        "platform": "any",
+        "source": "portscan",
+        "when": {"all": [
+            {"field": "Http", "op": "true"},
+            {"field": "Tls", "op": "false"}
+        ]},
+        "message": "HTTP without TLS on port {Port}",
+        "remediation": "Serve the site over HTTPS and redirect HTTP to it."
+    },
+    {
+        "key": "portscan.missing-headers",
+        "name": "Missing HTTP security headers",
+        "description": "The web service is missing Content-Security-Policy, X-Frame-Options or HSTS.",
+        "severity": "low",
+        "platform": "any",
+        "source": "portscan",
+        "when": {"all": [
+            {"field": "Http", "op": "true"},
+            {"any": [
+                {"field": "Hsts", "op": "false"},
+                {"field": "Csp", "op": "false"},
+                {"field": "XFrameOptions", "op": "false"}
+            ]}
+        ]},
+        "message": "Missing HTTP security headers on port {Port}",
+        "remediation": "Add Content-Security-Policy and X-Frame-Options, and Strict-Transport-Security over TLS."
+    },
+    {
+        "key": "portscan.database",
+        "name": "Database reachable from the network",
+        "description": "A database port reachable from the network is a common target for theft and ransomware.",
+        "severity": "medium",
+        "platform": "any",
+        "source": "portscan",
+        "when": {"field": "Port", "op": "in", "value": [1433, 1521, 3306, 5432, 5984, 6379, 9200, 11211, 27017]},
+        "message": "Database service exposed on port {Port}",
+        "remediation": "Bind it to localhost or restrict the port to trusted hosts in the firewall."
+    },
+    {
+        "key": "portscan.remote-desktop",
+        "name": "Remote desktop exposed",
+        "description": "RDP and VNC reachable from the network are frequently brute-forced.",
+        "severity": "medium",
+        "platform": "any",
+        "source": "portscan",
+        "when": {"field": "Port", "op": "in", "value": [3389, 5900]},
+        "message": "Remote desktop ({Service}) exposed on port {Port}",
+        "remediation": "Limit it to a VPN or trusted addresses."
+    },
+    {
+        "key": "portscan.smb",
+        "name": "SMB/NetBIOS exposed",
+        "description": "File-sharing ports reachable from the network widen the attack surface.",
+        "severity": "medium",
+        "platform": "any",
+        "source": "portscan",
+        "when": {"field": "Port", "op": "in", "value": [139, 445]},
+        "message": "SMB/NetBIOS exposed on port {Port}",
+        "remediation": "Restrict SMB to the networks that need it."
+    },
+    {
+        "key": "portscan.ftp",
+        "name": "FTP is exposed",
+        "description": "FTP is unencrypted; credentials and files travel in the clear.",
+        "severity": "low",
+        "platform": "any",
+        "source": "portscan",
+        "when": {"field": "Service", "op": "eq", "value": "ftp"},
+        "message": "FTP is exposed on port {Port}",
+        "remediation": "Use SFTP or FTPS instead."
+    },
+    {
+        "key": "portscan.outdated-ssh",
+        "name": "Outdated SSH server",
+        "description": "The SSH banner reports an old server version with known weaknesses.",
+        "severity": "low",
+        "platform": "any",
+        "source": "portscan",
+        "when": {"field": "Banner", "op": "matches", "value": "dropbear_201[0-7]|OpenSSH_[1-6]\\."},
+        "message": "Outdated SSH server on port {Port}: {Banner}",
+        "remediation": "Update the SSH server to a current release."
+    }
 ]

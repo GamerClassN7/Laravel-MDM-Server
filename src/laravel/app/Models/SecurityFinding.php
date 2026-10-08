@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\NetworkMap;
 use App\Support\SecurityRules;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
@@ -12,11 +13,17 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * next inventory does not match anymore; findings of events (they happened, nothing makes them
  * go away) are resolved by acknowledging them. An acknowledged finding of the inventory stays
  * open, quiet (no alert), until it is gone.
+ *
+ * A finding from a port scan (source "portscan") is of a scanned host that may not be a managed
+ * device: device_id is null then and the host is kept as target_ip / target_mac in its network
+ * (target_ip / network / site). Such findings show only in the fleet Security section; findings
+ * with a device_id show there and on the device, and keep the device alert flow.
  */
 class SecurityFinding extends Model
 {
     protected $fillable = [
-        'device_id', 'security_rule_id', 'fingerprint', 'severity', 'message', 'details', 'occurrences',
+        'device_id', 'target_ip', 'target_mac', 'network', 'site',
+        'security_rule_id', 'fingerprint', 'severity', 'message', 'details', 'occurrences',
         'first_seen_at', 'last_seen_at', 'resolved_at', 'acknowledged_at', 'acknowledged_by',
     ];
 
@@ -48,6 +55,24 @@ class SecurityFinding extends Model
     public function acknowledger(): BelongsTo
     {
         return $this->belongsTo(User::class, 'acknowledged_by');
+    }
+
+    /** What the finding is about: the device's name, or the scanned host (its IP) when there is no device. */
+    public function getTargetLabelAttribute(): string
+    {
+        return $this->device?->displayName ?? $this->target_ip ?? __('Unknown host');
+    }
+
+    /** Where the finding links to: the device's security tab, or the network card of the scanned host. */
+    public function getTargetUrlAttribute(): ?string
+    {
+        if ($this->device_id !== null) {
+            return route('devices', ['selectedDeviceId' => $this->device_id, 'tab' => 'security']);
+        }
+
+        return $this->site !== null && $this->network !== null
+            ? NetworkMap::cardUrl('net:'.$this->site.'|'.$this->network)
+            : null;
     }
 
     public function scopeOpen(Builder $query): Builder

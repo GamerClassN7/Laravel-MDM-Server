@@ -78,6 +78,17 @@ class SecurityRules
             'key' => ['Type', 'User', 'Source'],
             'event' => true,
         ],
+        // The open ports an agent found on an address in its network (App\Models\PortScanResult):
+        // one item per open port with the passive HTTP/TLS facts. Not from the device inventory —
+        // evaluated per scanned host (which may be an unknown neighbour, not a managed device).
+        'portscan' => [
+            'label' => 'Open ports',
+            'fields' => [
+                'Ip', 'Network', 'Port', 'Service', 'Banner', 'Server', 'Title',
+                'Tls', 'Http', 'Hsts', 'Csp', 'XFrameOptions', 'CertSelfSigned', 'CertExpired', 'TlsFailed',
+            ],
+            'key' => ['Ip', 'Port'],
+        ],
     ];
 
     /** Labels of the event types the built-in parsers make (parsers may add their own). */

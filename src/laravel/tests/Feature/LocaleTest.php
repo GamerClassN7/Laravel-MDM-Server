@@ -22,9 +22,9 @@ class LocaleTest extends TestCase
     /** Texts translated from a variable (labels of constants, ucfirst of states, menu titles). */
     private const DYNAMIC_KEYS = [
         'Status', 'CPU usage', 'Memory usage', 'Disk usage', 'Disk health', 'Services',
-        'Remediations', 'Security findings', 'New device', 'Unknown device', 'Address changed', 'The device is offline',
+        'Remediations', 'Security findings', 'New device', 'Unknown device', 'Exposed service', 'Address changed', 'The device is offline',
         'Average CPU usage above the threshold', 'Average usage above a percentage, or free memory below a size', 'A drive fuller than a percentage, or with less free space than a size', 'A disk reports a S.M.A.R.T. warning or failure', 'A service failed or a container is unhealthy', 'The latest run of a remediation script failed',
-        'The security scanner found something of high or critical severity', 'A device is enrolled or added', 'An agent sees a device the portal does not know in its network', 'A ping-only device with a MAC address got another IP address (dynamic address)', 'Installed software', 'Running processes',
+        'The security scanner found something of high or critical severity', 'A device is enrolled or added', 'An agent sees a device the portal does not know in its network', 'A port scan found an exposed or weak service on a host that is not a managed device', 'A ping-only device with a MAC address got another IP address (dynamic address)', 'Installed software', 'Running processes',
         'Listening ports', 'Startup items', 'Administrators', 'Security settings', 'Security events', 'Failed sign-ins',
         'Account created', 'Account locked out', 'Added to administrators', 'Audit log cleared', 'Service installed', 'Scheduled task created',
         'Malware detected', 'Protection turned off', 'Failed sudo', 'Restart', 'Agent update', 'Disk',

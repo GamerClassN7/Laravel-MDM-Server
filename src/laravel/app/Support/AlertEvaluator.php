@@ -45,7 +45,11 @@ class AlertEvaluator
                     continue;
                 }
                 try {
-                    $counts['triggered'] += $rule->type === 'unknown_device' ? $this->announceUnknownDevices($rule) : $this->announceNewDevices($rule);
+                    $counts['triggered'] += match ($rule->type) {
+                        'unknown_device' => $this->announceUnknownDevices($rule),
+                        'exposure' => $this->announceExposures($rule),
+                        default => $this->announceNewDevices($rule),
+                    };
                 } catch (Throwable $e) {
                     Log::warning("Alert rule {$rule->id} failed: {$e->getMessage()}");
                 }
@@ -317,6 +321,55 @@ class AlertEvaluator
                 'resolved_at' => now(),
             ]);
             Notifier::notify($rule->user, "❔ {$neighbour->displayName}: ".__('Unknown device'), $message."\n".NetworkMap::cardUrl('net:'.$neighbour->site.'|'.$neighbour->network), $rule->channels);
+            $sent++;
+        }
+
+        return $sent;
+    }
+
+    /**
+     * Exposed or weak services a port scan found on hosts that are not managed devices (device-less
+     * findings of the `portscan` rules), of medium severity or worse, announced once each: the event
+     * keeps the finding id as its value and is recorded against the agent that ran the scan (as with
+     * unknown devices), while its message and link point to the scanned host and its network.
+     */
+    private function announceExposures(AlertRule $rule): int
+    {
+        if (! $rule->enabled) {
+            return 0;
+        }
+        $since = $rule->created_at->max(now()->subDay());
+        $known = $rule->events()->where('triggered_at', '>=', $since->copy()->subMinute())->pluck('value')->map(fn ($value) => (int) $value)->all();
+        $findings = SecurityFinding::query()->with('rule')->active()->atLeast('medium')
+            ->whereNull('device_id')
+            ->whereHas('rule', fn ($query) => $query->where('source', 'portscan'))
+            ->where('first_seen_at', '>=', $since)
+            ->when($known !== [], fn ($query) => $query->whereNotIn('id', $known))
+            ->bySeverity()->get();
+        $sent = 0;
+        foreach ($findings as $finding) {
+            $scanner = \App\Models\PortScanResult::query()->where('site', $finding->site)->where('ip', $finding->target_ip)->value('scanned_by');
+            $agent = $scanner === null ? null : $this->devices->firstWhere('id', $scanner);
+            if ($agent === null) {
+                // The scan it came from is gone (pruned): it will resolve on the next scan, skip it.
+                continue;
+            }
+            $host = collect([$finding->target_ip, $finding->target_mac, \App\Support\MacVendor::lookup($finding->target_mac)])->filter()->implode(', ');
+            $message = __(':finding on :host in :network, seen by :agent.', [
+                'finding' => $finding->message,
+                'host' => $host ?: ($finding->target_ip ?? '?'),
+                'network' => $finding->network ?? '?',
+                'agent' => $agent->displayName,
+            ]);
+            $rule->events()->create([
+                'device_id' => $agent->id,
+                'message' => mb_strimwidth($message, 0, 1000),
+                'value' => $finding->id,
+                'triggered_at' => now(),
+                'resolved_at' => now(),
+            ]);
+            $link = $finding->targetUrl;
+            Notifier::notify($rule->user, "🚪 {$finding->target_ip}: ".__('Exposed service'), $message.($link ? "\n".$link : ''), $rule->channels);
             $sent++;
         }
 
