@@ -102,9 +102,11 @@ class PortScanTest extends TestCase
     public function test_the_scan_goes_to_the_agent_that_saw_the_device(): void
     {
         config(['mdm.public_address' => '31.30.4.122']);
-        $this->actingAs(User::factory()->create());
         $agent = $this->agent();
         $this->seeNeighbour();
+        // actingAs after the signed device request: it forgets the guards, which would otherwise
+        // leave the device (not a user) as auth()->user() when the page renders.
+        $this->actingAs(User::factory()->create());
         $neighbour = \App\Models\NetworkNeighbour::query()->where('ip', '192.168.1.50')->firstOrFail();
 
         Livewire::withQueryParams(['view' => 'list'])->test(Page::class)->call('scanPorts', $neighbour->id)->assertHasNoErrors();
@@ -119,9 +121,9 @@ class PortScanTest extends TestCase
     public function test_a_full_scan_carries_the_all_flag(): void
     {
         config(['mdm.public_address' => '31.30.4.122']);
-        $this->actingAs(User::factory()->create());
         $agent = $this->agent();
         $this->seeNeighbour();
+        $this->actingAs(User::factory()->create());
         $neighbour = \App\Models\NetworkNeighbour::query()->where('ip', '192.168.1.50')->firstOrFail();
 
         Livewire::withQueryParams(['view' => 'list'])->test(Page::class)->call('scanPorts', $neighbour->id, true)->assertHasNoErrors();
@@ -173,7 +175,6 @@ class PortScanTest extends TestCase
     public function test_a_hostile_banner_is_stored_and_shown_as_plain_text(): void
     {
         config(['mdm.public_address' => '31.30.4.122']);
-        $this->actingAs(User::factory()->create());
         $this->agent();
         $this->seeNeighbour();
         // A banner the scanned host could return, trying SQL and script injection, with a control char.
@@ -181,6 +182,8 @@ class PortScanTest extends TestCase
             'ip' => '192.168.1.50',
             'ports' => [['port' => 80, 'service' => 'http', 'banner' => "x'; DROP TABLE devices;--\x07<script>alert(1)</script>"]],
         ])->assertOk()->assertJson(['taken' => true]);
+        // actingAs after the signed device requests (they forget the guards).
+        $this->actingAs(User::factory()->create());
 
         // Stored verbatim as text (the control character stripped); the devices table is intact.
         $result = PortScanResult::query()->firstOrFail();
