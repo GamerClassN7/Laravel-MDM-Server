@@ -134,7 +134,7 @@ $ReverbKey = "$($LegacyOptions['ReverbKey'])"
 # Not left for the functions (they would see them through dynamic scoping).
 Remove-Variable -Name i, name, value -ErrorAction SilentlyContinue
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.19.0'
+$AgentVersion = '1.19.1'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow', 'scanNetwork', 'scanPorts')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -1901,6 +1901,24 @@ function Get-LinuxDrives {
     }
 }
 
+function Get-LinuxInterfaceType {
+    # The kind of a Linux interface (an entry of `ip -j addr show`). A tunnel has no link layer: no
+    # MAC (link/none), link_type "none" or a point-to-point link; WireGuard, tun and ppp are typed
+    # by this, not only by name, because a WireGuard interface can be named anything (e.g. "PC").
+    param ($Interface, [bool]$Wireless)
+
+    $name = "$($Interface.ifname)"
+    $tunnel = [string]::IsNullOrEmpty("$($Interface.address)") -or "$($Interface.link_type)" -eq 'none' -or @($Interface.flags) -contains 'POINTOPOINT'
+    if ($Wireless -or $name -match '^wl') { return 'wifi' }
+    if ($name -match '^(docker|br-)') { return 'docker' }
+    if ($name -match '^(tun|tap|wg|tailscale|zt|ppp|vpn|ipsec|nordlynx)') { return 'vpn' }
+    if ($name -match '^(wwan|ww)') { return 'cellular' }
+    if ($name -match '^(virbr|vnet|lxc|lxd|incus|cni|flannel|cali|podman)') { return 'virtual' }
+    if ($name -match '^(br|bond)') { return 'bridge' }
+    if ($tunnel) { return 'vpn' }
+    return 'lan'
+}
+
 function Get-LinuxNetworks {
     # Every interface except loopback and container ends (veth), also the ones that are down.
     $interfaces = ip -j addr show 2>$null | ConvertFrom-Json
@@ -1914,13 +1932,7 @@ function Get-LinuxNetworks {
         }
         $addresses = @($interface.addr_info | ForEach-Object { $_.local })
         $prefixed = @($interface.addr_info | Where-Object { $_.local } | ForEach-Object { @{ Address = "$($_.local)"; PrefixLength = [int]$_.prefixlen } })
-        $type = if ((Test-Path -Path "/sys/class/net/$name/wireless") -or $name -match "^wl") { 'wifi' }
-            elseif ($name -match '^(docker|br-)') { 'docker' }
-            elseif ($name -match '^(tun|tap|wg|tailscale|zt|ppp|vpn|ipsec|nordlynx)') { 'vpn' }
-            elseif ($name -match '^(wwan|ww)') { 'cellular' }
-            elseif ($name -match '^(virbr|vnet|lxc|lxd|incus|cni|flannel|cali|podman)') { 'virtual' }
-            elseif ($name -match '^(br|bond)') { 'bridge' }
-            else { 'lan' }
+        $type = Get-LinuxInterfaceType -Interface $interface -Wireless (Test-Path -Path "/sys/class/net/$name/wireless")
         $gateway = $routes | Where-Object { "$($_.dev)" -eq $name -and $_.gateway } | Select-Object -First 1 -ExpandProperty gateway
         $gatewayMac = if ($gateway) { $neighbours | Where-Object { "$($_.dst)" -eq "$gateway" -and "$($_.dev)" -eq $name -and $_.lladdr } | Select-Object -First 1 -ExpandProperty lladdr }
         [PSCustomObject]@{
