@@ -92,18 +92,23 @@ class PortScanResult extends Model
             return false;
         }
 
-        static::query()->updateOrCreate(['site' => $networks[$network], 'ip' => $ip], [
+        $result = static::query()->updateOrCreate(['site' => $networks[$network], 'ip' => $ip], [
             'network' => $network,
             'scanned_by' => $device->id,
             'ports' => self::cleanPorts($payload['ports'] ?? null),
             'findings' => self::cleanFindings($payload['findings'] ?? null),
             'scanned_at' => now(),
         ]);
+        // Turn the open ports into security findings (and alerts) via the detection rules.
+        rescue(fn () => \App\Support\SecurityScanner::scanPorts($result));
 
         return true;
     }
 
-    /** Open ports as [{port, service, banner}], sorted, deduplicated, capped; bad entries dropped. */
+    /**
+     * Open ports, sorted, deduplicated, capped; bad entries dropped. Each keeps the structured facts
+     * the detection rules match on (service, the passive HTTP/TLS flags) plus the display banner.
+     */
     private static function cleanPorts(mixed $ports): array
     {
         $clean = [];
@@ -120,6 +125,17 @@ class PortScanResult extends Model
                 'port' => $port,
                 'service' => self::text($entry['service'] ?? null, 40),
                 'banner' => self::text($entry['banner'] ?? null, 500),
+                'server' => self::text($entry['server'] ?? null, 200),
+                'title' => self::text($entry['title'] ?? null, 200),
+                'tls' => self::bool($entry['tls'] ?? null),
+                'http' => self::bool($entry['http'] ?? null),
+                // Header flags default to present (true) so an old agent or a non-web port is not a finding.
+                'hsts' => self::bool($entry['hsts'] ?? true),
+                'csp' => self::bool($entry['csp'] ?? true),
+                'xframe' => self::bool($entry['xframe'] ?? true),
+                'certSelfSigned' => self::bool($entry['certSelfSigned'] ?? null),
+                'certExpired' => self::bool($entry['certExpired'] ?? null),
+                'tlsFailed' => self::bool($entry['tlsFailed'] ?? null),
             ];
             if (count($clean) >= self::MAX_PORTS) {
                 break;
@@ -128,6 +144,38 @@ class PortScanResult extends Model
         ksort($clean);
 
         return array_values($clean);
+    }
+
+    /**
+     * One item per open port, shaped to the `portscan` detection-rule source fields
+     * (App\Support\SecurityRules::SOURCES). The booleans are what the rules match on.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function toSecurityItems(): array
+    {
+        return array_map(fn (array $p) => [
+            'Ip' => $this->ip,
+            'Network' => $this->network,
+            'Port' => (int) ($p['port'] ?? 0),
+            'Service' => (string) ($p['service'] ?? ''),
+            'Banner' => (string) ($p['banner'] ?? ''),
+            'Server' => (string) ($p['server'] ?? ''),
+            'Title' => (string) ($p['title'] ?? ''),
+            'Tls' => (bool) ($p['tls'] ?? false),
+            'Http' => (bool) ($p['http'] ?? false),
+            'Hsts' => (bool) ($p['hsts'] ?? true),
+            'Csp' => (bool) ($p['csp'] ?? true),
+            'XFrameOptions' => (bool) ($p['xframe'] ?? true),
+            'CertSelfSigned' => (bool) ($p['certSelfSigned'] ?? false),
+            'CertExpired' => (bool) ($p['certExpired'] ?? false),
+            'TlsFailed' => (bool) ($p['tlsFailed'] ?? false),
+        ], $this->ports ?? []);
+    }
+
+    private static function bool(mixed $value): bool
+    {
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN);
     }
 
     /** Passive observations as a list of short plain-text strings, capped. */

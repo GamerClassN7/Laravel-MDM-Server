@@ -7,7 +7,16 @@
             <span class="fw-semibold">{{ $finding->rule?->name }}</span>
             @if ($showDevice ?? false)
                 <span class="text-body-secondary">·</span>
-                <a class="text-body" href="{{ route('devices', ['selectedDeviceId' => $finding->device_id, 'tab' => 'security']) }}">{{ $finding->device?->displayName }}</a>
+                @if ($finding->device_id)
+                    <a class="text-body" href="{{ route('devices', ['selectedDeviceId' => $finding->device_id, 'tab' => 'security']) }}">{{ $finding->device?->displayName }}</a>
+                @elseif ($finding->targetUrl)
+                    <a class="text-body" href="{{ $finding->targetUrl }}"><i class="fas fa-network-wired fa-xs me-1 text-body-tertiary"></i>{{ $finding->targetLabel }}</a>
+                @else
+                    <span class="text-body-secondary"><i class="fas fa-network-wired fa-xs me-1"></i>{{ $finding->targetLabel }}</span>
+                @endif
+                @if (! $finding->device_id && $finding->target_mac)
+                    <span class="small text-body-tertiary">{{ $finding->target_mac }}</span>
+                @endif
             @endif
         </div>
         <div class="small text-break mt-1">{{ $finding->message }}</div>

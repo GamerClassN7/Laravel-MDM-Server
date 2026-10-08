@@ -79,10 +79,15 @@ class DeviceCommands extends Component
      */
     public function cancel(int $commandId)
     {
-        // Its own commands, and the wakes / pings another agent does for it.
+        // Its own commands, the wakes / pings another agent does for it, and a port scan an agent
+        // runs for this host's address.
+        $device = Device::find($this->selectedDeviceId);
+        $targets = ['device:'.$this->selectedDeviceId, 'ping:'.$this->selectedDeviceId];
+        if ($device !== null && ($address = $device->portScanAddress()) !== null) {
+            $targets[] = 'ports:'.$address;
+        }
         $command = DeviceCommand::query()->whereKey($commandId)->active()
-            ->where(fn ($query) => $query->where('device_id', $this->selectedDeviceId)
-                ->orWhereIn('target', ['device:'.$this->selectedDeviceId, 'ping:'.$this->selectedDeviceId]))
+            ->where(fn ($query) => $query->where('device_id', $this->selectedDeviceId)->orWhereIn('target', $targets))
             ->first();
         if ($command === null) {
             return;
@@ -118,12 +123,6 @@ class DeviceCommands extends Component
         $active = $device->activeCommands();
         $recentWake = $device->offline ? $device->recentWake() : null;
         $recentPing = $device->isPingOnly ? $device->recentPingNow() : null;
-        // With the device's own commands: a wake or ping another agent does for it, and a wake an
-        // agent before 1.13.2 finished on its side while the device is still waited for.
-        $onItsWay = $active->concat(array_filter([
-            $recentWake && ($recentWake->active || $recentWake->status === 'succeeded') ? $recentWake : null,
-            $recentPing?->active ? $recentPing : null,
-        ]));
 
         // Port scan of this host: the agent that can scan it (null hides the menu action), a scan
         // running for its address, and the last result. The scan runs on the agent, not this device.
@@ -134,6 +133,15 @@ class DeviceCommands extends Component
             'command' => \App\Models\DeviceCommand::query()->where('command', 'scanPorts')->active()->where('target', 'ports:'.$address)->first(),
             'result' => \App\Models\PortScanResult::query()->where('ip', $address)->latest('scanned_at')->first(),
         ];
+
+        // With the device's own commands: a wake or ping another agent does for it, a wake an agent
+        // before 1.13.2 finished on its side while the device is still waited for, and a port scan
+        // another agent is running for this host's address (shown as a task with a progress bar).
+        $onItsWay = $active->concat(array_filter([
+            $recentWake && ($recentWake->active || $recentWake->status === 'succeeded') ? $recentWake : null,
+            $recentPing?->active ? $recentPing : null,
+            $portScan['command'] ?? null,
+        ]));
 
         return view('livewire.device-commands', [
             'selectedDevice' => $device,

@@ -134,7 +134,7 @@ $ReverbKey = "$($LegacyOptions['ReverbKey'])"
 # Not left for the functions (they would see them through dynamic scoping).
 Remove-Variable -Name i, name, value -ErrorAction SilentlyContinue
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.19.1'
+$AgentVersion = '1.20.0'
 $AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow', 'scanNetwork', 'scanPorts')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
@@ -4427,11 +4427,16 @@ function Get-HttpSummary {
     if ($title) { $parts += "title: $title" } elseif ($status) { $parts += "HTTP $status" }
     $findings = @()
     $lower = $headerBlock.ToLowerInvariant()
+    # Structured flags for the server-side rules: whether each security header is present. HSTS is
+    # only meaningful over TLS, so on plain HTTP it is reported present (not missing).
+    $hsts = (-not $Tls) -or ($lower -match '(?m)^strict-transport-security:')
+    $csp = [bool]($lower -match '(?m)^content-security-policy:')
+    $xframe = [bool]($lower -match '(?m)^x-frame-options:')
     if ($Tls -and $lower -notmatch '(?m)^strict-transport-security:') { $findings += 'no HSTS header' }
-    if ($lower -notmatch '(?m)^content-security-policy:') { $findings += 'no Content-Security-Policy header' }
-    if ($lower -notmatch '(?m)^x-frame-options:') { $findings += 'no X-Frame-Options header' }
+    if (-not $csp) { $findings += 'no Content-Security-Policy header' }
+    if (-not $xframe) { $findings += 'no X-Frame-Options header' }
     if (-not $Tls) { $findings += 'serves HTTP without TLS' }
-    return @{ Banner = ($parts -join '; '); Findings = $findings }
+    return @{ Banner = ($parts -join '; '); Findings = $findings; Server = $server; Title = $title; Hsts = [bool]$hsts; Csp = $csp; XFrameOptions = $xframe }
 }
 
 function Invoke-PortSweep {
@@ -4482,6 +4487,10 @@ function Invoke-PortSweep {
         $service = $null
         $banner = $null
         $isTls = $tlsPorts -contains $port
+        # Structured per-port facts for the server-side detection rules (booleans default to the
+        # "nothing wrong" value, so a port with no web/TLS layer does not look like a finding).
+        $tls = $false; $http = $false; $tlsFailed = $false; $certSelfSigned = $false; $certExpired = $false
+        $server = $null; $title = $null; $hsts = $true; $csp = $true; $xframe = $true
         $client = New-Object System.Net.Sockets.TcpClient
         try {
             $connect = $client.ConnectAsync($Ip, $port)
@@ -4494,16 +4503,18 @@ function Invoke-PortSweep {
                     $ssl.AuthenticateAsClient($Ip)
                     $stream = $ssl
                     $service = 'https'
+                    $tls = $true
                     if ($ssl.RemoteCertificate) {
                         $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($ssl.RemoteCertificate)
                         $subject = $cert.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
                         if ($subject) { $banner = "TLS: $subject" }
-                        if ($cert.NotAfter -lt (Get-Date)) { [void]$findings.Add("Port ${port}: TLS certificate expired $($cert.NotAfter.ToString('yyyy-MM-dd'))") }
-                        if ($cert.Subject -eq $cert.Issuer) { [void]$findings.Add("Port ${port}: self-signed TLS certificate") }
+                        if ($cert.NotAfter -lt (Get-Date)) { $certExpired = $true; [void]$findings.Add("Port ${port}: TLS certificate expired $($cert.NotAfter.ToString('yyyy-MM-dd'))") }
+                        if ($cert.Subject -eq $cert.Issuer) { $certSelfSigned = $true; [void]$findings.Add("Port ${port}: self-signed TLS certificate") }
                     }
                 }
                 catch {
                     $service = 'tls?'
+                    $tlsFailed = $true
                     [void]$findings.Add("Port ${port}: TLS handshake failed")
                 }
             }
@@ -4513,9 +4524,11 @@ function Invoke-PortSweep {
                 $peek = Read-StreamText -Stream $stream -Max 2048 -TimeoutMs 700
                 if ($peek -match '^HTTP/') {
                     $service = 'http'
-                    $http = Get-HttpSummary -Response $peek
-                    $banner = $http.Banner
-                    foreach ($f in $http.Findings) { [void]$findings.Add("Port ${port}: $f") }
+                    $http = $true
+                    $httpSum = Get-HttpSummary -Response $peek
+                    $banner = $httpSum.Banner
+                    $server = $httpSum.Server; $title = $httpSum.Title; $hsts = $httpSum.Hsts; $csp = $httpSum.Csp; $xframe = $httpSum.XFrameOptions
+                    foreach ($f in $httpSum.Findings) { [void]$findings.Add("Port ${port}: $f") }
                 }
                 elseif ($peek) {
                     $banner = @($peek -split "`r?`n" | Where-Object { $_.Trim() })[0]
@@ -4539,9 +4552,11 @@ function Invoke-PortSweep {
                     $response = Read-StreamText -Stream $stream -Max 8192 -TimeoutMs $ReadTimeoutMs
                     if ($response -and $response -match '^HTTP/') {
                         if (-not $service) { $service = if ($isTls) { 'https' } else { 'http' } }
-                        $http = Get-HttpSummary -Response $response -Tls:$isTls
-                        if ($http.Banner) { $banner = if ($banner) { "$banner; $($http.Banner)" } else { $http.Banner } }
-                        foreach ($f in $http.Findings) { [void]$findings.Add("Port ${port}: $f") }
+                        $http = $true
+                        $httpSum = Get-HttpSummary -Response $response -Tls:$isTls
+                        if ($httpSum.Banner) { $banner = if ($banner) { "$banner; $($httpSum.Banner)" } else { $httpSum.Banner } }
+                        $server = $httpSum.Server; $title = $httpSum.Title; $hsts = $httpSum.Hsts; $csp = $httpSum.Csp; $xframe = $httpSum.XFrameOptions
+                        foreach ($f in $httpSum.Findings) { [void]$findings.Add("Port ${port}: $f") }
                     }
                 }
                 catch { }
@@ -4553,7 +4568,12 @@ function Invoke-PortSweep {
         }
         catch { }
         finally { try { $client.Close() } catch { } }
-        $results += @{ port = $port; service = $service; banner = $banner }
+        $results += @{
+            port = $port; service = $service; banner = $banner
+            tls = $tls; http = $http; server = $server; title = $title
+            hsts = $hsts; csp = $csp; xframe = $xframe
+            certSelfSigned = $certSelfSigned; certExpired = $certExpired; tlsFailed = $tlsFailed
+        }
     }
     [PSCustomObject]@{ Done = $true; Open = @($results); Findings = @($findings) }
 }

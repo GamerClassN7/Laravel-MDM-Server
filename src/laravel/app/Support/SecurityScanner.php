@@ -3,6 +3,8 @@
 namespace App\Support;
 
 use App\Models\Device;
+use App\Models\NetworkNeighbour;
+use App\Models\PortScanResult;
 use App\Models\SecurityEvent;
 use App\Models\SecurityFinding;
 use App\Models\SecurityInventory;
@@ -335,8 +337,120 @@ class SecurityScanner
             $counts['opened'] += $result['opened'];
             $counts['resolved'] += $result['resolved'];
         }
+        // Port-scan findings re-evaluate too, so a changed/added portscan rule takes effect.
+        $ports = self::scanAllPorts();
+        $counts['opened'] += $ports['opened'];
+        $counts['resolved'] += $ports['resolved'];
 
         return $counts;
+    }
+
+    /** Re-runs the portscan rules over every stored port scan (after rules change). */
+    public static function scanAllPorts(): array
+    {
+        $counts = ['opened' => 0, 'resolved' => 0];
+        foreach (PortScanResult::query()->cursor() as $result) {
+            $one = rescue(fn () => self::scanPorts($result), ['opened' => 0, 'resolved' => 0]);
+            $counts['opened'] += $one['opened'];
+            $counts['resolved'] += $one['resolved'];
+        }
+
+        return $counts;
+    }
+
+    /**
+     * Runs the `portscan` detection rules over one scanned host's open ports: opens a finding per
+     * matching port and resolves this host's findings whose port/condition is gone. The finding is
+     * linked to a managed device when the address is one, otherwise it keeps the network target
+     * (target_ip/mac) and no device — so unknown neighbours get findings too.
+     */
+    public static function scanPorts(PortScanResult $result): array
+    {
+        SecurityRule::syncBuiltIn();
+        $rules = SecurityRule::query()->where('source', 'portscan')->where('enabled', true)->get();
+        if ($rules->isEmpty()) {
+            return ['opened' => 0, 'resolved' => 0];
+        }
+
+        $items = $result->toSecurityItems();
+        $device = self::deviceForAddress($result->ip);
+        $target = [
+            'device_id' => $device?->id,
+            'target_ip' => $result->ip,
+            'target_mac' => NetworkNeighbour::query()->where('ip', $result->ip)->orderByDesc('last_seen_at')->value('mac'),
+            'network' => $result->network,
+            'site' => $result->site,
+        ];
+
+        $open = SecurityFinding::query()->open()->whereIn('security_rule_id', $rules->modelKeys())
+            ->where('site', $result->site)->where('target_ip', $result->ip)->get()
+            ->groupBy('security_rule_id');
+
+        $opened = 0;
+        $resolvedIds = [];
+        DB::transaction(function () use ($rules, $items, $target, $open, &$opened, &$resolvedIds) {
+            foreach ($rules as $rule) {
+                $found = self::matches($rule->definition, $items);
+                $ruleOpen = ($open->get($rule->id) ?? collect())->keyBy('fingerprint');
+                $rows = [];
+                foreach ($found as $fingerprint => $match) {
+                    $finding = $ruleOpen->get($fingerprint);
+                    if ($finding === null) {
+                        $rows[] = $target + [
+                            'security_rule_id' => $rule->id,
+                            'fingerprint' => $fingerprint,
+                            'severity' => $rule->severity,
+                            'message' => self::message($match),
+                            'details' => json_encode($match['item'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                            'first_seen_at' => now(),
+                            'last_seen_at' => now(),
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ];
+
+                        continue;
+                    }
+                    $fresh = ['message' => self::message($match), 'details' => $match['item'], 'severity' => $rule->severity, 'device_id' => $target['device_id'], 'target_mac' => $target['target_mac']];
+                    if ($finding->message !== $fresh['message'] || $finding->details !== $fresh['details'] || $finding->severity !== $fresh['severity'] || $finding->device_id !== $fresh['device_id'] || $finding->last_seen_at->lt(now()->subHour())) {
+                        $finding->update($fresh + ['last_seen_at' => now()]);
+                    }
+                }
+                foreach (array_chunk($rows, 100) as $chunk) {
+                    SecurityFinding::query()->insert($chunk);
+                }
+                $opened += count($rows);
+                foreach ($ruleOpen as $fingerprint => $finding) {
+                    if (! isset($found[$fingerprint])) {
+                        $resolvedIds[] = $finding->id;
+                    }
+                }
+            }
+            if ($resolvedIds !== []) {
+                SecurityFinding::query()->whereKey($resolvedIds)->update(['resolved_at' => now()]);
+            }
+        });
+
+        return ['opened' => $opened, 'resolved' => count($resolvedIds)];
+    }
+
+    /** The managed device at an address (a ping-only device, or an agent whose own IP it is), or null. */
+    private static function deviceForAddress(string $ip): ?Device
+    {
+        $ping = Device::query()->where('kind', 'ping')->where('ping_address', $ip)->first();
+        if ($ping !== null) {
+            return $ping;
+        }
+        foreach (Device::all()->reject(fn (Device $device) => $device->isPingOnly) as $agent) {
+            foreach ($agent->networks as $interface) {
+                foreach ($interface['Addresses'] ?? [] as $address) {
+                    if (($address['Address'] ?? null) === $ip) {
+                        return $agent;
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
