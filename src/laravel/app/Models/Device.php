@@ -636,6 +636,23 @@ class Device extends Model
         return array_values(array_unique($networks));
     }
 
+    /**
+     * The MAC a neighbour currently has at an address (the most recently seen), with its vendor, so
+     * a ping-only device added or edited by its IP can adopt the MAC that network discovery found
+     * there. Null when no agent sees that address. @return array{mac: string, vendor: ?string}|null
+     */
+    public static function discoveredMacFor(?string $address): ?array
+    {
+        if (! $address || ! filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return null;
+        }
+        $neighbour = NetworkNeighbour::query()->where('ip', $address)
+            ->where('last_seen_at', '>=', now()->subHours(NetworkNeighbour::SHOWN_HOURS))
+            ->orderByDesc('last_seen_at')->first();
+
+        return $neighbour === null ? null : ['mac' => $neighbour->mac, 'vendor' => \App\Support\MacVendor::lookup($neighbour->mac)];
+    }
+
     /** The IPv4 address whose ports are scanned: a ping-only device's address, or its first LAN IPv4. */
     public function portScanAddress(): ?string
     {

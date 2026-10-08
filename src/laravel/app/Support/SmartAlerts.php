@@ -55,6 +55,21 @@ class SmartAlerts
                 'action' => ['command' => 'wake', 'label' => __('Try again'), 'icon' => 'fas fa-redo'],
             ];
         }
+
+        // A ping-only device with no MAC, but network discovery sees one at its address: offer to
+        // adopt it, so the device is known (not shown as unknown) and follows its MAC over DHCP.
+        if ($device->isPingOnly && empty($device->ping_mac) && ($mac = Device::discoveredMacFor($device->ping_address))) {
+            $alerts[] = [
+                'key' => 'mac',
+                'severity' => 'info',
+                'icon' => 'fas fa-ethernet',
+                'title' => __('A MAC address was found for this device'),
+                'message' => __('Network discovery sees :mac at :ip.', ['mac' => $mac['mac'].($mac['vendor'] ? ' ('.$mac['vendor'].')' : ''), 'ip' => $device->ping_address])
+                    .' '.__('Add it so the device is known and follows its address when it changes.'),
+                'action' => ['command' => 'adoptMac', 'label' => __('Add the MAC address'), 'icon' => 'fas fa-ethernet'],
+            ];
+        }
+
         if (empty($device->data)) {
             return self::finish($device, $alerts, $active);
         }
@@ -252,8 +267,8 @@ class SmartAlerts
         foreach ($alerts as &$alert) {
             $alert += ['message' => null, 'details' => [], 'action' => null, 'tab' => null, 'copy' => null, 'failure' => null, 'refusal' => null];
             $alert['active'] = null;
-            if (($alert['action']['command'] ?? null) === 'clearAgentErrors') {
-                // Not a command for the device: done right away.
+            if (in_array($alert['action']['command'] ?? null, ['clearAgentErrors', 'adoptMac'], true)) {
+                // Not a command for the device: done on the server right away.
                 $alert['action'] += ['params' => [], 'confirm' => null];
             } elseif (($alert['action']['command'] ?? null) === 'remediate') {
                 // A full run of the script (remediation scripts are for system admins).
@@ -374,6 +389,16 @@ class SmartAlerts
         if ($alert['action']['command'] === 'clearAgentErrors') {
             $device->clearAgentErrors();
             \App\Support\LiveUpdates::device($device->id, 'errors');
+
+            return null;
+        }
+        if ($alert['action']['command'] === 'adoptMac') {
+            $found = Device::discoveredMacFor($device->ping_address);
+            if ($found === null) {
+                return __('Nothing to do anymore.');
+            }
+            $device->forceFill(['ping_mac' => $found['mac']])->save();
+            \App\Support\LiveUpdates::device($device->id, 'settings');
 
             return null;
         }
