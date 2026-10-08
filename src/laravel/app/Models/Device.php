@@ -43,6 +43,9 @@ class Device extends Model
     /** Agents from this version collect the security inventory (App\Support\SecurityScanner). */
     public const SECURITY_VERSION = '1.17.0';
 
+    /** Agents from this version scan the open ports of an address in their network (port_scan). */
+    public const PORT_SCAN_VERSION = '1.18.0';
+
     /** At most this many ping-only devices per agent. */
     public const MAX_PING_TARGETS = 32;
 
@@ -439,6 +442,12 @@ class Device extends Model
                 'level' => $this->networkDiscovery ?? 'neighbours', 'time' => $this->updated_at?->diffForHumans() ?? '-',
             ]),
             $command === 'scanNetwork' && ! NetworkNeighbour::enabled() => __('Network discovery is turned off in the portal'),
+            $command === 'scanPorts' && version_compare((string) $this->agent_version, self::PORT_SCAN_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::PORT_SCAN_VERSION]),
+            // As of its last report: a change in config.json shows with the next one.
+            $command === 'scanPorts' && $this->portScan !== 'on' => __('port_scan is ":level" in its config.json (as of its last report :time), port scans need "on"', [
+                'level' => $this->portScan ?? 'off', 'time' => $this->updated_at?->diffForHumans() ?? '-',
+            ]),
+            $command === 'scanPorts' && ! PortScanResult::enabled() => __('Port scanning is turned off in the portal'),
             $command === 'sync' && version_compare((string) $this->agent_version, self::SYNC_VERSION, '<') => __('Needs agent :version or newer', ['version' => self::SYNC_VERSION]),
             $command === 'installUpdate' && ($params['kind'] ?? null) === 'pwsh' && version_compare((string) $this->agent_version, self::PWSH_UPDATE_VERSION, '<') => __('The agent is too old for this command'),
             default => null,
@@ -546,6 +555,17 @@ class Device extends Model
     }
 
     /**
+     * Whether the agent scans the open ports of an address in its network on request (port_scan in
+     * its config.json, agents 1.18.0+): off (default) or on; null for older agents and ping-only devices.
+     */
+    public function getPortScanAttribute(): ?string
+    {
+        $level = $this->isPingOnly ? null : ($this->data->machine->PortScan ?? null);
+
+        return in_array($level, ['off', 'on'], true) ? $level : null;
+    }
+
+    /**
      * What the agent is set to do, for the Agent tab (read only: the settings are changed on the
      * device). Each: key, label, description, setting (the config.json key, or null), on, detail
      * (what the state means, or why it is off) and needs (the agent version that adds it, when
@@ -568,6 +588,8 @@ class Device extends Model
             $feature('scripts', __('Remediation scripts'), __('Runs the scripts of the Scripts page as root.'), 'scripts_enabled', $this->scriptsEnabled),
             $feature('network_discovery', __('Network discovery'), __('Reports devices it sees in its networks and scans them on request.'), 'network_discovery', $discovery !== null && $discovery !== 'off',
                 $discovery === 'scan' ? __('ARP table and scans') : ($discovery === 'neighbours' ? __('ARP table') : null), $has(self::NETWORK_DISCOVERY_VERSION) ? null : self::NETWORK_DISCOVERY_VERSION),
+            $feature('port_scan', __('Port scanning'), __('Scans the open ports of an address in its network on request and reports what answers.'), 'port_scan', $this->portScan === 'on',
+                $this->portScan === 'on' ? __('on request') : ($has(self::PORT_SCAN_VERSION) ? __('off') : null), $has(self::PORT_SCAN_VERSION) ? null : self::PORT_SCAN_VERSION),
             $feature('security_inventory', __('Security inventory'), __('Software, programs, open ports and settings for the security checks, every hour.'), null, $this->securityInventory()->exists(),
                 ($collected = $this->securityInventory()->value('collected_at')) ? __('last :time', ['time' => Carbon::parse($collected)->diffForHumans()]) : null, $has(self::SECURITY_VERSION) ? null : self::SECURITY_VERSION),
             $feature('security_logs', __('Security logs'), __('Sends sign-in and system log records, so the sign-in checks (password guessing, new administrators) work.'), 'security_logs', $this->securityLogs, null, $has(self::SECURITY_VERSION) ? null : self::SECURITY_VERSION),

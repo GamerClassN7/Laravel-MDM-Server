@@ -3,7 +3,9 @@
 namespace App\Livewire\Networks;
 
 use App\Models\Device;
+use App\Models\DeviceCommand;
 use App\Models\NetworkNeighbour;
+use App\Models\PortScanResult;
 use App\Support\NetworkMap;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Str;
@@ -50,6 +52,33 @@ class Page extends Component
         }
     }
 
+    /**
+     * Scans the open ports of an unknown device: the agent that saw it (it is in that agent's
+     * network) connects to the common ports and reports what each service returns on its own.
+     */
+    public function scanPorts(int $id, bool $all = false): void
+    {
+        $neighbour = NetworkNeighbour::query()->whereNull('ignored_at')->findOrFail($id);
+        $agent = $neighbour->seenBy;
+        if ($agent === null) {
+            $this->addError('portscan.'.$id, __('No agent reported this device.'));
+
+            return;
+        }
+        // all: every port (1-65535); otherwise the agent's default common ports.
+        $params = ['ip' => $neighbour->ip] + ($all ? ['all' => true] : []);
+        if ($agent->issueCommand('scanPorts', $params, auth()->user()) === null) {
+            $this->addError('portscan.'.$id, $agent->commandRefusal('scanPorts', $params) ?? __('Already on its way.'));
+        }
+    }
+
+    /** Port scanning of the whole portal: off, no agent scans ports whatever its config.json allows (system admins). */
+    public function togglePortScan(): void
+    {
+        Gate::authorize('is-system-admin');
+        PortScanResult::setEnabled(! PortScanResult::enabled());
+    }
+
     /** An unknown device as a ping-only device: pinged by an agent of its network, its MAC followed. */
     public function add(int $id)
     {
@@ -91,9 +120,34 @@ class Page extends Component
 
     public function render()
     {
+        $portScanEnabled = PortScanResult::enabled();
+        $unknown = NetworkNeighbour::unknown()->load('seenBy')->keyBy('id');
+        // Per unknown device: its latest port scan, an active one, and whether a scan can be sent.
+        $results = PortScanResult::query()
+            ->whereIn('site', $unknown->pluck('site')->unique()->all())
+            ->whereIn('ip', $unknown->pluck('ip')->unique()->all())
+            ->get()->keyBy(fn (PortScanResult $row) => $row->site.'|'.$row->ip);
+        $active = $unknown->isEmpty() ? collect() : DeviceCommand::query()->where('command', 'scanPorts')->active()
+            ->whereIn('target', $unknown->map(fn (NetworkNeighbour $n) => 'ports:'.$n->ip)->unique()->values()->all())
+            ->get()->keyBy('target');
+        $portScans = $unknown->map(function (NetworkNeighbour $n) use ($results, $active, $portScanEnabled) {
+            $agent = $n->seenBy;
+            $refusal = $agent?->commandRefusal('scanPorts', ['ip' => $n->ip]);
+
+            return [
+                'result' => $results[$n->site.'|'.$n->ip] ?? null,
+                'command' => $active['ports:'.$n->ip] ?? null,
+                'agent' => $agent !== null && $refusal === null,
+                'refusal' => ! $portScanEnabled ? __('Port scanning is turned off in the portal')
+                    : ($agent === null ? __('No agent reported this device.') : $refusal),
+            ];
+        });
+
         return view('livewire.networks.page', [
             'map' => NetworkMap::build(),
             'discovery' => NetworkNeighbour::enabled(),
+            'portScanEnabled' => $portScanEnabled,
+            'portScans' => $portScans,
             'ignored' => NetworkNeighbour::query()->whereNotNull('ignored_at')->latest('last_seen_at')->limit(50)->get(),
         ])->title(__('Networks'));
     }

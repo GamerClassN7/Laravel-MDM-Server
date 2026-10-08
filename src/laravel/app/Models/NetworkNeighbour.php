@@ -172,6 +172,34 @@ class NetworkNeighbour extends Model
         return count($seen);
     }
 
+    /**
+     * The agent's own IPv4 networks (its connected, non-VPN interfaces) as cidr => the network's
+     * segment (its gateway's MAC, NetworkMap::segmentOf). The same keying used for neighbours and
+     * port scan results, so an address can be matched to the segment it was seen in.
+     *
+     * @return array<string, string>
+     */
+    public static function networksOf(Device $device): array
+    {
+        if ($device->isPingOnly) {
+            return [];
+        }
+        $serverSite = NetworkMap::serverAddresses()[0] ?? null;
+        $networks = [];
+        foreach ($device->networks as $interface) {
+            if (in_array($interface['Type'], [...NetworkMap::SKIPPED_TYPES, 'vpn'], true) || ! $interface['Connected']) {
+                continue;
+            }
+            foreach ($interface['Addresses'] as $address) {
+                if ($cidr = NetworkMap::cidr($address['Address'], $address['PrefixLength'])) {
+                    $networks[$cidr] ??= NetworkMap::segmentOf($interface, $device, $serverSite);
+                }
+            }
+        }
+
+        return $networks;
+    }
+
     /** Ping-only devices whose MAC is now at another address of the same network go there. */
     private static function followMacs(array $seen): void
     {
