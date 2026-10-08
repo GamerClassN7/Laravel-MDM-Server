@@ -4409,11 +4409,18 @@ function Invoke-PortSweep {
                     [void]$findings.Add("Port ${port}: TLS handshake failed")
                 }
             }
-            # Services that greet on connect (SSH, FTP, SMTP, IMAP, POP3): read their banner.
+            # Services that greet on connect (SSH, FTP, SMTP, IMAP, POP3): read their banner (its
+            # first line). A server that speaks HTTP unasked on an off-list port is summarized too.
             if (-not $isTls -and $httpPorts -notcontains $port) {
-                $peek = Read-StreamText -Stream $stream -Max 512 -TimeoutMs 700
-                if ($peek) {
-                    $banner = $peek
+                $peek = Read-StreamText -Stream $stream -Max 2048 -TimeoutMs 700
+                if ($peek -match '^HTTP/') {
+                    $service = 'http'
+                    $http = Get-HttpSummary -Response $peek
+                    $banner = $http.Banner
+                    foreach ($f in $http.Findings) { [void]$findings.Add("Port ${port}: $f") }
+                }
+                elseif ($peek) {
+                    $banner = @($peek -split "`r?`n" | Where-Object { $_.Trim() })[0]
                     $service = switch -Regex ($peek) {
                         '^SSH-' { 'ssh'; break }
                         '(?i)^220.*ftp' { 'ftp'; break }
