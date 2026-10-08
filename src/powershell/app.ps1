@@ -4283,8 +4283,9 @@ $script:DefaultScanPorts = @(
 
 function Test-PortScanParams {
     # scanPorts: the address must be a host of a network of one of the interfaces that are up (not
-    # the device's own address, nor the network or broadcast address). An optional list of ports,
-    # otherwise the default common ports. Returns @{ Ip; Ports; Interface }.
+    # the device's own address, nor the network or broadcast address). "all" scans every port
+    # (1-65535), a list scans those ports, otherwise the default common ports. Returns
+    # @{ Ip; Ports; Interface; Full }.
     param ($Params)
 
     $ip = "$($Params.ip)"
@@ -4296,14 +4297,17 @@ function Test-PortScanParams {
     if ($parsed.Equals($network.Address)) { throw "$ip is this device's own address" }
     $networkAddress = [System.Net.IPAddress]::new([byte[]]$network.Network)
     if ($parsed.Equals($networkAddress) -or $parsed.Equals($network.Broadcast)) { throw "$ip is the network or broadcast address" }
-    $ports = if ($Params.ports) {
+    $full = "$($Params.all)" -in 'true', '1', 'all'
+    $ports = if ($full) {
+        1..65535
+    } elseif ($Params.ports) {
         @($Params.ports | ForEach-Object { try { [int]$_ } catch { $null } } | Where-Object { $_ -ge 1 -and $_ -le 65535 } | Select-Object -Unique)
     } else {
         $script:DefaultScanPorts
     }
     if ($ports.Count -eq 0) { throw 'no ports to scan' }
-    if ($ports.Count -gt 1024) { throw "too many ports ($($ports.Count)), at most 1024" }
-    return @{ Ip = $ip; Ports = @($ports); Interface = $network.Name }
+    if ($ports.Count -gt 65535) { throw "too many ports ($($ports.Count)), at most 65535" }
+    return @{ Ip = $ip; Ports = @($ports); Interface = $network.Name; Full = $full }
 }
 
 function Read-StreamText {
@@ -4355,13 +4359,28 @@ function Get-HttpSummary {
 
 function Invoke-PortSweep {
     # In the scan job: which of the ports accept a TCP connection, and for each open one what the
-    # service returns on its own (a banner, the HTTP Server header and title, the TLS certificate).
-    # Sends only a single standard HTTP GET where it helps identify a web server; no payloads go to
-    # the services. Writes @{ Progress; Found } per batch, then @{ Done; Open; Findings }.
-    param ([string]$Ip, [int[]]$Ports, [int]$ConnectTimeoutMs = 1000, [int]$ReadTimeoutMs = 1500, [int]$Batch = 64)
+    # service returns on its own (a banner, the HTTP Server header and title, the TLS certificate,
+    # or the common service name of the port). Sends only a single standard HTTP GET where it helps
+    # identify a web server; no payloads go to the services. A large sweep (a full 1-65535 scan)
+    # connects in bigger batches with a shorter timeout. Writes @{ Progress; Found } per batch, then
+    # @{ Done; Open; Findings }.
+    param ([string]$Ip, [int[]]$Ports, [int]$ConnectTimeoutMs, [int]$ReadTimeoutMs = 1500, [int]$Batch)
 
     $httpPorts = @(80, 81, 591, 3000, 5000, 5601, 7070, 8000, 8008, 8080, 8086, 8096, 8123, 9090)
     $tlsPorts = @(443, 465, 636, 989, 990, 993, 995, 5986, 8443, 9443)
+    # Common TCP services, to name a port that answers but offers no banner.
+    $wellKnown = @{
+        21 = 'ftp'; 22 = 'ssh'; 23 = 'telnet'; 25 = 'smtp'; 53 = 'dns'; 110 = 'pop3'; 111 = 'rpcbind';
+        135 = 'msrpc'; 139 = 'netbios'; 143 = 'imap'; 161 = 'snmp'; 389 = 'ldap'; 445 = 'smb';
+        465 = 'smtps'; 514 = 'syslog'; 515 = 'printer'; 587 = 'submission'; 631 = 'ipp'; 636 = 'ldaps';
+        993 = 'imaps'; 995 = 'pop3s'; 1433 = 'mssql'; 1521 = 'oracle'; 1723 = 'pptp'; 1883 = 'mqtt';
+        2049 = 'nfs'; 2375 = 'docker'; 2376 = 'docker-tls'; 3306 = 'mysql'; 3389 = 'rdp'; 5060 = 'sip';
+        5432 = 'postgresql'; 5900 = 'vnc'; 5985 = 'winrm'; 5986 = 'winrm-tls'; 6379 = 'redis';
+        8883 = 'mqtt-tls'; 9100 = 'jetdirect'; 9200 = 'elasticsearch'; 11211 = 'memcached'; 27017 = 'mongodb'
+    }
+    # A full scan (many ports) connects wider and faster; a short list stays gentle.
+    if (-not $Batch) { $Batch = if ($Ports.Count -gt 1024) { 256 } else { 64 } }
+    if (-not $ConnectTimeoutMs) { $ConnectTimeoutMs = if ($Ports.Count -gt 1024) { 500 } else { 1000 } }
 
     $open = New-Object System.Collections.ArrayList
     for ($offset = 0; $offset -lt $Ports.Count; $offset += $Batch) {
@@ -4370,9 +4389,11 @@ function Invoke-PortSweep {
                 $client = New-Object System.Net.Sockets.TcpClient
                 @{ Port = $_; Client = $client; Task = $client.ConnectAsync($Ip, $_) }
             })
+        # Wait for the whole batch at once (bounded by the timeout), not each port in turn: a
+        # filtered host drops SYNs, so a per-port wait would take timeout x batch size.
+        try { [void][System.Threading.Tasks.Task]::WaitAll(@($runs.Task), $ConnectTimeoutMs) } catch { }
         foreach ($run in $runs) {
-            try { [void]$run.Task.Wait($ConnectTimeoutMs) } catch { }
-            if ($run.Client.Connected) { [void]$open.Add($run.Port) }
+            if ($run.Task.Status -eq 'RanToCompletion' -and $run.Client.Connected) { [void]$open.Add($run.Port) }
             try { $run.Client.Close() } catch { }
         }
         [PSCustomObject]@{ Progress = [int](($offset + $slice.Count) * 80 / $Ports.Count); Found = $open.Count }
@@ -4448,7 +4469,8 @@ function Invoke-PortSweep {
                 }
                 catch { }
             }
-            if (-not $service) { $service = 'open' }
+            # No banner and not a web/TLS port: name it by its well-known port, else just "open".
+            if (-not $service) { $service = if ($wellKnown.ContainsKey([int]$port)) { $wellKnown[[int]$port] } else { 'open' } }
             if ($port -eq 23) { [void]$findings.Add("Port ${port}: Telnet is unencrypted") }
             if ($port -eq 21) { [void]$findings.Add("Port ${port}: FTP is unencrypted") }
         }

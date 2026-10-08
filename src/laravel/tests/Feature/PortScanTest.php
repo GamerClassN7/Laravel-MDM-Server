@@ -116,6 +116,20 @@ class PortScanTest extends TestCase
         $this->assertSame(1, $agent->commands()->where('command', 'scanPorts')->count());
     }
 
+    public function test_a_full_scan_carries_the_all_flag(): void
+    {
+        config(['mdm.public_address' => '31.30.4.122']);
+        $this->actingAs(User::factory()->create());
+        $agent = $this->agent();
+        $this->seeNeighbour();
+        $neighbour = \App\Models\NetworkNeighbour::query()->where('ip', '192.168.1.50')->firstOrFail();
+
+        Livewire::withQueryParams(['view' => 'list'])->test(Page::class)->call('scanPorts', $neighbour->id, true)->assertHasNoErrors();
+        $command = $agent->commands()->where('command', 'scanPorts')->firstOrFail();
+        $this->assertSame(['ip' => '192.168.1.50', 'all' => true], $command->params);
+        $this->assertStringContainsString('all ports', $command->label);
+    }
+
     public function test_an_old_agent_or_a_device_with_port_scan_off_refuses(): void
     {
         $off = $this->agent('off', 'off-token');
@@ -134,6 +148,8 @@ class PortScanTest extends TestCase
         $this->assertNull(DeviceCommand::sanitizeParams('scanPorts', ['ip' => 'nonsense']));
         $this->assertNull(DeviceCommand::sanitizeParams('scanPorts', []));
         $this->assertSame(['ip' => '192.168.1.50'], DeviceCommand::sanitizeParams('scanPorts', ['ip' => '192.168.1.50']));
+        // "all" (the full 1-65535 sweep) is kept and wins over any port list.
+        $this->assertSame(['ip' => '192.168.1.50', 'all' => true], DeviceCommand::sanitizeParams('scanPorts', ['ip' => '192.168.1.50', 'all' => true, 'ports' => [80]]));
         // A custom list is deduplicated, sorted and range-checked; an empty effective list is invalid.
         $this->assertSame(['ip' => '192.168.1.50', 'ports' => [22, 80, 443]], DeviceCommand::sanitizeParams('scanPorts', ['ip' => '192.168.1.50', 'ports' => [443, 80, 22, 80, 70000, 0]]));
         $this->assertNull(DeviceCommand::sanitizeParams('scanPorts', ['ip' => '192.168.1.50', 'ports' => [0, 70000]]));

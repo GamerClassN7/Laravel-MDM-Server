@@ -51,7 +51,8 @@ class DeviceCommand extends Model
         'wake' => 600,
         'pingNow' => 120,
         'scanNetwork' => 300,
-        'scanPorts' => 300,
+        // A full 1-65535 sweep takes a while; progress keeps it from timing out early.
+        'scanPorts' => 1200,
     ];
 
     /** The largest network an agent scans (a /22: 1022 addresses). */
@@ -143,6 +144,10 @@ class DeviceCommand extends Model
                 return null;
             }
             $clean = ['ip' => $ip];
+            // Scan every port (1-65535); the agent expands it, so no list is sent.
+            if (! empty($params['all'])) {
+                return $clean + ['all' => true];
+            }
             if (array_key_exists('ports', $params) && $params['ports'] !== null) {
                 if (! is_array($params['ports'])) {
                     return null;
@@ -336,7 +341,9 @@ class DeviceCommand extends Model
             'wake' => __('Wake :name', ['name' => $this->params['title'] ?? '?']),
             'pingNow' => __('Ping :name', ['name' => $this->params['title'] ?? '?']),
             'scanNetwork' => __('Scan :network', ['network' => $this->params['cidr'] ?? '?']),
-            'scanPorts' => __('Scan ports of :ip', ['ip' => $this->params['ip'] ?? '?']),
+            'scanPorts' => ! empty($this->params['all'])
+                ? __('Scan all ports of :ip', ['ip' => $this->params['ip'] ?? '?'])
+                : __('Scan ports of :ip', ['ip' => $this->params['ip'] ?? '?']),
             default => $this->command,
         };
     }

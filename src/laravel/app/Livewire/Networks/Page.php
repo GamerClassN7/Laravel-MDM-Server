@@ -56,7 +56,7 @@ class Page extends Component
      * Scans the open ports of an unknown device: the agent that saw it (it is in that agent's
      * network) connects to the common ports and reports what each service returns on its own.
      */
-    public function scanPorts(int $id): void
+    public function scanPorts(int $id, bool $all = false): void
     {
         $neighbour = NetworkNeighbour::query()->whereNull('ignored_at')->findOrFail($id);
         $agent = $neighbour->seenBy;
@@ -65,8 +65,10 @@ class Page extends Component
 
             return;
         }
-        if ($agent->issueCommand('scanPorts', ['ip' => $neighbour->ip], auth()->user()) === null) {
-            $this->addError('portscan.'.$id, $agent->commandRefusal('scanPorts', ['ip' => $neighbour->ip]) ?? __('Already on its way.'));
+        // all: every port (1-65535); otherwise the agent's default common ports.
+        $params = ['ip' => $neighbour->ip] + ($all ? ['all' => true] : []);
+        if ($agent->issueCommand('scanPorts', $params, auth()->user()) === null) {
+            $this->addError('portscan.'.$id, $agent->commandRefusal('scanPorts', $params) ?? __('Already on its way.'));
         }
     }
 
