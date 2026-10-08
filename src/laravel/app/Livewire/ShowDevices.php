@@ -84,6 +84,11 @@ class ShowDevices extends Component
     {
         $this->resetErrorBag();
         $this->validate(['pingName' => 'required|string|max:255']);
+        // No MAC given: adopt the one network discovery sees at this address, so the device is
+        // known and follows its MAC when its IP changes (DHCP).
+        if (trim($this->pingMac) === '' && ($found = Device::discoveredMacFor($this->pingAddress))) {
+            $this->pingMac = $found['mac'];
+        }
         $settings = Device::sanitizePingSettings($this->pingAddress, $this->pingPrefix, $this->pingMac);
         if ($settings === null) {
             $this->addError('pingAddress', __('Enter an IPv4 address, a prefix of 8–30 and a valid MAC address (or none).'));
