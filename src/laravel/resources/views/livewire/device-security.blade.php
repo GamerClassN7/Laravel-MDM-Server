@@ -46,7 +46,9 @@
         </details>
     @endif
 
-    @if ($inventory === null)
+    @if ($inventory === null && $device->isPingOnly)
+        {{-- No agent: only the findings of the server's own checks (port scans). --}}
+    @elseif ($inventory === null)
         <div class="small text-muted">{{ __('No security inventory yet: it needs agent :version or newer.', ['version' => Device::SECURITY_VERSION]) }}</div>
     @else
         <div class="d-flex align-items-center mb-2">

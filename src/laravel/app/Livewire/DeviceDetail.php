@@ -121,9 +121,11 @@ class DeviceDetail extends Component
         return view('livewire.device-detail', [
             'selectedDevice' => $device,
             'activeCommands' => $device->activeCommands(),
-            // Its own commands and the wakes / pings other agents did for it.
+            // Its own commands and the wakes / pings / port scans other agents did for it.
             'history' => \App\Models\DeviceCommand::query()->with(['issuer', 'device'])
-                ->where(fn ($query) => $query->where('device_id', $device->id)->orWhereIn('target', ['device:'.$device->id, 'ping:'.$device->id]))
+                ->where(fn ($query) => $query->where('device_id', $device->id)->orWhereIn('target', array_filter([
+                    'device:'.$device->id, 'ping:'.$device->id, ($address = $device->portScanAddress()) ? 'ports:'.$address : null,
+                ])))
                 ->latest('id')->limit(25)->get(),
         ]);
     }
