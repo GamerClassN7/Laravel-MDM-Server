@@ -53,13 +53,13 @@ class Page extends Component
     }
 
     /**
-     * Scans the open ports of an unknown device: the agent that saw it (it is in that agent's
-     * network) connects to the common ports and reports what each service returns on its own.
+     * Scans the open ports of an unknown device: any online agent whose network contains it (with
+     * port_scan on) connects to the ports and reports what each service returns on its own.
      */
     public function scanPorts(int $id, bool $all = false): void
     {
         $neighbour = NetworkNeighbour::query()->whereNull('ignored_at')->findOrFail($id);
-        $agent = $neighbour->seenBy;
+        $agent = Device::portScannerFor($neighbour->ip);
         if ($agent === null) {
             $this->addError('portscan.'.$id, __('No agent reported this device.'));
 
@@ -121,7 +121,7 @@ class Page extends Component
     public function render()
     {
         $portScanEnabled = PortScanResult::enabled();
-        $unknown = NetworkNeighbour::unknown()->load('seenBy')->keyBy('id');
+        $unknown = NetworkNeighbour::unknown()->keyBy('id');
         // Per unknown device: its latest port scan, an active one, and whether a scan can be sent.
         $results = PortScanResult::query()
             ->whereIn('site', $unknown->pluck('site')->unique()->all())
@@ -130,16 +130,18 @@ class Page extends Component
         $active = $unknown->isEmpty() ? collect() : DeviceCommand::query()->where('command', 'scanPorts')->active()
             ->whereIn('target', $unknown->map(fn (NetworkNeighbour $n) => 'ports:'.$n->ip)->unique()->values()->all())
             ->get()->keyBy('target');
-        $portScans = $unknown->map(function (NetworkNeighbour $n) use ($results, $active, $portScanEnabled) {
-            $agent = $n->seenBy;
-            $refusal = $agent?->commandRefusal('scanPorts', ['ip' => $n->ip]);
+        // The scan can go to any online agent whose network contains the address, not only the one
+        // that last reported it; the candidate agents are gathered once for all unknown devices.
+        $agents = Device::all()->reject(fn (Device $device) => $device->isPingOnly);
+        $portScans = $unknown->map(function (NetworkNeighbour $n) use ($results, $active, $portScanEnabled, $agents) {
+            $scanner = Device::portScannerFor($n->ip, null, $agents);
 
             return [
                 'result' => $results[$n->site.'|'.$n->ip] ?? null,
                 'command' => $active['ports:'.$n->ip] ?? null,
-                'agent' => $agent !== null && $refusal === null,
+                'agent' => $scanner !== null,
                 'refusal' => ! $portScanEnabled ? __('Port scanning is turned off in the portal')
-                    : ($agent === null ? __('No agent reported this device.') : $refusal),
+                    : __('No online agent in its network can scan it.'),
             ];
         });
 

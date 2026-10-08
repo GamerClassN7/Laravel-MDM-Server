@@ -157,6 +157,31 @@
                         </li>
                     @endforeach
                 @endif
+                {{-- Port scan of this host, only when an agent in its network can scan it (port_scan on). --}}
+                @if ($portScan && $portScan['scanner'])
+                    @php $scanningPorts = $portScan['command']; @endphp
+                    <li><hr class="dropdown-divider"></li>
+                    <li>
+                        <button class="dropdown-item d-flex align-items-center" type="button" wire:click="scanPorts"
+                            title="{{ $scanningPorts ? ($scanningPorts->displayMessage ?: $scanningPorts->statusLabel) : __('Scan the open ports of :ip and read what each service returns', ['ip' => $portScan['address']]) }}"
+                            @disabled($scanningPorts)>
+                            @if ($scanningPorts)
+                                <span aria-hidden="true" class="dropdown-ico spinner-border spinner-border-sm"></span>
+                            @else
+                                <i class="dropdown-ico fas fa-plug fa-fw"></i>
+                            @endif
+                            {{ __('Scan ports') }}
+                            @if ($scanningPorts)
+                                <span class="small text-muted ms-2">{{ $scanningPorts->progress !== null ? $scanningPorts->progress.' %' : $scanningPorts->statusLabel }}</span>
+                            @endif
+                        </button>
+                    </li>
+                    <li>
+                        <button class="dropdown-item d-flex align-items-center" type="button" wire:click="scanPorts(true)" @disabled($scanningPorts)>
+                            <i class="dropdown-ico fas fa-search-location fa-fw"></i>{{ __('Scan all ports (1–65535)') }}
+                        </button>
+                    </li>
+                @endif
                 <li><hr class="dropdown-divider"></li>
                 <li>
                     <button class="dropdown-item text-danger" type="button" wire:click.prevent="deleteDevice()" wire:confirm="{{ __('Do you really want to delete this device?') }}">
@@ -176,6 +201,39 @@
         <div class="small mt-2 {{ in_array($recentPing->status, ['failed', 'expired'], true) ? 'text-danger' : 'text-muted' }}">
             <i class="fas fa-network-wired me-1"></i>{{ __('Ping through :relay', ['relay' => $recentPing->device?->displayName]) }}:
             {{ in_array($recentPing->status, ['queued', 'sent'], true) ? __('waiting for :relay', ['relay' => $recentPing->device?->displayName]) : ($recentPing->displayMessage ?: $recentPing->statusLabel) }}
+        </div>
+    @endif
+
+    {{-- The last port scan of this host (it runs on another agent). Everything shown comes from the
+         scanned host and is printed as escaped text. --}}
+    @if ($portScan && $portScan['result'] && ! $portScan['command'])
+        @php $result = $portScan['result']; @endphp
+        <div class="small mt-2">
+            <details>
+                <summary class="text-body-secondary">
+                    <i class="fas fa-plug me-1"></i>{{ trans_choice(':count open port|:count open ports', count($result->ports)) }}
+                    @if ($result->findings)<span class="text-warning-emphasis ms-1"><i class="fas fa-triangle-exclamation me-1"></i>{{ trans_choice(':count note|:count notes', count($result->findings)) }}</span>@endif
+                    · {{ $result->scanned_at->diffForHumans() }}
+                </summary>
+                @if ($result->ports)
+                    <ul class="list-unstyled mb-0 mt-1 ms-3">
+                        @foreach ($result->ports as $port)
+                            <li class="text-break">
+                                <span class="fw-medium">{{ $port['port'] }}</span>
+                                @if (!empty($port['service']))<span class="text-body-secondary">{{ $port['service'] }}</span>@endif
+                                @if (!empty($port['banner']))<span class="text-body-secondary">— {{ $port['banner'] }}</span>@endif
+                            </li>
+                        @endforeach
+                    </ul>
+                @endif
+                @if ($result->findings)
+                    <ul class="list-unstyled mb-0 mt-1 ms-3 text-warning-emphasis">
+                        @foreach ($result->findings as $finding)
+                            <li class="text-break"><i class="fas fa-triangle-exclamation me-1"></i>{{ $finding }}</li>
+                        @endforeach
+                    </ul>
+                @endif
+            </details>
         </div>
     @endif
 
