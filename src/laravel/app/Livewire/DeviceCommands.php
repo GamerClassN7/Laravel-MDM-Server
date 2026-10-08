@@ -48,6 +48,21 @@ class DeviceCommands extends Component
         }
     }
 
+    /** Scans this host's own ports from an agent that can reach it (the agent that pings it, or one in its network). */
+    public function scanPorts(bool $all = false)
+    {
+        $device = Device::find($this->selectedDeviceId);
+        $address = $device?->portScanAddress();
+        $scanner = $device?->portScanner();
+        if ($device === null || $address === null || $scanner === null) {
+            return;
+        }
+        $params = ['ip' => $address] + ($all ? ['all' => true] : []);
+        if ($scanner->issueCommand('scanPorts', $params, auth()->user()) === null) {
+            $this->addError('command', $scanner->commandRefusal('scanPorts', $params) ?? __('Already on its way.'));
+        }
+    }
+
         /** Wake-on-LAN: another agent in the same network sends the magic packet. */
     public function wake()
     {
@@ -110,10 +125,21 @@ class DeviceCommands extends Component
             $recentPing?->active ? $recentPing : null,
         ]));
 
+        // Port scan of this host: the agent that can scan it (null hides the menu action), a scan
+        // running for its address, and the last result. The scan runs on the agent, not this device.
+        $address = $device->portScanAddress();
+        $portScan = $address === null ? null : [
+            'address' => $address,
+            'scanner' => $device->portScanner(),
+            'command' => \App\Models\DeviceCommand::query()->where('command', 'scanPorts')->active()->where('target', 'ports:'.$address)->first(),
+            'result' => \App\Models\PortScanResult::query()->where('ip', $address)->latest('scanned_at')->first(),
+        ];
+
         return view('livewire.device-commands', [
             'selectedDevice' => $device,
             'active' => $active,
             'onItsWay' => $onItsWay,
+            'portScan' => $portScan,
             'wakeRefusal' => $device->wakeRefusal(),
             'wakeRelay' => $device->offline ? $device->wakeRelay()[0] ?? null : null,
             'recentWake' => $recentWake,
