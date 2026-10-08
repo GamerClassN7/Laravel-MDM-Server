@@ -453,6 +453,7 @@
     "No feed is set (MDM_SECURITY_FEED_URL): only the bundled checks are used.": "Nessun feed impostato (MDM_SECURITY_FEED_URL): vengono usati solo i controlli inclusi.",
     "No findings.": "Nessun rilevamento.",
     "No online agent 1.9.0+ in the same network": "Nessun agent 1.9.0+ online nella stessa rete",
+    "No online agent in its network can scan it.": "Nessun agente online nella sua rete può scansionarlo.",
     "No online agent: no ping or wake here": "Nessun agent online: qui niente ping né riattivazione",
     "No open security findings.": "Nessun rilevamento di sicurezza aperto.",
     "No other agent in its networks: nothing next to it can wake it or ping the devices around it.": "Nessun altro agent nelle sue reti: niente accanto può riattivarlo o fare ping ai dispositivi intorno.",

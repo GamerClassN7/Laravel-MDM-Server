@@ -453,6 +453,7 @@
     "No feed is set (MDM_SECURITY_FEED_URL): only the bundled checks are used.": "Aucun flux n’est défini (MDM_SECURITY_FEED_URL) : seules les vérifications fournies sont utilisées.",
     "No findings.": "Aucun constat.",
     "No online agent 1.9.0+ in the same network": "Aucun agent 1.9.0+ en ligne dans le même réseau",
+    "No online agent in its network can scan it.": "Aucun agent en ligne de son réseau ne peut l’analyser.",
     "No online agent: no ping or wake here": "Aucun agent en ligne : pas de ping ni de réveil ici",
     "No open security findings.": "Aucun constat de sécurité ouvert.",
     "No other agent in its networks: nothing next to it can wake it or ping the devices around it.": "Aucun autre agent dans ses réseaux : rien à côté ne peut le réveiller ni pinguer les appareils autour.",

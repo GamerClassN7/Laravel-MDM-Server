@@ -453,6 +453,7 @@
     "No feed is set (MDM_SECURITY_FEED_URL): only the bundled checks are used.": "Kein Feed gesetzt (MDM_SECURITY_FEED_URL): nur die mitgelieferten Prüfungen werden verwendet.",
     "No findings.": "Keine Befunde.",
     "No online agent 1.9.0+ in the same network": "Kein Online-Agent 1.9.0+ im selben Netzwerk",
+    "No online agent in its network can scan it.": "Kein Online-Agent in seinem Netzwerk kann es scannen.",
     "No online agent: no ping or wake here": "Kein Online-Agent: hier kein Ping und kein Wecken",
     "No open security findings.": "Keine offenen Sicherheitsbefunde.",
     "No other agent in its networks: nothing next to it can wake it or ping the devices around it.": "Kein anderer Agent in seinen Netzwerken: nichts neben ihm kann es wecken oder die Geräte um es herum pingen.",

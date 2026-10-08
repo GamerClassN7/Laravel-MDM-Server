@@ -273,6 +273,24 @@ class DeviceCommandTest extends TestCase
         $this->assertSame(0, \Illuminate\Support\Facades\DB::table('device_alert_dismissals')->count());
     }
 
+    public function test_dismissed_agent_update_shows_again_for_a_newer_release(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $device = $this->device('1.7.3');
+
+        Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('A newer agent is available')
+            ->call('dismiss', 'agent')
+            ->assertDontSee('A newer agent is available');
+
+        // The server serves a newer agent: the dismissal was for the older release.
+        \Illuminate\Support\Facades\Cache::put('agent-version-'.filemtime(AgentScript::path()), '99.0.0', 3600);
+        Livewire::test(DeviceAlerts::class, ['selectedDeviceId' => $device->id])
+            ->assertSee('A newer agent is available')
+            ->assertSee('99.0.0');
+        $this->assertSame(0, \Illuminate\Support\Facades\DB::table('device_alert_dismissals')->count());
+    }
+
     public function test_device_menu_renames_and_has_no_agent_update(): void
     {
         $this->actingAs(User::factory()->create());

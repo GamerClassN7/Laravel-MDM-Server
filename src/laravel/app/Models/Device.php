@@ -653,6 +653,60 @@ class Device extends Model
         return $neighbour === null ? null : ['mac' => $neighbour->mac, 'vendor' => \App\Support\MacVendor::lookup($neighbour->mac)];
     }
 
+    /** The IPv4 address whose ports are scanned: a ping-only device's address, or its first LAN IPv4. */
+    public function portScanAddress(): ?string
+    {
+        if ($this->isPingOnly) {
+            return $this->ping_address ?: null;
+        }
+        foreach ($this->networks as $interface) {
+            if (! $interface['Connected'] || ! in_array($interface['Type'], self::RELAY_INTERFACE_TYPES, true)) {
+                continue;
+            }
+            foreach ($interface['Addresses'] as $address) {
+                if (filter_var($address['Address'] ?? '', FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                    return $address['Address'];
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * An online agent that can scan this host's ports on request. Null when nothing can scan it
+     * (the menu hides the action then).
+     */
+    public function portScanner(): ?Device
+    {
+        $address = $this->portScanAddress();
+
+        return $address === null ? null : self::portScannerFor($address, $this->id);
+    }
+
+    /**
+     * Any online agent that can scan the ports of an address: an agent (not ping-only) whose
+     * network contains it, with port_scan on and the portal switch enabled, and not the host
+     * itself (an agent cannot scan its own address). Null when nothing can scan it. $agents lets a
+     * caller that checks many addresses (the Networks page) pass the candidates once.
+     */
+    public static function portScannerFor(string $address, ?int $excludeId = null, ?Collection $agents = null): ?Device
+    {
+        if (! PortScanResult::enabled() || ! filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return null;
+        }
+        $agents ??= static::all()->reject(fn (Device $device) => $device->isPingOnly);
+        foreach ($agents as $agent) {
+            if ($agent->id !== $excludeId
+                && $agent->commandRefusal('scanPorts', ['ip' => $address]) === null
+                && collect($agent->scannableNetworks)->contains(fn ($cidr) => \App\Support\NetworkMap::contains($cidr, $address))) {
+                return $agent;
+            }
+        }
+
+        return null;
+    }
+
     public function scriptRuns(): HasMany
     {
         return $this->hasMany(ScriptRun::class);

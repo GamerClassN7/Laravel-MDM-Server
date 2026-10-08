@@ -453,6 +453,7 @@
     "No feed is set (MDM_SECURITY_FEED_URL): only the bundled checks are used.": "Není nastaven žádný zdroj (MDM_SECURITY_FEED_URL): používají se jen přibalené kontroly.",
     "No findings.": "Žádné nálezy.",
     "No online agent 1.9.0+ in the same network": "Ve stejné síti není žádný online agent 1.9.0+",
+    "No online agent in its network can scan it.": "Žádný online agent v její síti ji nedokáže naskenovat.",
     "No online agent: no ping or wake here": "Žádný online agent: zde nelze pingat ani probouzet",
     "No open security findings.": "Žádné otevřené bezpečnostní nálezy.",
     "No other agent in its networks: nothing next to it can wake it or ping the devices around it.": "V jeho sítích není žádný jiný agent: nic vedle něj ho nemůže probudit ani pingat zařízení kolem.",
