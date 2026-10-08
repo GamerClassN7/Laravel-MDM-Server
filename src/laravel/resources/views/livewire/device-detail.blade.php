@@ -23,18 +23,20 @@
         $securitySevere = $securityFindings->whereIn('severity', ['critical', 'high'])->count();
         // The tab from the URL (?tab=), or the first one this device has.
         $tabs = array_keys(array_filter([
-            'drives' => !empty($selectedDevice->drives),
+            // Volumes and the health of the disks under them.
+            'drives' => !empty($selectedDevice->drives) || $diskHealth !== null,
             'updates' => $hasUpdates,
             'networks' => count($selectedDevice->networks) > 0,
             'services' => count($services) > 0,
             'docker' => $docker !== null,
-            'health' => $diskHealth !== null,
             'scripts' => $scriptRuns->isNotEmpty(),
             'security' => $hasSecurity || $securityFindings->isNotEmpty(),
             'history' => $history->isNotEmpty(),
             'agent' => ! $selectedDevice->isPingOnly,
         ]));
         $updatesRunning = \App\Models\Device::findActive($activeCommands, 'doUpdates');
+        // Disk health was a tab of its own (old links: ?tab=health).
+        $tab = $tab === 'health' ? 'drives' : $tab;
         $activeTab = in_array($tab, $tabs, true) ? $tab : ($tabs[0] ?? null);
     @endphp
 
@@ -141,16 +143,20 @@
     </div>
     @endunless
 
-    @unless ($selectedDevice->isPingOnly)
+    {{-- Ping-only devices only get the tabs they have data for (security findings, history). --}}
+    @if ($tabs !== [])
     <div class="mt-4">
         {{-- Scrolls sideways when the tabs do not fit; the active one is kept in view. The wrapper
              scrolls, not the list: it would clip the underline of the active tab. --}}
         <div class="nav-tabs-scroll" x-init="$nextTick(() => { const tab = $el.querySelector('.nav-link.active'); if (tab) $el.scrollLeft = Math.max(0, tab.getBoundingClientRect().right - $el.getBoundingClientRect().right + $el.scrollLeft + 16) })">
         <ul class="nav nav-tabs flex-nowrap text-nowrap" role="tablist">
-            @if (!empty($selectedDevice->drives))
+            @if (!empty($selectedDevice->drives) || $diskHealth !== null)
                 <li class="nav-item" role="presentation">
                     <button aria-controls="drives-tab-pane" aria-selected="{{ $activeTab === 'drives' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'drives' ? 'active' : '' }}" x-on:click="$wire.tab = 'drives'" data-bs-target="#drives-tab-pane" data-bs-toggle="tab" id="drives-tab" role="tab" type="button">
                         <i class="fas fa-hdd me-2"></i>{{ __('Drives') }}
+                        @if ($diskHealth !== null && $selectedDevice->diskHealthProblem)
+                            <i class="fas fa-exclamation-triangle text-danger ms-1" title="{{ __('A disk reports a problem') }}"></i>
+                        @endif
                     </button>
                 </li>
             @endif
@@ -191,16 +197,6 @@
                     </button>
                 </li>
             @endif
-            @if ($diskHealth !== null)
-                <li class="nav-item" role="presentation">
-                    <button aria-controls="health-tab-pane" aria-selected="{{ $activeTab === 'health' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'health' ? 'active' : '' }}" x-on:click="$wire.tab = 'health'" data-bs-target="#health-tab-pane" data-bs-toggle="tab" id="health-tab" role="tab" type="button">
-                        <i class="fas fa-heartbeat me-2"></i>{{ __('Disk health') }}
-                        @if ($selectedDevice->diskHealthProblem)
-                            <i class="fas fa-exclamation-triangle text-danger ms-1"></i>
-                        @endif
-                    </button>
-                </li>
-            @endif
             @if ($scriptRuns->isNotEmpty())
                 <li class="nav-item" role="presentation">
                     <button aria-controls="scripts-tab-pane" aria-selected="{{ $activeTab === 'scripts' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'scripts' ? 'active' : '' }}" x-on:click="$wire.tab = 'scripts'" data-bs-target="#scripts-tab-pane" data-bs-toggle="tab" id="scripts-tab" role="tab" type="button">
@@ -228,6 +224,7 @@
                     </button>
                 </li>
             @endif
+            @unless ($selectedDevice->isPingOnly)
             <li class="nav-item" role="presentation">
                 <button aria-controls="agent-tab-pane" aria-selected="{{ $activeTab === 'agent' ? 'true' : 'false' }}" class="nav-link {{ $activeTab === 'agent' ? 'active' : '' }}" x-on:click="$wire.tab = 'agent'" data-bs-target="#agent-tab-pane" data-bs-toggle="tab" id="agent-tab" role="tab" type="button">
                     <i class="fas fa-robot me-2"></i>{{ __('Agent') }}
@@ -236,12 +233,14 @@
                     @endif
                 </button>
             </li>
+            @endunless
         </ul>
         </div>
 
         <div class="tab-content pt-3">
-            @if (!empty($selectedDevice->drives))
+            @if (!empty($selectedDevice->drives) || $diskHealth !== null)
                 <div aria-labelledby="drives-tab" class="tab-pane fade {{ $activeTab === 'drives' ? 'show active' : '' }}" id="drives-tab-pane" role="tabpanel" tabindex="0">
+                    @if (!empty($selectedDevice->drives))
                     <div class="row g-3">
                         @foreach ($selectedDevice->drives as $drive)
                             <div class="col-12 col-md-6">
@@ -262,6 +261,66 @@
                             </div>
                         @endforeach
                     </div>
+                    @endif
+                    @if ($diskHealth !== null)
+                        <h6 class="{{ empty($selectedDevice->drives) ? '' : 'mt-4 pt-3 border-top' }} mb-3"><i class="fas fa-heartbeat me-2 text-muted"></i>{{ __('Disk health') }}</h6>
+                    @if ($diskHealth['error'])
+                        <div class="alert alert-warning mb-3" role="alert">
+                            <i class="fas fa-heartbeat me-2"></i>{{ $diskHealth['error'] }}
+                        </div>
+                    @endif
+                    @if (count($diskHealth['disks']) > 0)
+                        <div class="row g-3">
+                            @foreach ($diskHealth['disks'] as $disk)
+                                @php
+                                    $health = $disk['Health'] ?? 'unknown';
+                                    $values = array_filter([
+                                        __('Temperature') => isset($disk['Temperature']) ? $disk['Temperature'] . ' °C' : null,
+                                        __('Power on') => isset($disk['PowerOnHours']) ? __(':hours h (:days days)', ['hours' => number_format($disk['PowerOnHours'], 0, ',', ' '), 'days' => intdiv((int) $disk['PowerOnHours'], 24)]) : null,
+                                        __('Wear') => isset($disk['WearPercent']) ? $disk['WearPercent'] . ' %' : null,
+                                        __('Reallocated sectors') => $disk['Reallocated'] ?? null,
+                                        __('Pending sectors') => $disk['Pending'] ?? null,
+                                        __('Media errors') => $disk['MediaErrors'] ?? null,
+                                    ], fn ($value) => $value !== null);
+                                @endphp
+                                <div class="col-12 col-md-6" wire:key="disk-{{ $loop->index }}">
+                                    <div class="card h-100">
+                                        <div class="card-body">
+                                            <div class="d-flex align-items-start gap-3">
+                                                <i class="fas {{ ($disk['MediaType'] ?? '') === 'HDD' ? 'fa-hdd' : 'fa-memory' }} fa-2x text-muted"></i>
+                                                <div class="flex-grow-1 min-w-0">
+                                                    <div class="d-flex justify-content-between gap-2">
+                                                        <span class="fw-semibold text-break">{{ $disk['Model'] ?? $disk['Device'] }}</span>
+                                                        <x-badge class="align-self-start flex-shrink-0" :color="match ($health) { 'passed' => 'success', 'failed' => 'danger', 'warning' => 'warning', default => 'secondary' }" variant="subtle">
+                                                            {{ match ($health) { 'passed' => __('Healthy'), 'failed' => __('Failing'), 'warning' => __('Warning'), default => __('Unknown') } }}
+                                                        </x-badge>
+                                                    </div>
+                                                    <div class="small text-muted text-break">
+                                                        {{ collect([$disk['Device'] ?? null, $disk['MediaType'] ?? null, $disk['Protocol'] ?? null, isset($disk['Size']) ? \App\Support\Bytes::format($disk['Size']) : null, $disk['Serial'] ?? null])->filter()->implode(' · ') }}
+                                                    </div>
+                                                    @if (! empty($disk['Standby']))
+                                                        <div class="small text-muted mt-1"><i class="fas fa-moon me-1"></i>{{ __('Disk is asleep, showing the last known values.') }}</div>
+                                                    @endif
+                                                    @if ($values)
+                                                        <dl class="row small mb-0 mt-2">
+                                                            @foreach ($values as $label => $value)
+                                                                <dt class="col-6 fw-normal text-muted">{{ $label }}</dt>
+                                                                <dd class="col-6 mb-1 text-end">{{ $value }}</dd>
+                                                            @endforeach
+                                                        </dl>
+                                                    @endif
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            @endforeach
+                        </div>
+                    @elseif (! $diskHealth['error'])
+                        <p class="text-muted mb-0">{{ __('No disks with S.M.A.R.T. support found.') }}</p>
+                    @endif
+                    <p class="small text-muted mt-3 mb-0">{{ __('Checked by the agent every hour; sleeping disks are not woken up.') }}</p>
+                    @endif
                 </div>
             @endif
 
@@ -519,66 +578,6 @@
                 </div>
             @endif
 
-            @if ($diskHealth !== null)
-                <div aria-labelledby="health-tab" class="tab-pane fade {{ $activeTab === 'health' ? 'show active' : '' }}" id="health-tab-pane" role="tabpanel" tabindex="0">
-                    @if ($diskHealth['error'])
-                        <div class="alert alert-warning mb-3" role="alert">
-                            <i class="fas fa-heartbeat me-2"></i>{{ $diskHealth['error'] }}
-                        </div>
-                    @endif
-                    @if (count($diskHealth['disks']) > 0)
-                        <div class="row g-3">
-                            @foreach ($diskHealth['disks'] as $disk)
-                                @php
-                                    $health = $disk['Health'] ?? 'unknown';
-                                    $values = array_filter([
-                                        __('Temperature') => isset($disk['Temperature']) ? $disk['Temperature'] . ' °C' : null,
-                                        __('Power on') => isset($disk['PowerOnHours']) ? __(':hours h (:days days)', ['hours' => number_format($disk['PowerOnHours'], 0, ',', ' '), 'days' => intdiv((int) $disk['PowerOnHours'], 24)]) : null,
-                                        __('Wear') => isset($disk['WearPercent']) ? $disk['WearPercent'] . ' %' : null,
-                                        __('Reallocated sectors') => $disk['Reallocated'] ?? null,
-                                        __('Pending sectors') => $disk['Pending'] ?? null,
-                                        __('Media errors') => $disk['MediaErrors'] ?? null,
-                                    ], fn ($value) => $value !== null);
-                                @endphp
-                                <div class="col-12 col-md-6" wire:key="disk-{{ $loop->index }}">
-                                    <div class="card h-100">
-                                        <div class="card-body">
-                                            <div class="d-flex align-items-start gap-3">
-                                                <i class="fas {{ ($disk['MediaType'] ?? '') === 'HDD' ? 'fa-hdd' : 'fa-memory' }} fa-2x text-muted"></i>
-                                                <div class="flex-grow-1 min-w-0">
-                                                    <div class="d-flex justify-content-between gap-2">
-                                                        <span class="fw-semibold text-break">{{ $disk['Model'] ?? $disk['Device'] }}</span>
-                                                        <x-badge class="align-self-start flex-shrink-0" :color="match ($health) { 'passed' => 'success', 'failed' => 'danger', 'warning' => 'warning', default => 'secondary' }" variant="subtle">
-                                                            {{ match ($health) { 'passed' => __('Healthy'), 'failed' => __('Failing'), 'warning' => __('Warning'), default => __('Unknown') } }}
-                                                        </x-badge>
-                                                    </div>
-                                                    <div class="small text-muted text-break">
-                                                        {{ collect([$disk['Device'] ?? null, $disk['MediaType'] ?? null, $disk['Protocol'] ?? null, isset($disk['Size']) ? \App\Support\Bytes::format($disk['Size']) : null, $disk['Serial'] ?? null])->filter()->implode(' · ') }}
-                                                    </div>
-                                                    @if (! empty($disk['Standby']))
-                                                        <div class="small text-muted mt-1"><i class="fas fa-moon me-1"></i>{{ __('Disk is asleep, showing the last known values.') }}</div>
-                                                    @endif
-                                                    @if ($values)
-                                                        <dl class="row small mb-0 mt-2">
-                                                            @foreach ($values as $label => $value)
-                                                                <dt class="col-6 fw-normal text-muted">{{ $label }}</dt>
-                                                                <dd class="col-6 mb-1 text-end">{{ $value }}</dd>
-                                                            @endforeach
-                                                        </dl>
-                                                    @endif
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            @endforeach
-                        </div>
-                    @elseif (! $diskHealth['error'])
-                        <p class="text-muted mb-0">{{ __('No disks with S.M.A.R.T. support found.') }}</p>
-                    @endif
-                    <p class="small text-muted mt-3 mb-0">{{ __('Checked by the agent every hour; sleeping disks are not woken up.') }}</p>
-                </div>
-            @endif
             @if ($scriptRuns->isNotEmpty())
                 <div aria-labelledby="scripts-tab" class="tab-pane fade {{ $activeTab === 'scripts' ? 'show active' : '' }}" id="scripts-tab-pane" role="tabpanel" tabindex="0">
                     @livewire('script-run.data-table', ['deviceId' => $selectedDevice->id], key('device-script-runs-'.$selectedDevice->id))
@@ -636,6 +635,7 @@
                     </div>
                 </div>
             @endif
+            @unless ($selectedDevice->isPingOnly)
             <div aria-labelledby="agent-tab" class="tab-pane fade {{ $activeTab === 'agent' ? 'show active' : '' }}" id="agent-tab-pane" role="tabpanel" tabindex="0">
                 @php
                     $lastReport = $selectedDevice->last_http_at ?? $selectedDevice->updated_at;
@@ -759,7 +759,8 @@
                     </div>
                 </div>
             </div>
+            @endunless
         </div>
     </div>
-    @endunless
+    @endif
 </div>

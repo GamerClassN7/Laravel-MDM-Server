@@ -2,12 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Livewire\DeviceCommands;
+use App\Livewire\DeviceDetail;
 use App\Models\AlertRule;
 use App\Models\Device;
 use App\Models\SecurityFinding;
 use App\Models\User;
 use App\Support\AlertEvaluator;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Livewire\Livewire;
 use Tests\Concerns\SignsDeviceRequests;
 use Tests\TestCase;
 
@@ -94,6 +97,32 @@ class PortScanSecurityTest extends TestCase
         $this->assertSame('portscan.cleartext-http', $finding->rule->key);
         $this->assertSame($printer->id, $finding->device_id);
         $this->assertSame('192.168.1.50', $finding->target_ip);
+    }
+
+    public function test_a_ping_only_device_has_the_security_and_history_tabs(): void
+    {
+        $this->agent();
+        $printer = new Device;
+        $printer->forceFill(['kind' => 'ping', 'name' => 'Printer', 'os' => '', 'token' => hash('sha256', 'p'),
+            'ping_address' => '192.168.1.50', 'ping_prefix' => 24])->save();
+        Device::recordHeartbeat($printer->id);
+        $this->actingAs(User::factory()->create());
+
+        // Nothing to show yet: no tabs at all, never the agent's.
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $printer->id])
+            ->assertDontSee('id="security-tab"', false)
+            ->assertDontSee('id="history-tab"', false)
+            ->assertDontSee('id="agent-tab"', false);
+
+        // A scan of its ports (run by the agent) is its history, the findings its security.
+        Livewire::test(DeviceCommands::class, ['selectedDeviceId' => $printer->id])->call('scanPorts');
+        $this->sendResult([['port' => 80, 'service' => 'http', 'http' => true, 'tls' => false]])->assertOk();
+
+        Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $printer->id])
+            ->assertSee('id="security-tab"', false)
+            ->assertSee('id="history-tab"', false)
+            ->assertDontSee('id="agent-tab"', false)
+            ->assertDontSee('No security inventory yet');
     }
 
     public function test_the_exposure_alert_announces_device_less_findings(): void

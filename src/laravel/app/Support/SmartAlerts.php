@@ -153,7 +153,7 @@ class SmartAlerts
                 'icon' => 'fas fa-heartbeat',
                 'title' => __('A disk reports a problem'),
                 'message' => collect($device->diskHealth['disks'])->filter(fn ($disk) => in_array($disk['Health'] ?? null, ['failed', 'warning'], true))->map(fn ($disk) => $disk['Model'] ?? $disk['Device'] ?? '?')->implode(', '),
-                'tab' => 'health',
+                'tab' => 'drives',
             ];
         }
 

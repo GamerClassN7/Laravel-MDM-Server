@@ -51,10 +51,26 @@ class DeviceVirtualizationTest extends TestCase
         ]);
 
         $this->assertFalse($device->showDiskHealth);
-        // No tab for it; the Agent tab only says it is off there.
+        // Not under Drives; the Agent tab only says it is off there.
         Livewire::test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
-            ->assertDontSeeHtml('id="health-tab"')
+            ->assertDontSee('Checked by the agent every hour')
             ->assertSee('not on virtual machines');
+    }
+
+    public function test_disk_health_is_part_of_the_drives_tab(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $device = $this->createDevice(null, [
+            ['Device' => 'PhysicalDisk0', 'Model' => 'Samsung SSD 970 EVO Plus 1TB', 'Health' => 'passed'],
+        ]);
+
+        // One Drives tab with the disks' health, also for old links to the Disk health tab.
+        Livewire::withQueryParams(['tab' => 'health'])->test(DeviceDetail::class, ['selectedDeviceId' => $device->id])
+            ->assertSeeHtml('id="drives-tab"')
+            ->assertDontSeeHtml('id="health-tab"')
+            ->assertSeeHtml('class="tab-pane fade show active" id="drives-tab-pane"')
+            ->assertSee('Samsung SSD 970 EVO Plus 1TB')
+            ->assertSee('Disk health');
     }
 
     public function test_disk_health_is_hidden_on_vms_even_with_smart_values(): void
