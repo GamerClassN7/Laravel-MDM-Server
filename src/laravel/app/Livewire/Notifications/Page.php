@@ -94,7 +94,7 @@ class Page extends Component
             if (! Notifier::validUrl($url)) {
                 throw new \InvalidArgumentException(__('Unsupported notification URL.'));
             }
-            Notifier::send($url, '🔔 '.config('app.name'), __('Test notification from :app.', ['app' => config('app.name')]));
+            Notifier::send($url, '🔔 '.config('app.name'), __('Test notification from :app.', ['app' => config('app.name')], 'en'));
             $this->tests[$index] = ['ok' => true, 'message' => __('Sent')];
         } catch (Throwable $e) {
             $this->tests[$index] = ['ok' => false, 'message' => $e->getMessage()];
@@ -108,7 +108,7 @@ class Page extends Component
             if ($emails === []) {
                 throw new \InvalidArgumentException(__('Enter an e-mail address.'));
             }
-            Mail::raw(__('Test notification from :app.', ['app' => config('app.name')]), fn ($mail) => $mail->to($emails)->subject('🔔 '.config('app.name')));
+            Mail::raw(__('Test notification from :app.', ['app' => config('app.name')], 'en'), fn ($mail) => $mail->to($emails)->subject('🔔 '.config('app.name')));
             $this->tests['email'] = ['ok' => true, 'message' => __('Sent')];
         } catch (Throwable $e) {
             $this->tests['email'] = ['ok' => false, 'message' => $e->getMessage()];

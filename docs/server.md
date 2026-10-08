@@ -18,6 +18,11 @@ php artisan mdm:user admin@example.com            # asks for the password
 docker exec -it mdm php artisan mdm:user admin@example.com
 ```
 
+The user interface is in English, Czech, German, Spanish, French and Italian (`lang/*.json`). The
+setup page asks for the language of the first account, which is also the default for everyone who
+has not picked one; each user changes their own in the profile. Logs, alerts and notifications
+stay in English.
+
 Installations from before the setup page got a default account (`the-email@example.com` /
 `the-password-of-choice`). Change its e-mail and password in the profile; the portal warns after
 logging in with that password.

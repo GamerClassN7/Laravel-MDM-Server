@@ -16,7 +16,8 @@ use Throwable;
 /**
  * Checks the alert rules every minute. A rule that starts to hold on a device opens an alert and
  * notifies its user; when it stops holding, the alert is resolved and the user is told so. Nothing
- * is sent again while an alert stays open.
+ * is sent again while an alert stays open. Alerts and notifications are always in English, like the
+ * logs, also when a web request of a user with another language causes them.
  */
 class AlertEvaluator
 {
@@ -29,7 +30,7 @@ class AlertEvaluator
     /** @return array{triggered: int, resolved: int} */
     public static function run(): array
     {
-        return (new self)->evaluate();
+        return Locales::inEnglish(fn () => (new self)->evaluate());
     }
 
     public function evaluate(): array
@@ -327,6 +328,11 @@ class AlertEvaluator
      * there, NetworkNeighbour::followMacs): its address is followed, the alert says to pin it.
      */
     public static function addressChanged(Device $device, string $from, string $to): void
+    {
+        Locales::inEnglish(fn () => self::announceAddressChange($device, $from, $to));
+    }
+
+    private static function announceAddressChange(Device $device, string $from, string $to): void
     {
         $message = __(':device (:mac) moved from :from to :to: its address is dynamic. Reserve :to for the MAC address in the router (static DHCP lease) or set it on the device; the portal follows it meanwhile.', [
             'device' => $device->displayName, 'mac' => $device->ping_mac, 'from' => $from, 'to' => $to,
