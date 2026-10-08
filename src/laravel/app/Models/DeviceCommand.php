@@ -19,7 +19,7 @@ class DeviceCommand extends Model
     /** Finished commands are kept this many days (the device history). */
     public const KEEP_DAYS = 90;
 
-    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow', 'scanNetwork'];
+    public const COMMANDS = ['turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow', 'scanNetwork', 'scanPorts'];
 
     public const STATUSES = ['queued', 'sent', 'running', 'succeeded', 'failed', 'delivered', 'expired', 'cancelled'];
 
@@ -51,10 +51,14 @@ class DeviceCommand extends Model
         'wake' => 600,
         'pingNow' => 120,
         'scanNetwork' => 300,
+        'scanPorts' => 300,
     ];
 
     /** The largest network an agent scans (a /22: 1022 addresses). */
     public const MIN_SCAN_PREFIX = 22;
+
+    /** At most this many ports in a scanPorts command (a custom list, the default list aside). */
+    public const MAX_SCAN_PORTS = 1024;
 
     /** A MAC address as the agents report it (Windows AA-BB-..., Linux aa:bb:...). */
     public const MAC_PATTERN = '/^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$/';
@@ -130,6 +134,31 @@ class DeviceCommand extends Model
             }
 
             return ['cidr' => $cidr];
+        }
+        if ($command === 'scanPorts') {
+            // One host address (the agent checks it is in its own networks); an optional list of
+            // ports, otherwise the agent scans its default list of common ports.
+            $ip = $params['ip'] ?? null;
+            if (! is_string($ip) || ! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                return null;
+            }
+            $clean = ['ip' => $ip];
+            if (array_key_exists('ports', $params) && $params['ports'] !== null) {
+                if (! is_array($params['ports'])) {
+                    return null;
+                }
+                $ports = array_values(array_unique(array_filter(array_map(
+                    fn ($port) => is_int($port) || (is_string($port) && ctype_digit($port)) ? (int) $port : null,
+                    $params['ports'],
+                ), fn ($port) => $port !== null && $port >= 1 && $port <= 65535)));
+                if ($ports === [] || count($ports) > self::MAX_SCAN_PORTS) {
+                    return null;
+                }
+                sort($ports);
+                $clean['ports'] = $ports;
+            }
+
+            return $clean;
         }
         if ($command !== 'installUpdate') {
             return $params === [] ? [] : null;
@@ -207,6 +236,9 @@ class DeviceCommand extends Model
         }
         if ($command === 'scanNetwork') {
             return 'scan:'.$params['cidr'];
+        }
+        if ($command === 'scanPorts') {
+            return 'ports:'.$params['ip'];
         }
         if ($command !== 'installUpdate') {
             return null;
@@ -304,6 +336,7 @@ class DeviceCommand extends Model
             'wake' => __('Wake :name', ['name' => $this->params['title'] ?? '?']),
             'pingNow' => __('Ping :name', ['name' => $this->params['title'] ?? '?']),
             'scanNetwork' => __('Scan :network', ['network' => $this->params['cidr'] ?? '?']),
+            'scanPorts' => __('Scan ports of :ip', ['ip' => $this->params['ip'] ?? '?']),
             default => $this->command,
         };
     }
@@ -320,6 +353,7 @@ class DeviceCommand extends Model
             'wake' => 'fas fa-sun',
             'pingNow' => 'fas fa-network-wired',
             'scanNetwork' => 'fas fa-search-location',
+            'scanPorts' => 'fas fa-plug',
             default => 'fas fa-terminal',
         };
     }

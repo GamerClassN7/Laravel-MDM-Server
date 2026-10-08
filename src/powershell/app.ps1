@@ -44,6 +44,13 @@
     security_logs, the server cannot change it): off (default) or on. The security inventory
     (software, ports, settings) is sent either way.
 
+.PARAMETER PortScan
+    With -Install: whether the agent scans the open ports of an address in its network when asked
+    in the portal (stored in config.json as port_scan, the server cannot change it): off (default)
+    or on. A scan only connects to the ports of one host of an interface of this device and reads
+    what each service returns on its own (a banner, the HTTP Server header and title, the TLS
+    certificate); it sends no payloads to the services.
+
 .EXAMPLE
     # Enrol the device and register the agent as a scheduled task running as SYSTEM
     .\app.ps1 -ServerUrl https://mdm.example.com -EnrolmentCode 1234 -Install
@@ -80,7 +87,10 @@ param (
     $NetworkDiscovery,
     [ValidateSet('off', 'on')]
     [string]
-    $SecurityLogs
+    $SecurityLogs,
+    [ValidateSet('off', 'on')]
+    [string]
+    $PortScan
 )
 
 $ErrorActionPreference = 'Stop'
@@ -124,8 +134,8 @@ $ReverbKey = "$($LegacyOptions['ReverbKey'])"
 # Not left for the functions (they would see them through dynamic scoping).
 Remove-Variable -Name i, name, value -ErrorAction SilentlyContinue
 # Reported to the server, which offers an update when it serves a newer agent.
-$AgentVersion = '1.17.1'
-$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow', 'scanNetwork')
+$AgentVersion = '1.18.0'
+$AllowedCommands = @('turnOff', 'restart', 'doUpdates', 'installUpdate', 'updateAgent', 'runScripts', 'sync', 'wake', 'pingNow', 'scanNetwork', 'scanPorts')
 # What installUpdate may install on its own, with the pattern its id must match (as on the server).
 $UpdateKinds = @{
     windows = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
@@ -3619,11 +3629,14 @@ function Get-Report {
     $data.machine | Add-Member -NotePropertyName ScriptsEnabled -NotePropertyValue ([bool]$config['scripts_enabled']) -Force
     $data.machine | Add-Member -NotePropertyName ServerKeyFingerprint -NotePropertyValue $config['server_key'].fingerprint -Force
     $discovery = Get-NetworkDiscovery -Config $config
+    $portScan = Get-PortScan -Config $config
     $data.machine | Add-Member -NotePropertyName NetworkDiscovery -NotePropertyValue $discovery -Force
+    $data.machine | Add-Member -NotePropertyName PortScan -NotePropertyValue $portScan -Force
     # What this agent is set to do (the portal shows it on the Agent tab, read only).
     $data.machine | Add-Member -NotePropertyName Features -NotePropertyValue ([ordered]@{
             scripts           = [bool]$config['scripts_enabled']
             network_discovery = $discovery
+            port_scan         = $portScan
             security_logs     = (Get-SecurityLogsLevel -Config $config)
         }) -Force
     if ($discovery -ne 'off') {
@@ -4041,6 +4054,14 @@ function Get-SecurityLogsLevel {
     return $(if ("$($Config['security_logs'])" -eq 'on') { 'on' } else { 'off' })
 }
 
+function Get-PortScan {
+    # port_scan in config.json: on scans the ports of an address of the device's networks on request,
+    # anything else (the default) is off. Only changed on the device (-PortScan, or editing config.json).
+    param ($Config = (Get-AgentConfig))
+
+    return $(if ("$($Config['port_scan'])" -eq 'on') { 'on' } else { 'off' })
+}
+
 function Test-UnicastMac {
     param ([string]$Mac)
 
@@ -4250,6 +4271,233 @@ function Complete-NetworkScan {
         [void](Send-CommandStatus -Id $scan.Id -Status succeeded -Message $scan.Message)
     }
     $script:ScanCommand = $null
+}
+
+# The common TCP ports scanned when a scanPorts command carries no port list.
+$script:DefaultScanPorts = @(
+    21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 161, 389, 443, 445, 465, 587, 631, 636,
+    993, 995, 1433, 1521, 1723, 1883, 2049, 2375, 2376, 3000, 3306, 3389, 5000, 5060, 5432,
+    5601, 5900, 5985, 5986, 6379, 7070, 8000, 8008, 8080, 8086, 8096, 8123, 8443, 8883, 9000,
+    9090, 9100, 9200, 11211, 27017
+)
+
+function Test-PortScanParams {
+    # scanPorts: the address must be a host of a network of one of the interfaces that are up (not
+    # the device's own address, nor the network or broadcast address). An optional list of ports,
+    # otherwise the default common ports. Returns @{ Ip; Ports; Interface }.
+    param ($Params)
+
+    $ip = "$($Params.ip)"
+    $parsed = [System.Net.IPAddress]::None
+    if (-not [System.Net.IPAddress]::TryParse($ip, [ref]$parsed) -or $parsed.AddressFamily -ne 'InterNetwork') { throw "not an IPv4 address: '$ip'" }
+    $networks = Get-LocalNetworks
+    $network = Find-LocalNetwork -Networks $networks -Address $parsed
+    if (-not $network) { throw "$ip is not in a network of this device's interfaces" }
+    if ($parsed.Equals($network.Address)) { throw "$ip is this device's own address" }
+    $networkAddress = [System.Net.IPAddress]::new([byte[]]$network.Network)
+    if ($parsed.Equals($networkAddress) -or $parsed.Equals($network.Broadcast)) { throw "$ip is the network or broadcast address" }
+    $ports = if ($Params.ports) {
+        @($Params.ports | ForEach-Object { try { [int]$_ } catch { $null } } | Where-Object { $_ -ge 1 -and $_ -le 65535 } | Select-Object -Unique)
+    } else {
+        $script:DefaultScanPorts
+    }
+    if ($ports.Count -eq 0) { throw 'no ports to scan' }
+    if ($ports.Count -gt 1024) { throw "too many ports ($($ports.Count)), at most 1024" }
+    return @{ Ip = $ip; Ports = @($ports); Interface = $network.Name }
+}
+
+function Read-StreamText {
+    # Reads up to $Max bytes the service offers, within a short deadline, as printable text (control
+    # characters dropped). Used only to look at what a port returns; nothing is interpreted or run.
+    param ($Stream, [int]$Max = 4096, [int]$TimeoutMs = 1000)
+
+    try { $Stream.ReadTimeout = $TimeoutMs } catch { }
+    $buffer = New-Object byte[] 4096
+    $out = New-Object System.IO.MemoryStream
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMs * 2 + 500)
+    try {
+        while ($out.Length -lt $Max -and (Get-Date) -lt $deadline) {
+            $read = $Stream.Read($buffer, 0, [Math]::Min($buffer.Length, $Max - $out.Length))
+            if ($read -le 0) { break }
+            $out.Write($buffer, 0, $read)
+        }
+    }
+    catch { }
+    if ($out.Length -eq 0) { return $null }
+    $text = [System.Text.Encoding]::ASCII.GetString($out.ToArray())
+    return ($text -replace '[^\x09\x0A\x0D\x20-\x7E]', '').Trim()
+}
+
+function Get-HttpSummary {
+    # The Server header, the page <title> (or the status) and passive observations from an HTTP
+    # response. Only reads the response; it never reflects anything back into a request.
+    param ([string]$Response, [switch]$Tls)
+
+    $headerBlock = ($Response -split "`r?`n`r?`n", 2)[0]
+    $lines = @($headerBlock -split "`r?`n")
+    $server = $null
+    foreach ($line in $lines) {
+        if ($line -match '^(?i)server:\s*(.+)$') { $server = $Matches[1].Trim(); break }
+    }
+    $status = ($lines[0] -replace '^HTTP/\d(\.\d)?\s*', '').Trim()
+    $title = if ($Response -match '(?is)<title[^>]*>(.*?)</title>') { ($Matches[1] -replace '\s+', ' ').Trim() } else { $null }
+    $parts = @()
+    if ($server) { $parts += "Server: $server" }
+    if ($title) { $parts += "title: $title" } elseif ($status) { $parts += "HTTP $status" }
+    $findings = @()
+    $lower = $headerBlock.ToLowerInvariant()
+    if ($Tls -and $lower -notmatch '(?m)^strict-transport-security:') { $findings += 'no HSTS header' }
+    if ($lower -notmatch '(?m)^content-security-policy:') { $findings += 'no Content-Security-Policy header' }
+    if ($lower -notmatch '(?m)^x-frame-options:') { $findings += 'no X-Frame-Options header' }
+    if (-not $Tls) { $findings += 'serves HTTP without TLS' }
+    return @{ Banner = ($parts -join '; '); Findings = $findings }
+}
+
+function Invoke-PortSweep {
+    # In the scan job: which of the ports accept a TCP connection, and for each open one what the
+    # service returns on its own (a banner, the HTTP Server header and title, the TLS certificate).
+    # Sends only a single standard HTTP GET where it helps identify a web server; no payloads go to
+    # the services. Writes @{ Progress; Found } per batch, then @{ Done; Open; Findings }.
+    param ([string]$Ip, [int[]]$Ports, [int]$ConnectTimeoutMs = 1000, [int]$ReadTimeoutMs = 1500, [int]$Batch = 64)
+
+    $httpPorts = @(80, 81, 591, 3000, 5000, 5601, 7070, 8000, 8008, 8080, 8086, 8096, 8123, 9090)
+    $tlsPorts = @(443, 465, 636, 989, 990, 993, 995, 5986, 8443, 9443)
+
+    $open = New-Object System.Collections.ArrayList
+    for ($offset = 0; $offset -lt $Ports.Count; $offset += $Batch) {
+        $slice = @($Ports[$offset..([Math]::Min($Ports.Count, $offset + $Batch) - 1)])
+        $runs = @($slice | ForEach-Object {
+                $client = New-Object System.Net.Sockets.TcpClient
+                @{ Port = $_; Client = $client; Task = $client.ConnectAsync($Ip, $_) }
+            })
+        foreach ($run in $runs) {
+            try { [void]$run.Task.Wait($ConnectTimeoutMs) } catch { }
+            if ($run.Client.Connected) { [void]$open.Add($run.Port) }
+            try { $run.Client.Close() } catch { }
+        }
+        [PSCustomObject]@{ Progress = [int](($offset + $slice.Count) * 80 / $Ports.Count); Found = $open.Count }
+    }
+
+    $results = @()
+    $findings = New-Object System.Collections.ArrayList
+    foreach ($port in @($open | Sort-Object)) {
+        $service = $null
+        $banner = $null
+        $isTls = $tlsPorts -contains $port
+        $client = New-Object System.Net.Sockets.TcpClient
+        try {
+            $connect = $client.ConnectAsync($Ip, $port)
+            if (-not $connect.Wait($ConnectTimeoutMs) -or -not $client.Connected) { throw 'not reachable the second time' }
+            $client.ReceiveTimeout = $ReadTimeoutMs
+            $stream = $client.GetStream()
+            if ($isTls) {
+                try {
+                    $ssl = New-Object System.Net.Security.SslStream($stream, $false, ([System.Net.Security.RemoteCertificateValidationCallback] { param($sndr, $crt, $chn, $err) $true }))
+                    $ssl.AuthenticateAsClient($Ip)
+                    $stream = $ssl
+                    $service = 'https'
+                    if ($ssl.RemoteCertificate) {
+                        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($ssl.RemoteCertificate)
+                        $subject = $cert.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+                        if ($subject) { $banner = "TLS: $subject" }
+                        if ($cert.NotAfter -lt (Get-Date)) { [void]$findings.Add("Port ${port}: TLS certificate expired $($cert.NotAfter.ToString('yyyy-MM-dd'))") }
+                        if ($cert.Subject -eq $cert.Issuer) { [void]$findings.Add("Port ${port}: self-signed TLS certificate") }
+                    }
+                }
+                catch {
+                    $service = 'tls?'
+                    [void]$findings.Add("Port ${port}: TLS handshake failed")
+                }
+            }
+            # Services that greet on connect (SSH, FTP, SMTP, IMAP, POP3): read their banner.
+            if (-not $isTls -and $httpPorts -notcontains $port) {
+                $peek = Read-StreamText -Stream $stream -Max 512 -TimeoutMs 700
+                if ($peek) {
+                    $banner = $peek
+                    $service = switch -Regex ($peek) {
+                        '^SSH-' { 'ssh'; break }
+                        '(?i)^220.*ftp' { 'ftp'; break }
+                        '(?i)^220.*smtp|^220 ' { 'smtp'; break }
+                        '(?i)^\*\s*OK.*imap' { 'imap'; break }
+                        '^\+OK' { 'pop3'; break }
+                        default { $null }
+                    }
+                }
+            }
+            # No banner yet and a web port: a single standard GET, then read the headers and title.
+            if ((-not $banner -or $isTls) -and (($httpPorts -contains $port) -or $isTls)) {
+                try {
+                    $request = "GET / HTTP/1.0`r`nHost: $Ip`r`nUser-Agent: Laravel-MDM-Agent`r`nAccept: */*`r`nConnection: close`r`n`r`n"
+                    $bytes = [System.Text.Encoding]::ASCII.GetBytes($request)
+                    $stream.Write($bytes, 0, $bytes.Length)
+                    $stream.Flush()
+                    $response = Read-StreamText -Stream $stream -Max 8192 -TimeoutMs $ReadTimeoutMs
+                    if ($response -and $response -match '^HTTP/') {
+                        if (-not $service) { $service = if ($isTls) { 'https' } else { 'http' } }
+                        $http = Get-HttpSummary -Response $response -Tls:$isTls
+                        if ($http.Banner) { $banner = if ($banner) { "$banner; $($http.Banner)" } else { $http.Banner } }
+                        foreach ($f in $http.Findings) { [void]$findings.Add("Port ${port}: $f") }
+                    }
+                }
+                catch { }
+            }
+            if (-not $service) { $service = 'open' }
+            if ($port -eq 23) { [void]$findings.Add("Port ${port}: Telnet is unencrypted") }
+            if ($port -eq 21) { [void]$findings.Add("Port ${port}: FTP is unencrypted") }
+        }
+        catch { }
+        finally { try { $client.Close() } catch { } }
+        $results += @{ port = $port; service = $service; banner = $banner }
+    }
+    [PSCustomObject]@{ Done = $true; Open = @($results); Findings = @($findings) }
+}
+
+function Start-PortScan {
+    param ($CommandId, $Scan)
+
+    $script:PortScanJob = Start-AgentJob -Name 'portscan' -Functions 'Invoke-PortSweep', 'Read-StreamText', 'Get-HttpSummary' -ArgumentList $Scan.Ip, $Scan.Ports -ScriptBlock {
+        param ($Ip, $Ports)
+        Invoke-PortSweep -Ip $Ip -Ports $Ports
+    }
+    $script:PortScanCommand = @{ Id = $CommandId; Ip = $Scan.Ip; Interface = $Scan.Interface; Count = @($Scan.Ports).Count; ProgressSent = Get-Date }
+}
+
+function Sync-PortScan {
+    # The port scan job's progress goes to the server; when it is done the open ports go to the
+    # dedicated endpoint and the command is finished. Nothing in the regular report depends on it.
+    if (-not $script:PortScanJob) { return }
+    $scan = $script:PortScanCommand
+    foreach ($item in @(Receive-Job -Job $script:PortScanJob -ErrorAction SilentlyContinue)) {
+        if ($item.Done) { $scan.Result = $item } elseif ($null -ne $item.Progress) { $scan.Last = $item }
+    }
+    if ($scan.Last -and ((Get-Date) - $scan.ProgressSent).TotalSeconds -ge 3) {
+        $scan.ProgressSent = Get-Date
+        [void](Send-CommandStatus -Id $scan.Id -Status running -Progress $scan.Last.Progress -Message "Scanning $($scan.Count) ports of $($scan.Ip) from $($scan.Interface): $($scan.Last.Found) open")
+    }
+    if ($script:PortScanJob.State -eq 'Running') { return }
+
+    $reason = $script:PortScanJob.ChildJobs[0].JobStateInfo.Reason
+    Remove-Job -Job $script:PortScanJob -Force
+    $script:PortScanJob = $null
+    if (-not $scan.Result) {
+        Write-AgentLog "Port scan of $($scan.Ip) failed: $reason" -IsError
+        [void](Send-CommandStatus -Id $scan.Id -Status failed -Message "Port scan failed: $reason")
+        $script:PortScanCommand = $null
+        return
+    }
+    $open = @($scan.Result.Open)
+    $findings = @($scan.Result.Findings)
+    try {
+        Invoke-MdmApi -Method Post -Path 'device/port-scan' -Token $script:AgentToken -Body @{ ip = $scan.Ip; ports = $open; findings = $findings } | Out-Null
+        Write-AgentLog "Port scan of $($scan.Ip): $($open.Count) open, $($findings.Count) notes"
+        $note = if ($findings.Count) { ", $($findings.Count) note(s)" } else { '' }
+        [void](Send-CommandStatus -Id $scan.Id -Status succeeded -Message "$($open.Count) open $(if ($open.Count -eq 1) { 'port' } else { 'ports' }) on $($scan.Ip)$note")
+    }
+    catch {
+        Write-AgentLog "Port scan result not sent: $($_.Exception.Message)" -ErrorRecord $_
+        [void](Send-CommandStatus -Id $scan.Id -Status failed -Message "Scanned, but sending the result failed: $($_.Exception.Message)")
+    }
+    $script:PortScanCommand = $null
 }
 
 function Get-WakeInterfaces {
@@ -5010,6 +5258,28 @@ function Invoke-DeviceCommand {
             Start-NetworkScan -CommandId $Id -Scan $scan
             [void](Send-CommandStatus -Id $Id -Status running -Progress 0 -Message "Pinging the $($scan.Hosts) addresses of $($scan.Cidr) from $($scan.Interface)")
         }
+        'scanPorts' {
+            # Only when config.json allows it (port_scan "on"), one at a time, only an address of a
+            # network of an interface of this device.
+            $level = Get-PortScan
+            if ($level -ne 'on') {
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "Port scans are not allowed on this device (port_scan is '$level' in config.json)")
+                return
+            }
+            if ($script:PortScanCommand) {
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "Already scanning the ports of $($script:PortScanCommand.Ip)")
+                return
+            }
+            try {
+                $scan = Test-PortScanParams -Params $Params
+            }
+            catch {
+                [void](Send-CommandStatus -Id $Id -Status failed -Message "Refused by the agent: $($_.Exception.Message)")
+                return
+            }
+            Start-PortScan -CommandId $Id -Scan $scan
+            [void](Send-CommandStatus -Id $Id -Status running -Progress 0 -Message "Scanning $(@($scan.Ports).Count) ports of $($scan.Ip)")
+        }
         'turnOff' {
             [void](Send-CommandStatus -Id $Id -Status running -Message 'Shutting down')
             $failure = Invoke-PowerAction -Restart:$false
@@ -5620,6 +5890,7 @@ function Start-Agent {
                 $script:ReportSoon = $false
                 $lastReport = [DateTime]::MinValue
             }
+            Sync-PortScan
             Sync-UpdateProgress
             if (Complete-UpdateJob) {
                 # Show what is left right away instead of the pre-update list for 6 hours.
@@ -5826,10 +6097,15 @@ if ($Install) {
         $config['security_logs'] = $SecurityLogs
         Save-AgentConfig -Config $config
     }
+    if ($PortScan) {
+        $config['port_scan'] = $PortScan
+        Save-AgentConfig -Config $config
+    }
     Save-AgentSettings -Config $config
     Write-Host "Server key: $($config['server_key'].fingerprint)" -ForegroundColor Yellow
     Write-Host "Remediation scripts: $(if ($config['scripts_enabled']) { 'enabled' } else { 'disabled' }) (config.json)" -ForegroundColor Yellow
     Write-Host "Network discovery: $(Get-NetworkDiscovery -Config $config) (config.json)" -ForegroundColor Yellow
+    Write-Host "Port scanning: $(Get-PortScan -Config $config) (config.json)" -ForegroundColor Yellow
     Write-Host "Security logs: $(Get-SecurityLogsLevel -Config $config) (config.json)" -ForegroundColor Yellow
 
     if ($OnLinux) {

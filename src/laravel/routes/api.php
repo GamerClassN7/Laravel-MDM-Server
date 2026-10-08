@@ -224,6 +224,22 @@ Route::middleware(['device.signature', 'auth:api'])->group(function () {
         ]);
     });
 
+    // The result of a port scan (agents 1.18.0+): the open ports of one address in the agent's
+    // network with a passive identification of the services. Only an address in the agent's own
+    // networks, when the device and the portal allow port scans; everything the host returned is
+    // stored as untrusted plain text.
+    Route::post('/device/port-scan', function (Request $request) {
+        /** @var Device $device */
+        $device = $request->user();
+        abort_unless($device->signsRequests, 403);
+        $taken = App\Models\PortScanResult::record($device, $request->json()->all());
+        if ($taken) {
+            App\Support\LiveUpdates::device($device->id, 'port-scan');
+        }
+
+        return response()->json(['taken' => $taken]);
+    });
+
     // A device updated to a signing agent registers its key once (trust on first use, with the
     // device token). The request is signed with that key; a registered key is only replaced after
     // an admin resets it.
